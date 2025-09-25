@@ -172,38 +172,19 @@ class TestWindower(unittest.TestCase):
             sample_rate=16000
         )
 
-        # Add many chunks to test buffer management
+        # Create many chunks to test buffer management
         chunk_size = 1600
+        chunks = []
         for i in range(10):
             chunk_data = np.full(chunk_size, i, dtype=np.float32)
-            self.chunk_queue.put({
+            chunks.append({
                 'data': chunk_data,
                 'timestamp': time.time() + i * 0.1
             })
 
-        # Process all chunks
-        windower.is_running = True
-        initial_buffer_len = 0
-
-        while not self.chunk_queue.empty():
-            chunk_data = self.chunk_queue.get()
-            chunk = chunk_data['data']
-
-            windower.buffer = np.concatenate([windower.buffer, chunk])
-
-            while len(windower.buffer) >= windower.window_size:
-                window = windower.buffer[:windower.window_size]
-                windower.window_queue.put({
-                    'data': window.copy(),
-                    'timestamp': chunk_data['timestamp'],
-                    'duration': windower.window_size / windower.sample_rate
-                })
-                windower.buffer = windower.buffer[windower.step_size:]
-
-            # Apply buffer size limit (from original code)
-            max_buffer_size = windower.window_size + windower.step_size
-            if len(windower.buffer) > max_buffer_size:
-                windower.buffer = windower.buffer[-max_buffer_size:]
+        # Process all chunks using the actual Windower method
+        for chunk in chunks:
+            windower.process_chunk(chunk)
 
         # Verify buffer didn't grow unbounded
         max_expected_buffer = windower.window_size + windower.step_size  # 3200 + 1600 = 4800
