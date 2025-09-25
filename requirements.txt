@@ -1,0 +1,3 @@
+sounddevice
+numpy
+onnx-asr

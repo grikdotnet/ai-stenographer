@@ -1,0 +1,48 @@
+sequenceDiagram
+    participant Mic as Microphone
+    participant AS as AudioSource
+    participant Q1 as chunk_queue
+    participant W as Windower
+    participant Q2 as window_queue
+    participant R as Recognizer
+    participant Q3 as text_queue
+    participant TM as TextMatcher
+    participant Q4 as final_queue
+    participant Q5 as partial_queue
+    participant FO as FinalOutput
+    participant PO as PartialOutput
+
+    loop Every 100ms
+        Mic->>AS: audio data
+        AS->>Q1: put(chunk)
+    end
+
+    loop Process chunks
+        Q1->>W: get(chunk)
+        W->>W: accumulate buffer
+        alt Buffer >= window_size
+            W->>Q2: put(window)
+            W->>W: slide buffer
+        end
+    end
+
+    loop Process windows
+        Q2->>R: get(window)
+        R->>R: model.recognize()
+        R->>Q3: put(text)
+    end
+
+    loop Match text
+        Q3->>TM: get(text)
+        TM->>TM: find_overlap()
+        TM->>Q4: put(final_text)
+        TM->>Q5: put(partial_text)
+    end
+
+    par Final output
+        Q4->>FO: get(final)
+        FO->>FO: print/save
+    and Partial output
+        Q5->>PO: get(partial)
+        PO->>PO: display
+    end
