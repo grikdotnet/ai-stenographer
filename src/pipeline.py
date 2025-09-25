@@ -1,10 +1,9 @@
-# src/pipeline.py
 import queue
 import signal
 import sys
 import time
+import onnx_asr
 
-# Import all pipeline components
 from .AudioSource import AudioSource
 from .Windower import Windower
 from .Recognizer import Recognizer
@@ -19,11 +18,14 @@ class STTPipeline:
         self.text_queue = queue.Queue(maxsize=50)
         self.final_queue = queue.Queue(maxsize=50)
         self.partial_queue = queue.Queue(maxsize=50)
-        
+
+        # Load recognition model
+        self.model = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3", model_path)
+
         # Create components
         self.audio_source = AudioSource(self.chunk_queue)
         self.windower = Windower(self.chunk_queue, self.window_queue)
-        self.recognizer = Recognizer(self.window_queue, self.text_queue, model_path)
+        self.recognizer = Recognizer(self.window_queue, self.text_queue, self.model)
         self.text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
         self.final_output = FinalTextOutput(self.final_queue)
         self.partial_output = PartialTextOutput(self.partial_queue)

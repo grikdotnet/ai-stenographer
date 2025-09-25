@@ -3,6 +3,12 @@
 Avoid commenting every line and comments that duplicate the function names, in comments describe logic and algorithms rather than functions.
 Test driven development only - plan, design and create tests first, implement code when tests are ready.
 
+Avoid tests of parameters passed to methods, variables assignments and other checks that make no sense. The test should focus on:
+
+- Output behavior - Does it produce correct text results?
+- Logic - Does it do what expected?
+- Queue interaction - Are results properly queued?
+
 ## Project Overview
 
 This is a real-time Speech-to-Text (STT) system built in Python that captures audio from microphone and converts it to text using the Parakeet ONNX model. The system uses a pipeline architecture with threaded components processing audio streams through queues.
