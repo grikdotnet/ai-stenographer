@@ -118,6 +118,82 @@ class TestRecognizer(unittest.TestCase):
         # Verify all windows were processed
         self.assertTrue(self.window_queue.empty())
 
+    def test_silence_timeout_signal(self):
+        """Test that silence signal is sent after timeout period using actual process() method"""
+        mock_model = MagicMock()
+        mock_model.recognize.return_value = "hello world"
+
+        # Short silence timeout for faster testing
+        recognizer = Recognizer(self.window_queue, self.text_queue, mock_model, silence_timeout=0.1)
+
+        # Add speech window to queue
+        speech_window = {
+            'data': np.random.rand(3200).astype(np.float32),
+            'timestamp': 1.0,
+            'duration': 0.2
+        }
+        self.window_queue.put(speech_window)
+
+        # Set up controlled execution with mock_get
+        recognizer.is_running = True
+        original_get = recognizer.window_queue.get
+        call_count = 0
+
+        def mock_get(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # First call: return speech window
+                return original_get(*args, **kwargs)
+            else:
+                # Subsequent calls: simulate silence timeout by sleeping then stopping
+                time.sleep(0.12)  # Wait longer than silence_timeout (0.1s)
+                recognizer.is_running = False
+                raise queue.Empty()
+
+        # Run actual process() method with mocked queue
+        recognizer.window_queue.get = mock_get
+        recognizer.process()
+
+        # Verify results
+        results = []
+        while not self.text_queue.empty():
+            results.append(self.text_queue.get())
+
+        self.assertEqual(len(results), 2)  # Speech + silence signal
+
+        # First result should be speech
+        speech_result = results[0]
+        self.assertEqual(speech_result['text'], 'hello world')
+
+        # Second result should be silence signal
+        silence_result = results[1]
+        self.assertEqual(silence_result['text'], '')
+        self.assertTrue(silence_result['is_silence'])
+        self.assertEqual(silence_result['window_duration'], 0)
+
+    def test_silence_flag_reset_on_new_speech(self):
+        """Test that silence flag is reset when new speech is detected"""
+        mock_model = MagicMock()
+        mock_model.recognize.side_effect = ["first", "second"]
+
+        recognizer = Recognizer(self.window_queue, self.text_queue, mock_model)
+
+        # Process first speech
+        speech1 = {'data': np.random.rand(3200).astype(np.float32), 'timestamp': 1.0, 'duration': 0.2}
+        recognizer.recognize_window(speech1)
+
+        # Simulate silence signal sent
+        recognizer._silence_signal_sent = True
+
+        # Process second speech
+        speech2 = {'data': np.random.rand(3200).astype(np.float32), 'timestamp': 2.0, 'duration': 0.2}
+        recognizer.recognize_window(speech2)
+
+        # Verify silence flag was reset
+        self.assertFalse(recognizer._silence_signal_sent)
+        self.assertGreater(recognizer.last_speech_time, 0)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -1,8 +1,8 @@
 # src/Recognizer.py
 import queue
 import threading
-import onnx_asr
 import numpy as np
+import time
 from typing import Dict, Any, Optional, Union, TypedDict
 
 class Recognizer:
@@ -16,14 +16,25 @@ class Recognizer:
         window_queue: Queue to read audio windows from
         text_queue: Queue to write recognition results to
         model: Pre-loaded speech recognition model with recognize() method
+        window_duration: Duration of audio windows in seconds
+        silence_timeout: Time to wait before sending silence signal in seconds
     """
 
-    def __init__(self, window_queue: queue.Queue, text_queue: queue.Queue, model: Any):
+    def __init__(self, window_queue: queue.Queue,
+                 text_queue: queue.Queue,
+                 model: Any,
+                 silence_timeout: float = 0.2
+                 ):
         self.window_queue: queue.Queue = window_queue
         self.text_queue: queue.Queue = text_queue
         self.model: Any = model
         self.is_running: bool = False
         self.thread: Optional[threading.Thread] = None
+
+        # Silence timeout logic
+        self.silence_timeout: float = silence_timeout
+        self.last_speech_time: float = 0
+        self._silence_signal_sent: bool = False
 
     def recognize_window(self, window_data: Dict[str, Any]) -> None:
         """Process a single window and add recognized text to queue.
@@ -42,6 +53,10 @@ class Recognizer:
         text: str = self.model.recognize(audio)
 
         if text.strip():
+            # Speech detected - update last speech time and reset silence flag
+            self.last_speech_time = time.time()
+            self._silence_signal_sent = False
+
             text_data: Dict[str, Union[str, float]] = {
                 'text': text,
                 'timestamp': window_data['timestamp'],
@@ -61,7 +76,24 @@ class Recognizer:
                 window_data: Dict[str, Any] = self.window_queue.get(timeout=0.1)
                 self.recognize_window(window_data)
             except queue.Empty:
+                # Check for silence timeout (only after speech was detected)
+                if self.last_speech_time > 0 and not self._silence_signal_sent:
+                    time_since_speech: float = time.time() - self.last_speech_time
+                    if time_since_speech >= self.silence_timeout:
+                        self._send_silence_signal()
                 continue
+
+    def _send_silence_signal(self) -> None:
+        """Send silence indicator after timeout - only once per silence period"""
+        if not self._silence_signal_sent:
+            silence: Dict[str, Union[str, float, bool]] = {
+                'text': '',  # Empty = silence signal
+                'timestamp': time.time(),
+                'window_duration': 0,
+                'is_silence': True
+            }
+            self.text_queue.put(silence)
+            self._silence_signal_sent = True
 
     def start(self) -> None:
         """Start processing windows in a background thread.

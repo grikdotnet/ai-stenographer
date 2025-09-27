@@ -22,10 +22,12 @@ class STTPipeline:
         # Load recognition model
         self.model = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3", model_path)
 
-        # Create components
+        # Create components with consistent parameters
+        window_duration = 2.0  # Default window duration from Windower
+
         self.audio_source = AudioSource(self.chunk_queue)
-        self.windower = Windower(self.chunk_queue, self.window_queue)
-        self.recognizer = Recognizer(self.window_queue, self.text_queue, self.model)
+        self.windower = Windower(self.chunk_queue, self.window_queue, window_duration=window_duration)
+        self.recognizer = Recognizer(self.window_queue, self.text_queue, self.model, window_duration=window_duration)
         self.text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
         self.final_output = FinalTextOutput(self.final_queue)
         self.partial_output = PartialTextOutput(self.partial_queue)
