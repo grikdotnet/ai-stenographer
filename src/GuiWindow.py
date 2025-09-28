@@ -48,5 +48,11 @@ def run_gui_loop(root: tk.Tk) -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        root.quit()
-        root.destroy()
+        try:
+            root.quit()
+        except tk.TclError:
+            pass
+        try:
+            root.destroy()
+        except tk.TclError:
+            pass
