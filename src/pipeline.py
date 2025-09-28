@@ -1,66 +1,73 @@
 import queue
 import signal
 import sys
-import time
 import onnx_asr
+from typing import List, Any
+import tkinter as tk
+from tkinter import scrolledtext
 
 from .AudioSource import AudioSource
 from .Windower import Windower
 from .Recognizer import Recognizer
 from .TextMatcher import TextMatcher
-from .OutputHandlers import FinalTextOutput, PartialTextOutput
+from .TwoStageDisplayHandler import TwoStageDisplayHandler
+from .GuiWindow import create_stt_window, run_gui_loop
 
 class STTPipeline:
-    def __init__(self, model_path="./models/parakeet"):
+    def __init__(self, model_path: str = "./models/parakeet") -> None:
         # Create queues
-        self.chunk_queue = queue.Queue(maxsize=100)
-        self.window_queue = queue.Queue(maxsize=50)
-        self.text_queue = queue.Queue(maxsize=50)
-        self.final_queue = queue.Queue(maxsize=50)
-        self.partial_queue = queue.Queue(maxsize=50)
+        self.chunk_queue: queue.Queue = queue.Queue(maxsize=100)
+        self.window_queue: queue.Queue = queue.Queue(maxsize=50)
+        self.text_queue: queue.Queue = queue.Queue(maxsize=50)
+        self.final_queue: queue.Queue = queue.Queue(maxsize=50)
+        self.partial_queue: queue.Queue = queue.Queue(maxsize=50)
 
         # Load recognition model
-        self.model = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3", model_path)
+        self.model: Any = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3", model_path)
+
+        # Create GUI window
+        self.root: tk.Tk
+        self.text_widget: scrolledtext.ScrolledText
+        self.root, self.text_widget = create_stt_window()
 
         # Create components with consistent parameters
-        window_duration = 2.0  # Default window duration from Windower
+        window_duration: float = 2.0  # Default window duration from Windower
 
-        self.audio_source = AudioSource(self.chunk_queue)
-        self.windower = Windower(self.chunk_queue, self.window_queue, window_duration=window_duration)
-        self.recognizer = Recognizer(self.window_queue, self.text_queue, self.model, window_duration=window_duration)
-        self.text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
-        self.final_output = FinalTextOutput(self.final_queue)
-        self.partial_output = PartialTextOutput(self.partial_queue)
-        
+        self.audio_source: AudioSource = AudioSource(self.chunk_queue)
+        self.windower: Windower = Windower(self.chunk_queue, self.window_queue, window_duration=window_duration)
+        self.recognizer: Recognizer = Recognizer(self.window_queue, self.text_queue, self.model)
+        self.text_matcher: TextMatcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
+        self.display_handler: TwoStageDisplayHandler = TwoStageDisplayHandler(self.final_queue, self.partial_queue, self.text_widget)
+
         # All components
-        self.components = [
+        self.components: List[Any] = [
             self.audio_source, self.windower, self.recognizer,
-            self.text_matcher, self.final_output, self.partial_output
+            self.text_matcher, self.display_handler
         ]
     
-    def start(self):
+    def start(self) -> None:
         print("Starting STT Pipeline...")
         for component in self.components:
             component.start()
         print("Pipeline running. Press Ctrl+C to stop.")
-    
-    def stop(self):
+
+    def stop(self) -> None:
         print("\nStopping pipeline...")
         for component in self.components:
             component.stop()
         print("Pipeline stopped.")
-    
-    def run(self):
+
+    def run(self) -> None:
         self.start()
-        
-        def signal_handler(sig, frame):
+
+        def signal_handler(sig: int, frame: Any) -> None:
             self.stop()
             sys.exit(0)
-        
+
         signal.signal(signal.SIGINT, signal_handler)
-        
+
         try:
-            while True:
-                time.sleep(1)
+            # Run GUI main loop
+            run_gui_loop(self.root)
         except KeyboardInterrupt:
             self.stop()

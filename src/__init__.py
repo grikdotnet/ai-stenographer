@@ -3,15 +3,17 @@ from .AudioSource import AudioSource
 from .Windower import Windower
 from .Recognizer import Recognizer
 from .TextMatcher import TextMatcher
-from .OutputHandlers import FinalTextOutput, PartialTextOutput
+from .TwoStageDisplayHandler import TwoStageDisplayHandler
+from .GuiWindow import create_stt_window, run_gui_loop
 from .pipeline import STTPipeline
 
 __all__ = [
     'AudioSource',
-    'Windower', 
+    'Windower',
     'Recognizer',
     'TextMatcher',
-    'FinalTextOutput',
-    'PartialTextOutput',
+    'TwoStageDisplayHandler',
+    'create_stt_window',
+    'run_gui_loop',
     'STTPipeline'
 ]

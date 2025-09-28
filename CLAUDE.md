@@ -1,13 +1,23 @@
 # CLAUDE.md
 
-Avoid commenting every line and comments that duplicate the function names, in comments describe logic and algorithms rather than functions.
-Test driven development only - plan, design and create tests first, implement code when tests are ready.
+Test driven development only: plan, design and create tests first, implement code after tests are ready. SOLID design is mandatory.
+Work only on a task you were given. Before adding features on your own initiative, offer and ask.
 
-Avoid tests of parameters passed to methods, variables assignments and other checks that make no sense. The test should focus on:
+The test should focus on:
 
 - Output behavior - Does it produce correct text results?
 - Logic - Does it do what expected?
 - Queue interaction - Are results properly queued?
+
+Write tests to check the application code, never re-implement application logic in tests.
+Avoid tests of parameters passed to methods, variables assignments and other checks that make no sense.
+
+Create dockblocks to describe logic and algorithms. Avoid commenting separate operations, skip comments which  duplicate function names and variables.
+
+Define types of parameters and return if possible.
+
+Avoid writing that I am right, and that everything works.
+In the end evaluate what may be wrong with the solution, offer what to check.
 
 ## Project Overview
 
