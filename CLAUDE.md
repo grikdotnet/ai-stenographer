@@ -16,8 +16,8 @@ Create dockblocks to describe logic and algorithms. Avoid commenting separate op
 
 Define types of parameters and return if possible.
 
-Avoid writing that I am right, and that everything works.
-In the end evaluate what may be wrong with the solution, offer what to check.
+Never praise, avoid writing "you are right", and that everything works.
+When the task is complete, evaluate what may be wrong with the solution, offer what to check.
 
 ## Project Overview
 
@@ -32,6 +32,32 @@ python main.py
 ```
 
 Starts the real-time STT pipeline. Press Ctrl+C to stop.
+
+### Verbose Mode
+
+```bash
+python main.py -v
+```
+
+Runs the pipeline with detailed logging for debugging text duplication issues. Shows:
+- `windower(): creating window, timestamp={timestamp}, len={length}, hash={hash}, chunk_ids={[1,2,3...]}`
+- `recognize(): window_timestamp={timestamp}, audio_len={length}, audio_hash={hash}, chunk_ids={[1,2,3...]}`
+- `recognize(): text: '{text}'` - Text recognition results
+- `process_text() current_text: received '{text}'` - TextMatcher input
+- `process_text() previous_text: '{previous_text}'` - TextMatcher state
+- `sending to partial_queue: {partial_data}` - Partial text output
+- `sending to final_queue: {final_data}` - Final text output
+
+### Windowing Configuration
+
+```bash
+python main.py --window=2.0 --step=1.0
+```
+
+Configures windowing parameters to reduce text duplication:
+- `--window=X.X` - Window duration in seconds (default: 2.0)
+- `--step=X.X` - Step size in seconds (default: 1.0, which gives 50% overlap)
+- For less duplication, use larger step sizes: `--step=1.5` (25% overlap) or `--step=2.0` (no overlap)
 
 ### Testing
 
@@ -59,7 +85,7 @@ The system uses a **pipeline architecture** with threaded components communicati
 2. **Windower** → processes chunks into recognition windows → `window_queue`
 3. **Recognizer** → runs STT on windows using Parakeet model → `text_queue`
 4. **TextMatcher** → filters/processes text → `final_queue` + `partial_queue`
-5. **OutputHandlers** → displays final and partial results
+5. **TwoStageDisplayHandler** → displays final and partial results
 
 ### Key Components
 
@@ -68,7 +94,7 @@ The system uses a **pipeline architecture** with threaded components communicati
 - **`src/Windower.py`**: Buffers audio chunks into recognition windows with VAD
 - **`src/Recognizer.py`**: Parakeet ONNX model wrapper for speech recognition
 - **`src/TextMatcher.py`**: Text processing and filtering logic
-- **`src/OutputHandlers.py`**: Console output for final and partial results
+- **`src/TwoStageDisplayHandler.py`**: Console output for final and partial results
 
 ### Threading Model
 

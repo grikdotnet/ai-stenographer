@@ -18,16 +18,18 @@ class TextMatcher:
     """
 
     def __init__(self, text_queue: queue.Queue,
-                 final_queue: queue.Queue, partial_queue: queue.Queue):
+                 final_queue: queue.Queue, partial_queue: queue.Queue, verbose: bool = False):
         self.text_queue: queue.Queue = text_queue
         self.final_queue: queue.Queue = final_queue
         self.partial_queue: queue.Queue = partial_queue
         self.is_running: bool = False
         self.thread: Optional[threading.Thread] = None
+        self.verbose: bool = verbose
 
         # State for matching
         self.previous_text: str = ""
         self.finalized_text: str = ""
+        self.previous_text_timestamp: float = 0.0
         
 
     def find_word_overlap(self, words1: list[str], words2: list[str]) -> tuple[int, int, int]:
@@ -110,6 +112,10 @@ class TextMatcher:
         current_text: str = text_data['text']
         is_silence: bool = text_data.get('is_silence', False)
 
+        if self.verbose:
+            print(f"process_text() current_text: received '{current_text}'")
+            print(f"process_text() previous_text: '{self.previous_text}'")
+
         # Handle silence signal - finalize any remaining partial text
         if is_silence:
             if self.previous_text:
@@ -117,9 +123,24 @@ class TextMatcher:
                     'text': self.previous_text,
                     'timestamp': text_data['timestamp']
                 }
+                if self.verbose:
+                    print(f"sending to final_queue: {final_data}")
                 self.final_queue.put(final_data)
             # Reset state for new phrase after silence
             self.previous_text = ""
+            self.previous_text_timestamp = 0.0
+            return
+
+        # Handle identical text from overlapping windows (common case)
+        # Only skip if text is identical AND timestamps are very close (< 1 second apart)
+        # This prevents false positives when user says the same word multiple times
+        if (self.previous_text and current_text == self.previous_text and
+            self.previous_text_timestamp > 0 and
+            abs(text_data['timestamp'] - self.previous_text_timestamp) < 1.0):
+            if self.verbose:
+                time_diff = abs(text_data['timestamp'] - self.previous_text_timestamp)
+                print(f"process_text() identical text within {time_diff:.3f}s detected, skipping: '{current_text}'")
+            # Skip identical text - it's likely from overlapping windows
             return
 
         # Process windows in pairs using the new overlap resolution algorithm
@@ -137,6 +158,8 @@ class TextMatcher:
                         'text': finalized_text,
                         'timestamp': text_data['timestamp']
                     }
+                    if self.verbose:
+                        print(f"sending to final_queue: {final_data}")
                     self.final_queue.put(final_data)
 
                 # Queue remaining part as partial
@@ -145,10 +168,13 @@ class TextMatcher:
                         'text': remaining_window[0],
                         'timestamp': remaining_window[1]
                     }
+                    if self.verbose:
+                        print(f"sending to partial_queue: {partial_data}")
                     self.partial_queue.put(partial_data)
 
                 # Update state with remaining window text
                 self.previous_text = remaining_window[0]
+                self.previous_text_timestamp = text_data['timestamp']
 
             except Exception:
                 # No overlap found - finalize previous and start new
@@ -156,6 +182,8 @@ class TextMatcher:
                     'text': self.previous_text,
                     'timestamp': text_data['timestamp']
                 }
+                if self.verbose:
+                    print(f"sending to final_queue: {final_data}")
                 self.final_queue.put(final_data)
 
                 # Current text becomes partial
@@ -163,17 +191,23 @@ class TextMatcher:
                     'text': current_text,
                     'timestamp': text_data['timestamp']
                 }
+                if self.verbose:
+                    print(f"sending to partial_queue: {partial_data}")
                 self.partial_queue.put(partial_data)
 
                 self.previous_text = current_text
+                self.previous_text_timestamp = text_data['timestamp']
         else:
             # First text - all partial
             partial_data: Dict[str, Union[str, float]] = {
                 'text': current_text,
                 'timestamp': text_data['timestamp']
             }
+            if self.verbose:
+                print(f"sending to partial_queue: {partial_data}")
             self.partial_queue.put(partial_data)
             self.previous_text = current_text
+            self.previous_text_timestamp = text_data['timestamp']
 
     def process(self) -> None:
         """Read texts from queue and process them continuously.

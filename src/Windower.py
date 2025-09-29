@@ -20,11 +20,12 @@ class Windower:
         sample_rate: Audio sample rate in Hz
     """
 
-    def __init__(self, chunk_queue: queue.Queue, 
+    def __init__(self, chunk_queue: queue.Queue,
                  window_queue: queue.Queue,
-                 window_duration: float = 2.0, 
-                 step_duration: float = 0.5, 
-                 sample_rate: int = 16000
+                 window_duration: float = 2.0,
+                 step_duration: float = 0.5,
+                 sample_rate: int = 16000,
+                 verbose: bool = False
                  ):
         self.chunk_queue: queue.Queue = chunk_queue
         self.window_queue: queue.Queue = window_queue
@@ -34,6 +35,10 @@ class Windower:
         self.buffer: np.ndarray = np.array([], dtype=np.float32)
         self.is_running: bool = False
         self.thread: Optional[threading.Thread] = None
+        self.verbose: bool = verbose
+
+        # Track chunk IDs for each sample in the buffer
+        self.buffer_chunk_ids: list[int] = []
         
     def start(self) -> None:
         """Start processing chunks from queue in a background thread.
@@ -57,7 +62,7 @@ class Windower:
     def stop(self) -> None:
         self.is_running = False
 
-    def process_chunk(self, chunk_data: Dict[str, Union[np.ndarray, float]]) -> None:
+    def process_chunk(self, chunk_data: Dict[str, Union[np.ndarray, float, int]]) -> None:
         """Process a single chunk and create windows when buffer has enough data.
 
         Accumulates the chunk in an internal buffer and creates overlapping
@@ -66,28 +71,47 @@ class Windower:
         The buffer size is managed to prevent unbounded memory growth.
 
         Args:
-            chunk_data: Dictionary containing 'data' (numpy array), 'timestamp', etc.
+            chunk_data: Dictionary containing 'data' (numpy array), 'timestamp', 'chunk_id', etc.
         """
         chunk: np.ndarray = chunk_data['data']
+        chunk_id: int = chunk_data['chunk_id']
 
         # Accumulate chunk in buffer
         self.buffer = np.concatenate([self.buffer, chunk])
+
+        # Track chunk ID for each sample in this chunk
+        chunk_ids_for_samples = [chunk_id] * len(chunk)
+        self.buffer_chunk_ids.extend(chunk_ids_for_samples)
 
         # Create windows when buffer has sufficient data
         while len(self.buffer) >= self.window_size:
             window: np.ndarray = self.buffer[:self.window_size]
 
-            window_data: Dict[str, Union[np.ndarray, float]] = {
+            # Extract chunk IDs for this window
+            window_chunk_ids = self.buffer_chunk_ids[:self.window_size]
+            unique_chunk_ids = list(set(window_chunk_ids))
+            unique_chunk_ids.sort()
+
+            window_data: Dict[str, Union[np.ndarray, float, list]] = {
                 'data': window.copy(),
                 'timestamp': chunk_data['timestamp'],
-                'duration': self.window_size / self.sample_rate
+                'duration': self.window_size / self.sample_rate,
+                'chunk_ids': unique_chunk_ids
             }
+
+            if self.verbose:
+                # Create simple audio fingerprint for duplicate detection
+                window_hash = hash((len(window), window[0] if len(window) > 0 else 0, window[-1] if len(window) > 0 else 0))
+                print(f"windower(): creating window, timestamp={chunk_data['timestamp']:.3f}, len={len(window)}, hash={window_hash}, chunk_ids={unique_chunk_ids}")
+
             self.window_queue.put(window_data)
 
             # Advance buffer by step size for overlap
             self.buffer = self.buffer[self.step_size:]
+            self.buffer_chunk_ids = self.buffer_chunk_ids[self.step_size:]
 
         # Limit buffer growth to prevent memory issues
         max_buffer_size: int = self.window_size + self.step_size
         if len(self.buffer) > max_buffer_size:
             self.buffer = self.buffer[-max_buffer_size:]
+            self.buffer_chunk_ids = self.buffer_chunk_ids[-max_buffer_size:]

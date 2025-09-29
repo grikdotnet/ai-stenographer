@@ -6,7 +6,7 @@ from typing import Tuple
 def create_stt_window() -> Tuple[tk.Tk, scrolledtext.ScrolledText]:
     """Creates and returns a configured tkinter window with text widget for STT display."""
     root = tk.Tk()
-    root.title("Speech-to-Text - Two Stage Display")
+    root.title("Speech-to-Text Display")
     root.geometry("800x600")
 
     # Create main frame

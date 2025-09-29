@@ -24,6 +24,7 @@ class AudioSource:
         self.chunk_size: int = int(sample_rate * chunk_duration)
         self.is_running: bool = False
         self.stream: Optional[sd.InputStream] = None
+        self.chunk_id_counter: int = 0
 
     def audio_callback(self, indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
         """Callback from sounddevice that processes incoming audio data.
@@ -43,9 +44,11 @@ class AudioSource:
         
         # Convert int16 to float32 and put in queue
         audio_float: np.ndarray = indata[:, 0].astype(np.float32)
+        self.chunk_id_counter += 1
         chunk_data: Dict[str, Any] = {
             'data': audio_float.copy(),
-            'timestamp': time.time()
+            'timestamp': time.time(),
+            'chunk_id': self.chunk_id_counter
         }
         self.chunk_queue.put(chunk_data)
 
