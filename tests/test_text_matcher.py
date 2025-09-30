@@ -3,12 +3,18 @@ import unittest
 import queue
 import sys
 import os
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 # Add the parent directory to the path so we can import src modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+# Mock sounddevice before importing src modules
+sys.modules['sounddevice'] = MagicMock()
+sys.modules['numpy'] = MagicMock()
+sys.modules['onnx_asr'] = MagicMock()
+
 from src.TextMatcher import TextMatcher
+from src.TextNormalizer import TextNormalizer
 
 class TestTextMatcher(unittest.TestCase):
     """Test that TextMatcher correctly handles overlapping speech recognition results"""
@@ -28,7 +34,7 @@ class TestTextMatcher(unittest.TestCase):
             # (window1, window2, expected_finalized, expected_remaining, description)
             (
                 ("one two three four five six", 1.0), ("or five six seven", 2.0),
-                "one two three four five six", "seven", 
+                "one two three four five six", "seven",
                 "Handle 'four' -> 'or' corruption"
             ),(
                 ("the weather is nice today", 1.0), ("ether is nice today folks", 2.0),
@@ -48,6 +54,166 @@ class TestTextMatcher(unittest.TestCase):
                     f"{description}: Expected finalized '{expected_final}', got '{finalized}'")
                 self.assertEqual(remaining[0], expected_remaining,
                     f"{description}: Expected remaining '{expected_remaining}', got '{remaining[0]}'")
+
+    def test_resolve_overlap_with_punctuation(self):
+        """Test resolve_overlap() handles punctuation variants correctly"""
+        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
+
+        # Test cases: punctuation should not prevent overlap detection
+        cases = [
+            # Real debug scenario from user's terminal output
+            (
+                ("Hello?", 1.0), ("Hello, how are you?", 2.0),
+                "Hello?", "how are you?",
+                "Question mark vs comma - real debug case"
+            ),
+            # Additional punctuation variants
+            (
+                ("world!", 1.0), ("world. today", 2.0),
+                "world!", "today",
+                "Exclamation vs period"
+            ),
+            (
+                ("one, two.", 1.0), ("two? three!", 2.0),
+                "one, two.", "three!",
+                "Multiple punctuation marks"
+            ),
+            (
+                ("hello world.", 1.0), ("world! how are", 2.0),
+                "hello world.", "how are",
+                "Period vs exclamation in middle"
+            ),
+            (
+                ("Good morning?", 1.0), ("Good morning! How", 2.0),
+                "Good morning?", "How",
+                "Two-word phrase with punctuation change"
+            ),
+        ]
+
+        for window1, window2, expected_final, expected_remaining, description in cases:
+            with self.subTest(window1=window1, window2=window2, desc=description):
+                finalized, remaining = text_matcher.resolve_overlap(window1, window2)
+                self.assertEqual(finalized, expected_final,
+                    f"{description}: Expected finalized '{expected_final}', got '{finalized}'")
+                self.assertEqual(remaining[0], expected_remaining,
+                    f"{description}: Expected remaining '{expected_remaining}', got '{remaining[0]}'")
+
+    def test_resolve_overlap_with_case_variations(self):
+        """Test resolve_overlap() handles case variations correctly"""
+        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
+
+        cases = [
+            # Case should not prevent overlap detection, but original case preserved in output
+            (
+                ("HELLO world", 1.0), ("hello World HOW", 2.0),
+                "HELLO world", "HOW",
+                "Mixed case overlap - preserve original case"
+            ),
+            (
+                ("The Quick", 1.0), ("the quick Brown", 2.0),
+                "The Quick", "Brown",
+                "Capitalization differences"
+            ),
+            (
+                ("ALL CAPS HERE", 1.0), ("all caps here now", 2.0),
+                "ALL CAPS HERE", "now",
+                "All caps vs lowercase"
+            ),
+        ]
+
+        for window1, window2, expected_final, expected_remaining, description in cases:
+            with self.subTest(window1=window1, window2=window2, desc=description):
+                finalized, remaining = text_matcher.resolve_overlap(window1, window2)
+                self.assertEqual(finalized, expected_final,
+                    f"{description}: Expected finalized '{expected_final}', got '{finalized}'")
+                self.assertEqual(remaining[0], expected_remaining,
+                    f"{description}: Expected remaining '{expected_remaining}', got '{remaining[0]}'")
+
+    def test_resolve_overlap_with_unicode(self):
+        """Test resolve_overlap() handles Unicode and accented characters"""
+        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
+
+        cases = [
+            # Accented characters should normalize for comparison
+            (
+                ("café here", 1.0), ("cafe here today", 2.0),
+                "café here", "today",
+                "Accented vs non-accented"
+            ),
+            # German ß normalization
+            (
+                ("Straße gut", 1.0), ("strasse gut morgen", 2.0),
+                "Straße gut", "morgen",
+                "German ß vs ss"
+            ),
+            # Russian ё normalization
+            (
+                ("чёрный кот", 1.0), ("черный кот бежит", 2.0),
+                "чёрный кот", "бежит",
+                "Russian ё vs е"
+            ),
+        ]
+
+        for window1, window2, expected_final, expected_remaining, description in cases:
+            with self.subTest(window1=window1, window2=window2, desc=description):
+                finalized, remaining = text_matcher.resolve_overlap(window1, window2)
+                self.assertEqual(finalized, expected_final,
+                    f"{description}: Expected finalized '{expected_final}', got '{finalized}'")
+                self.assertEqual(remaining[0], expected_remaining,
+                    f"{description}: Expected remaining '{expected_remaining}', got '{remaining[0]}'")
+
+    def test_resolve_overlap_edge_cases(self):
+        """Test resolve_overlap() edge cases"""
+        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
+
+        # No overlap - should raise exception
+        with self.assertRaises(Exception) as context:
+            text_matcher.resolve_overlap(
+                ("completely different", 1.0),
+                ("nothing matches here", 2.0)
+            )
+        self.assertIn("No overlap", str(context.exception))
+
+        # Single word windows
+        finalized, remaining = text_matcher.resolve_overlap(
+            ("hello", 1.0),
+            ("hello world", 2.0)
+        )
+        self.assertEqual(finalized, "hello")
+        self.assertEqual(remaining[0], "world")
+
+        # Complete overlap (window2 subset of window1)
+        finalized, remaining = text_matcher.resolve_overlap(
+            ("one two three", 1.0),
+            ("two three", 2.0)
+        )
+        self.assertEqual(finalized, "one two three")
+        self.assertEqual(remaining[0], "")
+
+        # Overlap with extra whitespace
+        # Note: split() normalizes whitespace, so "hello  world" becomes ["hello", "world"]
+        # and rejoining with single spaces produces "hello world"
+        finalized, remaining = text_matcher.resolve_overlap(
+            ("hello  world", 1.0),
+            ("world   today", 2.0)
+        )
+        # Whitespace is normalized by split() and rejoin
+        self.assertEqual(finalized, "hello world")
+        self.assertEqual(remaining[0], "today")
+
+    def test_resolve_overlap_preserves_original_text(self):
+        """Test that resolve_overlap() preserves original text formatting in output"""
+        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
+
+        # Original text should be preserved (case, punctuation)
+        finalized, remaining = text_matcher.resolve_overlap(
+            ("HELLO, World!", 1.0),
+            ("hello world? Today.", 2.0)
+        )
+
+        # Should preserve original case and punctuation from input windows
+        self.assertEqual(finalized, "HELLO, World!")
+        self.assertEqual(remaining[0], "Today.")
 
     def test_process_first_text(self):
         """Test processing the very first text (no previous text)"""

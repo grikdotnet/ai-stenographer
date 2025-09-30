@@ -2,6 +2,7 @@
 import queue
 import threading
 from typing import Dict, Any, Optional, Union
+from .TextNormalizer import TextNormalizer
 
 class TextMatcher:
     """Matches overlapping speech recognition results from sliding windows.
@@ -18,7 +19,12 @@ class TextMatcher:
     """
 
     def __init__(self, text_queue: queue.Queue,
-                 final_queue: queue.Queue, partial_queue: queue.Queue, verbose: bool = False):
+                 final_queue: queue.Queue,
+                 partial_queue: queue.Queue,
+                 text_normalizer: Optional[TextNormalizer] = None,
+                 time_threshold: float = 0.6,
+                 verbose: bool = False
+                 ) -> None:
         self.text_queue: queue.Queue = text_queue
         self.final_queue: queue.Queue = final_queue
         self.partial_queue: queue.Queue = partial_queue
@@ -26,11 +32,14 @@ class TextMatcher:
         self.thread: Optional[threading.Thread] = None
         self.verbose: bool = verbose
 
+        # Enhanced duplicate detection parameters
+        self.text_normalizer: TextNormalizer = text_normalizer if text_normalizer is not None else TextNormalizer()
+        self.time_threshold: float = time_threshold
+
         # State for matching
         self.previous_text: str = ""
         self.finalized_text: str = ""
         self.previous_text_timestamp: float = 0.0
-        
 
     def find_word_overlap(self, words1: list[str], words2: list[str]) -> tuple[int, int, int]:
         """Find longest overlapping word sequence between two word lists.
@@ -67,6 +76,9 @@ class TextMatcher:
     def resolve_overlap(self, window1: tuple[str, float], window2: tuple[str, float]) -> tuple[str, tuple[str, float]]:
         """Resolve overlap between two recognition windows.
 
+        Uses text normalization to find overlaps even when punctuation or case differs,
+        while preserving the original text formatting in the output.
+
         Args:
             window1: (text_string, timestamp) for first window
             window2: (text_string, timestamp) for second window
@@ -79,20 +91,27 @@ class TextMatcher:
         Raises:
             Exception: if no overlap found between windows
         """
+        # Split into original words (preserve original formatting)
         words1: list[str] = window1[0].split()
         words2: list[str] = window2[0].split()
 
-        # Find longest common subsequence of words
-        common_start_idx1, common_start_idx2, common_length = self.find_word_overlap(words1, words2)
+        # Normalize words for comparison (strip punctuation, lowercase, etc.)
+        normalized_words1: list[str] = [self.text_normalizer.normalize_text(word) for word in words1]
+        normalized_words2: list[str] = [self.text_normalizer.normalize_text(word) for word in words2]
+
+        # Find longest common subsequence using normalized words
+        common_start_idx1, common_start_idx2, common_length = self.find_word_overlap(
+            normalized_words1, normalized_words2
+        )
 
         if common_length == 0:
             raise Exception("No overlap found between windows")
 
-        # Extract finalized part (start of window1 + common part)
+        # Extract finalized part using original words (preserve formatting)
         finalized_words: list[str] = words1[:common_start_idx1 + common_length]
         finalized_text: str = " ".join(finalized_words)
 
-        # Prepare remaining window (part of window2 after common part)
+        # Prepare remaining window using original words (preserve formatting)
         remaining_start_idx: int = common_start_idx2 + common_length
         remaining_words: list[str] = words2[remaining_start_idx:]
         remaining_text: str = " ".join(remaining_words)
@@ -113,8 +132,8 @@ class TextMatcher:
         is_silence: bool = text_data.get('is_silence', False)
 
         if self.verbose:
-            print(f"process_text() current_text: received '{current_text}'")
-            print(f"process_text() previous_text: '{self.previous_text}'")
+            print(f"TextMatcher.process_text() current_text: received '{current_text}'")
+            print(f"TextMatcher.process_text() previous_text: '{self.previous_text}'")
 
         # Handle silence signal - finalize any remaining partial text
         if is_silence:
@@ -131,17 +150,23 @@ class TextMatcher:
             self.previous_text_timestamp = 0.0
             return
 
-        # Handle identical text from overlapping windows (common case)
-        # Only skip if text is identical AND timestamps are very close (< 1 second apart)
-        # This prevents false positives when user says the same word multiple times
-        if (self.previous_text and current_text == self.previous_text and
-            self.previous_text_timestamp > 0 and
-            abs(text_data['timestamp'] - self.previous_text_timestamp) < 1.0):
-            if self.verbose:
-                time_diff = abs(text_data['timestamp'] - self.previous_text_timestamp)
-                print(f"process_text() identical text within {time_diff:.3f}s detected, skipping: '{current_text}'")
-            # Skip identical text - it's likely from overlapping windows
-            return
+        # Enhanced duplicate detection using text normalization
+        # This handles punctuation variants ("Hello." vs "Hello?") while preventing
+        # false positives when user says the same word multiple times
+        if self.previous_text and self.previous_text_timestamp > 0:
+            # Normalize both texts for comparison
+            current_normalized = self.text_normalizer.normalize_text(current_text)
+            previous_normalized = self.text_normalizer.normalize_text(self.previous_text)
+            time_diff = abs(text_data['timestamp'] - self.previous_text_timestamp)
+
+            if (current_normalized == previous_normalized and
+                time_diff < self.time_threshold):
+                if self.verbose:
+                    print(f"TextMatcher.process_text() duplicate within {time_diff:.3f}s detected, skipping: '{current_text}'")
+                    print(f"  Original: '{self.previous_text}' → Normalized: '{previous_normalized}'")
+                    print(f"  Current: '{current_text}' → Normalized: '{current_normalized}'")
+                # Skip normalized duplicate - it's likely from overlapping windows
+                return
 
         # Process windows in pairs using the new overlap resolution algorithm
         if self.previous_text:
@@ -159,7 +184,7 @@ class TextMatcher:
                         'timestamp': text_data['timestamp']
                     }
                     if self.verbose:
-                        print(f"sending to final_queue: {final_data}")
+                        print(f"TextMatcher: sending to final_queue: {final_data}")
                     self.final_queue.put(final_data)
 
                 # Queue remaining part as partial
@@ -169,7 +194,7 @@ class TextMatcher:
                         'timestamp': remaining_window[1]
                     }
                     if self.verbose:
-                        print(f"sending to partial_queue: {partial_data}")
+                        print(f"TextMatcher: sending to partial_queue: {partial_data}")
                     self.partial_queue.put(partial_data)
 
                 # Update state with remaining window text
@@ -183,7 +208,7 @@ class TextMatcher:
                     'timestamp': text_data['timestamp']
                 }
                 if self.verbose:
-                    print(f"sending to final_queue: {final_data}")
+                    print(f"TextMatcher: sending to final_queue: {final_data}")
                 self.final_queue.put(final_data)
 
                 # Current text becomes partial
@@ -192,7 +217,7 @@ class TextMatcher:
                     'timestamp': text_data['timestamp']
                 }
                 if self.verbose:
-                    print(f"sending to partial_queue: {partial_data}")
+                    print(f"TextMatcher: sending to partial_queue: {partial_data}")
                 self.partial_queue.put(partial_data)
 
                 self.previous_text = current_text
