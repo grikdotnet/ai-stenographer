@@ -16,8 +16,9 @@ Create dockblocks to describe logic and algorithms. Avoid commenting separate op
 
 Define types of parameters and return if possible.
 
-Never praise, avoid writing "you are right", and that everything works.
-When the task is complete, evaluate what may be wrong with the solution, offer what to check.
+Instead of writing "You're absolutely correct" or similar, write just "OK" or "Good".
+Instead of claiming that everything works evaluate what may be wrong, and offer what to check.
+In git commit mesages instead of adding "🤖 Generated with [Claude Code](https://claude.com/claude-code)" put a joke like "Maybe something else, but I can't remember".
 
 ## Project Overview
 

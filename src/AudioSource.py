@@ -18,7 +18,7 @@ class AudioSource:
         chunk_duration: Duration of each audio chunk in seconds
     """
 
-    def __init__(self, chunk_queue: queue.Queue, sample_rate: int = 16000, chunk_duration: float = 0.1):
+    def __init__(self, chunk_queue: queue.Queue, sample_rate: int = 16000, chunk_duration: float = 0.5):
         self.chunk_queue: queue.Queue = chunk_queue
         self.sample_rate: int = sample_rate
         self.chunk_size: int = int(sample_rate * chunk_duration)

@@ -23,7 +23,7 @@ class Recognizer:
     def __init__(self, window_queue: queue.Queue,
                  text_queue: queue.Queue,
                  model: Any,
-                 silence_timeout: float = 0.2,
+                 silence_timeout: float = 1.5,
                  verbose: bool = False
                  ):
         self.window_queue: queue.Queue = window_queue
@@ -56,9 +56,8 @@ class Recognizer:
 
         if self.verbose:
             # Create a simple audio fingerprint (hash of first/last samples and length)
-            audio_hash = hash((len(audio), audio[0] if len(audio) > 0 else 0, audio[-1] if len(audio) > 0 else 0))
             chunk_ids = window_data.get('chunk_ids', [])
-            print(f"recognize(): window_timestamp={window_data['timestamp']:.3f}, audio_len={len(audio)}, audio_hash={audio_hash}, chunk_ids={chunk_ids}")
+            print(f"recognize(): chunk_ids={chunk_ids}")
             print(f"recognize(): text: '{text}'")
 
         if text.strip():

@@ -22,8 +22,8 @@ class Windower:
 
     def __init__(self, chunk_queue: queue.Queue,
                  window_queue: queue.Queue,
-                 window_duration: float = 2.0,
-                 step_duration: float = 0.5,
+                 window_duration: float,
+                 step_duration: float,
                  sample_rate: int = 16000,
                  verbose: bool = False
                  ):
@@ -101,8 +101,7 @@ class Windower:
 
             if self.verbose:
                 # Create simple audio fingerprint for duplicate detection
-                window_hash = hash((len(window), window[0] if len(window) > 0 else 0, window[-1] if len(window) > 0 else 0))
-                print(f"windower(): creating window, timestamp={chunk_data['timestamp']:.3f}, len={len(window)}, hash={window_hash}, chunk_ids={unique_chunk_ids}")
+                print(f"windower(): creating, chunk_ids={unique_chunk_ids}")
 
             self.window_queue.put(window_data)
 
@@ -114,4 +113,3 @@ class Windower:
         max_buffer_size: int = self.window_size + self.step_size
         if len(self.buffer) > max_buffer_size:
             self.buffer = self.buffer[-max_buffer_size:]
-            self.buffer_chunk_ids = self.buffer_chunk_ids[-max_buffer_size:]
