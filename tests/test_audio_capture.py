@@ -8,6 +8,9 @@ from unittest.mock import patch, MagicMock
 # Add the parent directory to the path so we can import src modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
+# Import numpy for real (needed for tests)
+import numpy as np
+
 from src.AudioSource import AudioSource
 from tests.audio_fixture import MockAudioStream
 
@@ -22,8 +25,9 @@ class TestAudioCapture(unittest.TestCase):
 
     def test_voice_capture_to_chunk_queue(self):
         """Test that audio is captured and chunks are added to queue"""
-        # Create mock audio stream with test data
-        mock_stream = MockAudioStream(duration=1.0, sample_rate=16000, chunk_duration=0.1)
+        # AudioSource now uses chunk_duration=0.5 by default
+        # Create mock audio stream with test data matching the default
+        mock_stream = MockAudioStream(duration=1.0, sample_rate=16000, chunk_duration=0.5)
 
         # Mock sounddevice.InputStream to prevent actual microphone access
         with patch('src.AudioSource.sd.InputStream') as mock_input_stream:
@@ -39,7 +43,7 @@ class TestAudioCapture(unittest.TestCase):
                 samplerate=16000,
                 channels=1,
                 callback=self.audio_source.audio_callback,
-                blocksize=1600  # 16000 * 0.1
+                blocksize=8000  # 16000 * 0.5 (default chunk_duration)
             )
 
             # Verify stream.start() was called
@@ -63,8 +67,8 @@ class TestAudioCapture(unittest.TestCase):
             chunks.append(chunk)
             chunk_count += 1
 
-        # Should have exactly 10 chunks (1 second of audio at 0.1s chunks = 10 chunks)
-        self.assertEqual(chunk_count, 10, f"Expected exactly 10 chunks, got {chunk_count}")
+        # Should have exactly 2 chunks (1 second of audio at 0.5s chunks = 2 chunks)
+        self.assertEqual(chunk_count, 2, f"Expected exactly 2 chunks, got {chunk_count}")
 
         # Verify chunk structure
         for i, chunk in enumerate(chunks):
@@ -73,18 +77,16 @@ class TestAudioCapture(unittest.TestCase):
 
             # Verify data is numpy array with correct properties
             chunk_data = chunk['data']
-            self.assertEqual(len(chunk_data), 1600, f"Chunk {i} has wrong size: {len(chunk_data)}")
+            self.assertEqual(len(chunk_data), 8000, f"Chunk {i} has wrong size: {len(chunk_data)}")
             self.assertEqual(chunk_data.dtype.name, 'float32', f"Chunk {i} has wrong dtype: {chunk_data.dtype}")
 
             self.assertIsInstance(chunk['timestamp'], float, f"Chunk {i} timestamp not a float")
 
     def test_audio_callback_with_voice_data(self):
         """Test the audio callback directly with voice-like data (no microphone needed)"""
-        import numpy as np
-
         # Create synthetic voice data (sine wave)
         sample_rate = 16000
-        duration = 0.1  # 100ms chunk
+        duration = 0.5  # 500ms chunk (matches default chunk_duration)
         t = np.linspace(0, duration, int(sample_rate * duration))
         voice_data = np.sin(2 * np.pi * 440 * t) * 0.5  # 440Hz tone at half amplitude
 

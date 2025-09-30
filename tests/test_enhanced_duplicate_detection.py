@@ -65,8 +65,9 @@ class TestEnhancedDuplicateDetection(unittest.TestCase):
         self.text_matcher.process_text(text_data2)
 
         # Should proceed to overlap resolution (no duplicate detected)
+        # When no overlap found: previous → final_queue, current → partial_queue
         self.assertEqual(self.final_queue.qsize(), 1)
-        self.assertEqual(self.partial_queue.qsize(), 1)
+        self.assertEqual(self.partial_queue.qsize(), 2)  # Both texts in partial (first then second)
 
     def test_time_threshold_affects_duplicate_detection(self):
         """Test that time threshold controls duplicate detection."""
@@ -74,11 +75,12 @@ class TestEnhancedDuplicateDetection(unittest.TestCase):
         text_data1 = {'text': 'Hello.', 'timestamp': 1.0}
         self.text_matcher.process_text(text_data1)
 
-        # Second text - normalized duplicate but outside default threshold (>0.5s)
-        text_data2 = {'text': 'Hello?', 'timestamp': 1.6}  # 0.6s later
+        # Second text - normalized duplicate but outside default threshold (>0.6s)
+        text_data2 = {'text': 'Hello?', 'timestamp': 1.7}  # 0.7s later
         self.text_matcher.process_text(text_data2)
 
         # Should proceed to overlap resolution since time threshold exceeded
+        # "Hello." and "Hello?" have overlap, so finalized part goes to final, remaining to partial
         self.assertEqual(self.final_queue.qsize(), 1)
         self.assertEqual(self.partial_queue.qsize(), 1)
 

@@ -37,7 +37,8 @@ class TestWindower(unittest.TestCase):
             chunk_data = np.full(chunk_size, i * 0.1, dtype=np.float32)
             chunks.append({
                 'data': chunk_data,
-                'timestamp': time.time() + i * 0.1
+                'timestamp': time.time() + i * 0.1,
+                'chunk_id': i
             })
 
         # Process each chunk individually (this is how Windower should work)
@@ -84,16 +85,16 @@ class TestWindower(unittest.TestCase):
         chunk_size = 1600  # 100ms chunks
 
         # Add first chunk - should not create window yet
-        chunk1 = {'data': np.full(chunk_size, 0.1, dtype=np.float32), 'timestamp': time.time()}
+        chunk1 = {'data': np.full(chunk_size, 0.1, dtype=np.float32), 'timestamp': time.time(), 'chunk_id': 0}
         windower.process_chunk(chunk1)
         self.assertTrue(self.window_queue.empty(), "Window created too early with insufficient data")
 
         # Add second chunk - still not enough
-        chunk2 = {'data': np.full(chunk_size, 0.2, dtype=np.float32), 'timestamp': time.time() + 0.1}
+        chunk2 = {'data': np.full(chunk_size, 0.2, dtype=np.float32), 'timestamp': time.time() + 0.1, 'chunk_id': 1}
         windower.process_chunk(chunk2)
 
         # Add third chunk - now should create first window
-        chunk3 = {'data': np.full(chunk_size, 0.3, dtype=np.float32), 'timestamp': time.time() + 0.2}
+        chunk3 = {'data': np.full(chunk_size, 0.3, dtype=np.float32), 'timestamp': time.time() + 0.2, 'chunk_id': 2}
         windower.process_chunk(chunk3)
         self.assertFalse(self.window_queue.empty(), "Window should be created after accumulating enough data")
 
@@ -130,7 +131,8 @@ class TestWindower(unittest.TestCase):
             chunk_data = chunk_data.astype(np.float32)
             chunks.append({
                 'data': chunk_data,
-                'timestamp': time.time() + i * 0.1
+                'timestamp': time.time() + i * 0.1,
+                'chunk_id': i
             })
 
         # Process each chunk using the actual Windower method
@@ -179,7 +181,8 @@ class TestWindower(unittest.TestCase):
             chunk_data = np.full(chunk_size, i, dtype=np.float32)
             chunks.append({
                 'data': chunk_data,
-                'timestamp': time.time() + i * 0.1
+                'timestamp': time.time() + i * 0.1,
+                'chunk_id': i
             })
 
         # Process all chunks using the actual Windower method

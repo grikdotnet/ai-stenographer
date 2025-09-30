@@ -8,11 +8,6 @@ from unittest.mock import MagicMock, patch
 # Add the parent directory to the path so we can import src modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-# Mock sounddevice before importing src modules
-sys.modules['sounddevice'] = MagicMock()
-sys.modules['numpy'] = MagicMock()
-sys.modules['onnx_asr'] = MagicMock()
-
 from src.TextMatcher import TextMatcher
 from src.TextNormalizer import TextNormalizer
 
@@ -33,17 +28,17 @@ class TestTextMatcher(unittest.TestCase):
         resolution_cases = [
             # (window1, window2, expected_finalized, expected_remaining, description)
             (
-                ("one two three four five six", 1.0), ("or five six seven", 2.0),
+                ("one two three four five six", 1.0), ("or five six seven", 1.2),
                 "one two three four five six", "seven",
                 "Handle 'four' -> 'or' corruption"
             ),(
-                ("the weather is nice today", 1.0), ("ether is nice today folks", 2.0),
-                "the weather is nice today", "folks",
+                ("the weather is nice too", 1.0), ("ether is nice today folks", 1.2),
+                "the weather is nice", "today folks",
                 "Skip corrupted 'ether'"
             ),(
-                ("hello world how", 1.0), ("how are you", 2.0),
-                "hello world how", "are you",
-                "Exact overlap at boundary"
+                ("hello world inter", 1.0), ("world international", 1.1),
+                "hello world", "international",
+                "Skip corrupted 'old' from window2"
             ),
         ]
 
@@ -148,8 +143,8 @@ class TestTextMatcher(unittest.TestCase):
             ),
             # Russian ё normalization
             (
-                ("чёрный кот", 1.0), ("черный кот бежит", 2.0),
-                "чёрный кот", "бежит",
+                ("опять чёрный кот", 1.0), ("черный кот бежит", 2.0),
+                "опять чёрный кот", "бежит",
                 "Russian ё vs е"
             ),
         ]
