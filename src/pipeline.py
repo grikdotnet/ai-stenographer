@@ -2,7 +2,9 @@ import queue
 import signal
 import sys
 import onnx_asr
-from typing import List, Any
+import json
+from pathlib import Path
+from typing import List, Any, Dict
 import tkinter as tk
 from tkinter import scrolledtext
 
@@ -14,7 +16,10 @@ from .TwoStageDisplayHandler import TwoStageDisplayHandler
 from .GuiWindow import create_stt_window, run_gui_loop
 
 class STTPipeline:
-    def __init__(self, model_path: str = "./models/parakeet", verbose: bool = False, window_duration: float = 2.0, step_duration: float = 1.0) -> None:
+    def __init__(self, model_path: str = "./models/parakeet", verbose: bool = False, window_duration: float = 2.0, step_duration: float = 1.0, config_path: str = "./config/stt_config.json") -> None:
+        # Load configuration
+        self.config: Dict = self._load_config(config_path)
+
         # Create queues
         self.chunk_queue: queue.Queue = queue.Queue(maxsize=100)
         self.window_queue: queue.Queue = queue.Queue(maxsize=50)
@@ -31,7 +36,7 @@ class STTPipeline:
         self.root, self.text_widget = create_stt_window()
 
         # Create components with consistent parameters
-        self.audio_source: AudioSource = AudioSource(self.chunk_queue)
+        self.audio_source: AudioSource = AudioSource(self.chunk_queue, config=self.config)
         self.windower: Windower = Windower(self.chunk_queue, self.window_queue, window_duration=window_duration, step_duration=step_duration, verbose=verbose)
         self.recognizer: Recognizer = Recognizer(self.window_queue, self.text_queue, self.model, verbose=verbose)
         self.text_matcher: TextMatcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue, verbose=verbose)
@@ -42,7 +47,23 @@ class STTPipeline:
             self.audio_source, self.windower, self.recognizer,
             self.text_matcher, self.display_handler
         ]
-    
+
+    def _load_config(self, config_path: str) -> Dict:
+        """Load configuration from JSON file.
+
+        Args:
+            config_path: Path to stt_config.json
+
+        Returns:
+            Configuration dictionary
+        """
+        path = Path(config_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+
+        with open(path, 'r') as f:
+            return json.load(f)
+
     def start(self) -> None:
         print("Starting STT Pipeline...")
         for component in self.components:
