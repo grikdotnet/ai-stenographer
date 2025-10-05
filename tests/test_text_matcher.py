@@ -266,106 +266,47 @@ class TestTextMatcher(unittest.TestCase):
         self.assertEqual(partial_results[1]['text'], 'how are you do')    # Remaining after first overlap
         self.assertEqual(partial_results[2]['text'], 'doing great today') # Remaining after second overlap
 
-    def test_silence_window_finalizes_partial_text(self):
-        """Test that silence window finalizes remaining partial text"""
-        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
+    def test_finalize_pending_method(self):
+        """Test explicit finalize_pending() call finalizes partial text"""
+        text_matcher = TextMatcher(
+            self.text_queue,
+            self.final_queue,
+            self.partial_queue
+        )
 
         # Process some speech
         speech_text = {'text': 'hello world', 'timestamp': 1.0}
         text_matcher.process_text(speech_text)
 
-        # Verify it went to partial queue but not final
+        # Verify it went to partial queue only
         self.assertTrue(self.final_queue.empty())
         self.assertFalse(self.partial_queue.empty())
-        partial_result = self.partial_queue.get()
-        self.assertEqual(partial_result['text'], 'hello world')
+        partial = self.partial_queue.get()
+        self.assertEqual(partial['text'], 'hello world')
 
-        # Process silence signal - should finalize the partial text
-        silence_signal = {
-            'text': '',
-            'timestamp': 2.0,
-            'is_silence': True,
-            'window_duration': 0
-        }
-        text_matcher.process_text(silence_signal)
+        # Explicitly finalize
+        text_matcher.finalize_pending()
 
-        # Verify partial text was finalized
+        # Verify finalized
         self.assertFalse(self.final_queue.empty())
-        final_result = self.final_queue.get()
-        self.assertEqual(final_result['text'], 'hello world')
+        final = self.final_queue.get()
+        self.assertEqual(final['text'], 'hello world')
 
-        # Silence signal should not go to partial queue (empty text)
-        self.assertTrue(self.partial_queue.empty())
+        # State should be reset
+        self.assertEqual(text_matcher.previous_text, "")
 
-    def test_speech_after_silence_starts_new_phrase(self):
-        """Test that speech after silence starts a new phrase properly"""
-        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
+    def test_finalize_pending_when_empty(self):
+        """Test finalize_pending() with no pending text does nothing"""
+        text_matcher = TextMatcher(
+            self.text_queue,
+            self.final_queue,
+            self.partial_queue
+        )
 
-        # Process speech -> silence -> new speech sequence
-        texts = [
-            {'text': 'first phrase', 'timestamp': 1.0},
-            {'text': '', 'timestamp': 2.0, 'is_silence': True, 'window_duration': 0},
-            {'text': 'second phrase', 'timestamp': 3.0}
-        ]
+        # Call finalize with no pending text
+        text_matcher.finalize_pending()
 
-        for text_data in texts:
-            text_matcher.process_text(text_data)
-
-        # Should have finalized the first phrase
-        final_results = []
-        while not text_matcher.final_queue.empty():
-            final_results.append(text_matcher.final_queue.get())
-
-        self.assertEqual(len(final_results), 1)
-        self.assertEqual(final_results[0]['text'], 'first phrase')
-
-        # Should have new phrase as partial
-        partial_results = []
-        while not text_matcher.partial_queue.empty():
-            partial_results.append(text_matcher.partial_queue.get())
-
-        self.assertEqual(len(partial_results), 2)  # first phrase + new phrase
-        self.assertEqual(partial_results[0]['text'], 'first phrase')
-        self.assertEqual(partial_results[1]['text'], 'second phrase')
-
-    def test_multiple_speech_then_silence_pattern(self):
-        """Test overlapping speech followed by silence finalization"""
-        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
-
-        # Process overlapping speech then silence
-        texts = [
-            {'text': 'hello world how', 'timestamp': 1.0},
-            {'text': 'how are you', 'timestamp': 2.0},
-            {'text': '', 'timestamp': 3.0, 'is_silence': True, 'window_duration': 0}
-        ]
-
-        for text_data in texts:
-            text_matcher.process_text(text_data)
-
-        # Should have finalized overlapping parts + silence finalization
-        final_results = []
-        while not text_matcher.final_queue.empty():
-            final_results.append(text_matcher.final_queue.get())
-
-        # Should have: overlap finalization + silence finalization
-        self.assertEqual(len(final_results), 2)
-        self.assertEqual(final_results[0]['text'], 'hello world how')  # From overlap resolution
-        self.assertEqual(final_results[1]['text'], 'are you')          # From silence (remaining after overlap)
-
-    def test_silence_only_no_crash(self):
-        """Test that processing only silence doesn't cause issues"""
-        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
-
-        # Process silence as first input
-        silence_signal = {
-            'text': '',
-            'timestamp': 1.0,
-            'is_silence': True,
-            'window_duration': 0
-        }
-        text_matcher.process_text(silence_signal)
-
-        # Should not crash and queues should remain empty
+        # Should not crash, queues remain empty
         self.assertTrue(self.final_queue.empty())
         self.assertTrue(self.partial_queue.empty())
 

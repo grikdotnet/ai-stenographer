@@ -9,7 +9,7 @@ import tkinter as tk
 from tkinter import scrolledtext
 
 from .AudioSource import AudioSource
-from .Windower import Windower
+from .AdaptiveWindower import AdaptiveWindower
 from .Recognizer import Recognizer
 from .TextMatcher import TextMatcher
 from .TwoStageDisplayHandler import TwoStageDisplayHandler
@@ -20,9 +20,8 @@ class STTPipeline:
         # Load configuration
         self.config: Dict = self._load_config(config_path)
 
-        # Create queues
+        # Create queues - single chunk_queue for AudioSegments (preliminary and finalized)
         self.chunk_queue: queue.Queue = queue.Queue(maxsize=100)
-        self.window_queue: queue.Queue = queue.Queue(maxsize=50)
         self.text_queue: queue.Queue = queue.Queue(maxsize=50)
         self.final_queue: queue.Queue = queue.Queue(maxsize=50)
         self.partial_queue: queue.Queue = queue.Queue(maxsize=50)
@@ -35,16 +34,34 @@ class STTPipeline:
         self.text_widget: scrolledtext.ScrolledText
         self.root, self.text_widget = create_stt_window()
 
-        # Create components with consistent parameters
-        self.audio_source: AudioSource = AudioSource(self.chunk_queue, config=self.config)
-        self.windower: Windower = Windower(self.chunk_queue, self.window_queue, window_duration=window_duration, step_duration=step_duration, verbose=verbose)
-        self.recognizer: Recognizer = Recognizer(self.window_queue, self.text_queue, self.model, verbose=verbose)
+        # Create components with unified architecture
+        # AdaptiveWindower aggregates preliminary segments into finalized windows
+        self.adaptive_windower: AdaptiveWindower = AdaptiveWindower(
+            chunk_queue=self.chunk_queue,
+            config=self.config
+        )
+
+        # AudioSource emits preliminary segments and sends to windower
+        self.audio_source: AudioSource = AudioSource(
+            chunk_queue=self.chunk_queue,
+            windower=self.adaptive_windower,
+            config=self.config
+        )
+
+        # Recognizer processes both preliminary and finalized segments
+        self.recognizer: Recognizer = Recognizer(
+            chunk_queue=self.chunk_queue,
+            text_queue=self.text_queue,
+            model=self.model,
+            verbose=verbose
+        )
+
         self.text_matcher: TextMatcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue, verbose=verbose)
         self.display_handler: TwoStageDisplayHandler = TwoStageDisplayHandler(self.final_queue, self.partial_queue, self.text_widget, self.root)
 
-        # All components
+        # All components (AdaptiveWindower has no thread - called directly by AudioSource)
         self.components: List[Any] = [
-            self.audio_source, self.windower, self.recognizer,
+            self.audio_source, self.recognizer,
             self.text_matcher, self.display_handler
         ]
 
@@ -71,9 +88,29 @@ class STTPipeline:
         print("Pipeline running. Press Ctrl+C to stop.")
 
     def stop(self) -> None:
+        """Stop all pipeline components.
+
+        Stops components in proper order:
+        1. AudioSource (stop capturing audio)
+        2. Recognizer (stop processing audio)
+        3. TextMatcher finalization (flush pending text)
+        4. TextMatcher (stop processing)
+        5. DisplayHandler (stop displaying)
+        """
         print("\nStopping pipeline...")
-        for component in self.components:
-            component.stop()
+
+        # Stop audio capture and recognition
+        self.audio_source.stop()
+        self.recognizer.stop()
+
+        # Finalize any pending partial text before stopping TextMatcher
+        print("Finalizing pending text...")
+        self.text_matcher.finalize_pending()
+
+        # Stop text processing and display
+        self.text_matcher.stop()
+        self.display_handler.stop()
+
         print("Pipeline stopped.")
 
     def run(self) -> None:

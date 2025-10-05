@@ -125,30 +125,17 @@ class TextMatcher:
         by finding reliable common subsequences and finalizing the reliable parts
         while discarding boundary errors.
 
+        Note: Does not handle silence signals. Use finalize_pending() to
+        explicitly finalize remaining partial text.
+
         Args:
-            text_data: Dictionary containing 'text', 'timestamp', and optionally 'is_silence'
+            text_data: Dictionary containing 'text' and 'timestamp'
         """
         current_text: str = text_data['text']
-        is_silence: bool = text_data.get('is_silence', False)
 
         if self.verbose:
             print(f"TextMatcher.process_text() current_text: received '{current_text}'")
             print(f"TextMatcher.process_text() previous_text: '{self.previous_text}'")
-
-        # Handle silence signal - finalize any remaining partial text
-        if is_silence:
-            if self.previous_text:
-                final_data: Dict[str, Union[str, float]] = {
-                    'text': self.previous_text,
-                    'timestamp': text_data['timestamp']
-                }
-                if self.verbose:
-                    print(f"sending to final_queue: {final_data}")
-                self.final_queue.put(final_data)
-            # Reset state for new phrase after silence
-            self.previous_text = ""
-            self.previous_text_timestamp = 0.0
-            return
 
         # Enhanced duplicate detection using text normalization
         # This handles punctuation variants ("Hello." vs "Hello?") while preventing
@@ -257,6 +244,27 @@ class TextMatcher:
         self.is_running = True
         self.thread = threading.Thread(target=self.process, daemon=True)
         self.thread.start()
+
+    def finalize_pending(self) -> None:
+        """Finalize any remaining partial text.
+
+        Called explicitly by Pipeline.stop() or external observers
+        to flush pending partial text to final queue.
+
+        This implements explicit finalization control, allowing
+        external components to trigger finalization without
+        TextMatcher managing its own timeout logic (SRP).
+        """
+        if self.previous_text:
+            final_data: Dict[str, Union[str, float]] = {
+                'text': self.previous_text,
+                'timestamp': self.previous_text_timestamp
+            }
+            if self.verbose:
+                print(f"TextMatcher.finalize_pending(): {final_data}")
+            self.final_queue.put(final_data)
+            self.previous_text = ""
+            self.previous_text_timestamp = 0.0
 
     def stop(self) -> None:
         """Stop the background processing thread.
