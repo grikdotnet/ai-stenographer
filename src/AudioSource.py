@@ -1,10 +1,15 @@
 # src/AudioSource.py
+from __future__ import annotations
 import sounddevice as sd
 import queue
 import numpy as np
 import time
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, TYPE_CHECKING
 from src.VoiceActivityDetector import VoiceActivityDetector
+from src.types import AudioSegment
+
+if TYPE_CHECKING:
+    from src.AdaptiveWindower import AdaptiveWindower
 
 class AudioSource:
     """Captures audio from microphone and processes through VAD.
@@ -14,13 +19,15 @@ class AudioSource:
     speech segments to chunk_queue.
 
     Args:
-        chunk_queue: Queue to receive VAD segments
+        chunk_queue: Queue to receive AudioSegment instances (preliminary segments)
+        windower: AdaptiveWindower instance to aggregate segments into windows
         config: Configuration dictionary loaded from stt_config.json (required)
         emit_silence: Whether to emit silence markers
     """
 
     def __init__(self,
                  chunk_queue: queue.Queue,
+                 windower: Optional[AdaptiveWindower] = None,
                  config: Optional[Dict[str, Any]] = None,
                  emit_silence: bool = False):
 
@@ -28,6 +35,7 @@ class AudioSource:
             raise ValueError("config is required - must be loaded from stt_config.json")
 
         self.chunk_queue: queue.Queue = chunk_queue
+        self.windower: Optional[AdaptiveWindower] = windower
 
         # Extract values from config
         self.sample_rate: int = config['audio']['sample_rate']
@@ -81,6 +89,9 @@ class AudioSource:
         is processed directly as a single VAD frame. VAD maintains internal state
         across calls and emits complete speech segments when detected.
 
+        Creates preliminary AudioSegment instances with unique chunk IDs and sends
+        them to both chunk_queue (for instant recognition) and windower (for aggregation).
+
         Args:
             audio_chunk: Audio data to process (32ms frame)
             timestamp: Timestamp of this chunk
@@ -89,10 +100,25 @@ class AudioSource:
         # VAD maintains state across calls to track ongoing speech
         segments = self.vad.process_audio(audio_chunk, reset_state=False)
 
-        # Emit detected segments
-        for segment in segments:
-            segment['timestamp'] = segment['start_time']
+        # Emit detected segments as AudioSegment instances
+        for seg in segments:
+            chunk_id = self.chunk_id_counter
+            self.chunk_id_counter += 1
+
+            segment = AudioSegment(
+                type='preliminary',
+                data=seg['data'],
+                start_time=seg['start_time'],
+                end_time=seg['end_time'],
+                chunk_ids=[chunk_id]  # Preliminary segments have single chunk ID
+            )
+
+            # Send to queue for instant recognition
             self.chunk_queue.put(segment)
+
+            # Send to windower for aggregation into finalized windows
+            if self.windower:
+                self.windower.process_segment(segment)
 
     def start(self) -> None:
         """Start capturing audio from the microphone.
@@ -113,15 +139,33 @@ class AudioSource:
         """Stop capturing audio from the microphone.
 
         Stops the sounddevice InputStream and flushes any pending VAD segments.
+        Also flushes windower to emit final window.
         """
         self.is_running = False
         if self.stream:
             self.stream.stop()
 
+        # Flush windower first (before final segments)
+        if self.windower:
+            self.windower.flush()
+
         # Flush any pending VAD segments
         segments = self.vad.flush()
-        for segment in segments:
+        for seg in segments:
+            chunk_id = self.chunk_id_counter
+            self.chunk_id_counter += 1
+
+            segment = AudioSegment(
+                type='preliminary',
+                data=seg['data'],
+                start_time=seg['start_time'],
+                end_time=seg['end_time'],
+                chunk_ids=[chunk_id]
+            )
             self.chunk_queue.put(segment)
+
+            if self.windower:
+                self.windower.process_segment(segment)
 
 
     def flush_vad(self) -> None:
@@ -130,5 +174,18 @@ class AudioSource:
         Useful in testing or when forcing finalization of the current segment.
         """
         segments = self.vad.flush()
-        for segment in segments:
+        for seg in segments:
+            chunk_id = self.chunk_id_counter
+            self.chunk_id_counter += 1
+
+            segment = AudioSegment(
+                type='preliminary',
+                data=seg['data'],
+                start_time=seg['start_time'],
+                end_time=seg['end_time'],
+                chunk_ids=[chunk_id]
+            )
             self.chunk_queue.put(segment)
+
+            if self.windower:
+                self.windower.process_segment(segment)

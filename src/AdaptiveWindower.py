@@ -2,6 +2,7 @@
 import numpy as np
 import queue
 from typing import Dict, List, Any, Optional
+from src.types import AudioSegment
 
 
 class AdaptiveWindower:
@@ -17,12 +18,12 @@ class AdaptiveWindower:
     - Preserves word-level timing metadata for downstream processing
 
     Args:
-        window_queue: Queue to output recognition windows
+        chunk_queue: Queue to output recognition windows (finalized AudioSegments)
         config: Configuration dictionary with audio and windowing parameters
     """
 
-    def __init__(self, window_queue: queue.Queue, config: Dict[str, Any]):
-        self.window_queue: queue.Queue = window_queue
+    def __init__(self, chunk_queue: queue.Queue, config: Dict[str, Any]):
+        self.chunk_queue: queue.Queue = chunk_queue
         self.config: Dict[str, Any] = config
 
         self.sample_rate: int = config['audio']['sample_rate']
@@ -30,12 +31,12 @@ class AdaptiveWindower:
         self.step_size: float = config['windowing']['step_size']  # 1.0 second
 
         # Segment buffer for windowing
-        self.segments: List[Dict[str, Any]] = []
+        self.segments: List[AudioSegment] = []
         self.window_start_time: float = 0.0
         self.last_window_time: float = 0.0
 
 
-    def process_segment(self, segment: Dict[str, Any]) -> None:
+    def process_segment(self, segment: AudioSegment) -> None:
         """Process incoming VAD segment and create windows when ready.
 
         Accumulates word-level segments and emits windows when:
@@ -43,23 +44,18 @@ class AdaptiveWindower:
         2. Enough time has passed since last window (step_size = 1s)
 
         Args:
-            segment: Speech segment from VAD containing:
-                - data: Audio data as numpy array
-                - start_time: Segment start timestamp
-                - end_time: Segment end timestamp
-                - duration: Segment duration
-                - is_speech: Speech flag (should be True for VAD segments)
+            segment: Preliminary AudioSegment from VAD with type='preliminary'
         """
         # Add segment to buffer
         self.segments.append(segment)
 
         # Initialize window start time on first segment
         if len(self.segments) == 1:
-            self.window_start_time = segment['start_time']
-            self.last_window_time = segment['start_time']
+            self.window_start_time = segment.start_time
+            self.last_window_time = segment.start_time
 
         # Check if we should emit a window
-        current_time = segment['end_time']
+        current_time = segment.end_time
         buffered_duration = current_time - self.window_start_time
 
         # Emit window if:
@@ -75,7 +71,7 @@ class AdaptiveWindower:
         """Create and emit a recognition window from buffered segments.
 
         Aggregates segments within the window duration, concatenates audio data,
-        and preserves word-level timing metadata for downstream processing.
+        and collects chunk IDs from all preliminary segments.
         """
         if not self.segments:
             return
@@ -89,9 +85,9 @@ class AdaptiveWindower:
 
         for segment in self.segments:
             # Include segment if it overlaps with window
-            if segment['start_time'] < window_end_time:
+            if segment.start_time < window_end_time:
                 window_segments.append(segment)
-                audio_parts.append(segment['data'])
+                audio_parts.append(segment.data)
 
         if not window_segments:
             return
@@ -100,20 +96,25 @@ class AdaptiveWindower:
         window_audio = np.concatenate(audio_parts)
 
         # Calculate actual window timing from segments
-        actual_start = window_segments[0]['start_time']
-        actual_end = window_segments[-1]['end_time']
+        actual_start = window_segments[0].start_time
+        actual_end = window_segments[-1].end_time
 
-        # Create window dict
-        window = {
-            'data': window_audio,
-            'start_time': actual_start,
-            'end_time': actual_end,
-            'duration': actual_end - actual_start,
-            'timestamp': actual_start,
-            'segments': window_segments  # Preserve word-level metadata
-        }
+        # Collect unique chunk_ids from all segments in window
+        chunk_ids = []
+        for seg in window_segments:
+            chunk_ids.extend(seg.chunk_ids)
+        unique_chunk_ids = sorted(set(chunk_ids))
 
-        self.window_queue.put(window)
+        # Create finalized AudioSegment
+        window = AudioSegment(
+            type='finalized',
+            data=window_audio,
+            start_time=actual_start,
+            end_time=actual_end,
+            chunk_ids=unique_chunk_ids
+        )
+
+        self.chunk_queue.put(window)
 
         # Update window timing for next window
         self.last_window_time = self.window_start_time
@@ -123,7 +124,7 @@ class AdaptiveWindower:
         # Keep segments that might overlap with next window
         self.segments = [
             seg for seg in self.segments
-            if seg['end_time'] > self.window_start_time
+            if seg.end_time > self.window_start_time
         ]
 
 
@@ -137,22 +138,28 @@ class AdaptiveWindower:
             return
 
         # Emit remaining segments as final window
-        audio_parts = [seg['data'] for seg in self.segments]
+        audio_parts = [seg.data for seg in self.segments]
         window_audio = np.concatenate(audio_parts)
 
-        actual_start = self.segments[0]['start_time']
-        actual_end = self.segments[-1]['end_time']
+        actual_start = self.segments[0].start_time
+        actual_end = self.segments[-1].end_time
 
-        window = {
-            'data': window_audio,
-            'start_time': actual_start,
-            'end_time': actual_end,
-            'duration': actual_end - actual_start,
-            'timestamp': actual_start,
-            'segments': self.segments
-        }
+        # Collect unique chunk_ids from all segments
+        chunk_ids = []
+        for seg in self.segments:
+            chunk_ids.extend(seg.chunk_ids)
+        unique_chunk_ids = sorted(set(chunk_ids))
 
-        self.window_queue.put(window)
+        # Create finalized AudioSegment
+        window = AudioSegment(
+            type='finalized',
+            data=window_audio,
+            start_time=actual_start,
+            end_time=actual_end,
+            chunk_ids=unique_chunk_ids
+        )
+
+        self.chunk_queue.put(window)
 
         # Clear segments
         self.segments = []

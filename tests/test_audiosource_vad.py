@@ -3,6 +3,7 @@ import pytest
 import queue
 import time
 from src.AudioSource import AudioSource
+from src.types import AudioSegment
 
 
 class TestAudioSourceVADIntegration:
@@ -59,10 +60,12 @@ class TestAudioSourceVADIntegration:
         assert not chunk_queue.empty()
 
         segment = chunk_queue.get()
-        assert 'is_speech' in segment
-        assert 'data' in segment
-        assert 'start_time' in segment
-        assert 'end_time' in segment
+        assert isinstance(segment, AudioSegment)
+        assert segment.type == 'preliminary'
+        assert len(segment.data) > 0
+        assert segment.start_time >= 0.0
+        assert segment.end_time > segment.start_time
+        assert len(segment.chunk_ids) == 1  # Preliminary segments have single chunk ID
 
 
     def test_emits_variable_length_segments(self, config, speech_with_pause_audio):
@@ -101,10 +104,11 @@ class TestAudioSourceVADIntegration:
         # STREAMING CHECK: First segment should appear NOW (before flush)
         assert not chunk_queue.empty(), "First segment should be emitted after silence timeout"
         first_segment = chunk_queue.get()
-        assert first_segment['is_speech'] is True
+        assert isinstance(first_segment, AudioSegment)
+        assert first_segment.type == 'preliminary'
 
         # Verify segment is approximately 1s (VAD frame alignment may cause slight variance)
-        duration = first_segment['end_time'] - first_segment['start_time']
+        duration = first_segment.end_time - first_segment.start_time
         expected_duration = 1.0  # 1 second of speech
         tolerance = 0.2  # ±200ms tolerance for VAD frame alignment
         assert abs(duration - expected_duration) < tolerance, \
@@ -125,10 +129,11 @@ class TestAudioSourceVADIntegration:
         # Should have second segment
         assert not chunk_queue.empty(), "Second segment should be emitted after flush"
         second_segment = chunk_queue.get()
-        assert second_segment['is_speech'] is True
+        assert isinstance(second_segment, AudioSegment)
+        assert second_segment.type == 'preliminary'
 
         # Verify segment is approximately 1s
-        duration = second_segment['end_time'] - second_segment['start_time']
+        duration = second_segment.end_time - second_segment.start_time
         expected_duration = 1.0
         tolerance = 0.2
         assert abs(duration - expected_duration) < tolerance, \
@@ -153,11 +158,75 @@ class TestAudioSourceVADIntegration:
             chunk = short_speech[i:i + chunk_size]
             audio_source.process_chunk_with_vad(chunk, time.time())
 
-        # Should not emit segment (too short)
+        # Should not emit segment (too short) - VAD filters these out
         speech_segments = []
         while not chunk_queue.empty():
             seg = chunk_queue.get()
-            if seg.get('is_speech'):
-                speech_segments.append(seg)
+            # All segments are AudioSegment instances now
+            speech_segments.append(seg)
 
         assert len(speech_segments) == 0
+
+
+    def test_calls_windower_for_each_segment(self, config, speech_audio):
+        """AudioSource should call windower.process_segment() for each preliminary segment."""
+        from unittest.mock import Mock
+
+        chunk_queue = queue.Queue()
+        mock_windower = Mock()
+
+        audio_source = AudioSource(
+            chunk_queue=chunk_queue,
+            windower=mock_windower,
+            config=config
+        )
+
+        # Feed audio that will produce segments
+        chunk_size = int(config['audio']['sample_rate'] * config['audio']['chunk_duration'])
+        for i in range(0, len(speech_audio[:16000]), chunk_size):
+            chunk = speech_audio[i:i + chunk_size]
+            if len(chunk) < chunk_size:
+                break
+            audio_source.process_chunk_with_vad(chunk, time.time())
+
+        # Flush to get final segment
+        audio_source.flush_vad()
+
+        # Verify windower.process_segment was called
+        assert mock_windower.process_segment.called
+        assert mock_windower.process_segment.call_count >= 1
+
+        # Verify each call received an AudioSegment
+        for call in mock_windower.process_segment.call_args_list:
+            segment = call[0][0]
+            assert isinstance(segment, AudioSegment)
+            assert segment.type == 'preliminary'
+
+
+    def test_calls_windower_flush_on_stop(self, config, speech_audio):
+        """AudioSource.stop() should call windower.flush() to emit final window."""
+        from unittest.mock import Mock
+
+        chunk_queue = queue.Queue()
+        mock_windower = Mock()
+
+        audio_source = AudioSource(
+            chunk_queue=chunk_queue,
+            windower=mock_windower,
+            config=config
+        )
+
+        # Feed some audio
+        chunk_size = int(config['audio']['sample_rate'] * config['audio']['chunk_duration'])
+        for i in range(0, len(speech_audio[:8000]), chunk_size):
+            chunk = speech_audio[i:i + chunk_size]
+            if len(chunk) < chunk_size:
+                break
+            audio_source.process_chunk_with_vad(chunk, time.time())
+
+        # Stop should call windower.flush()
+        audio_source.stop()
+
+        # Verify windower.flush() was called
+        assert mock_windower.flush.called
+        assert mock_windower.flush.call_count == 1
