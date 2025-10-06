@@ -493,14 +493,23 @@ Output:
 
 ## Design Principles
 
+### Core Pipeline Flow
+
+1. **AudioSource + VAD** → captures 32ms frames, detects speech → preliminary `AudioSegment` → `chunk_queue`
+2. **AudioSource** → calls **AdaptiveWindower** directly (no thread) → aggregates into finalized `AudioSegment` → `chunk_queue`
+3. **Recognizer** → processes both preliminary and finalized AudioSegments → `RecognitionResult` → `text_queue`
+4. **TextMatcher** → filters/processes text, routes to GuiWindow for display
+
+**Key Architecture:** Single `chunk_queue` receives both preliminary (instant) and finalized (high-quality) `AudioSegment` instances. AdaptiveWindower is called synchronously by AudioSource rather than running in a separate thread.
+
 ### 1. Single Responsibility Principle (SRP)
 
 Each component has one clear responsibility:
 - **AudioSource:** Audio capture + VAD
 - **AdaptiveWindower:** Window aggregation
 - **Recognizer:** Speech recognition
-- **TextMatcher:** Text processing
-- **DisplayHandler:** GUI updates
+- **TextMatcher:** Text processing and display routing
+- **GuiWindow:** GUI updates
 
 ### 2. Open/Closed Principle (OCP)
 

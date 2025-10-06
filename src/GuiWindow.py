@@ -29,14 +29,14 @@ class GuiWindow:
         self.text_widget.tag_configure("final", foreground="black", font=("TkDefaultFont", 10, "normal"))
 
     def update_partial(self, text: str) -> None:
-        """Replace current preliminary text with new recognition results.
+        """Append new preliminary text to existing preliminary text.
 
-        Uses position tracking to replace only the preliminary text region
+        Appends new recognition results to the preliminary text region
         while preserving all finalized text. The preliminary text appears
         in gray/italic styling to indicate it may change.
 
         Args:
-            text: Preliminary text to display
+            text: Preliminary text to append (typically a single word)
         """
         if self.root and not self._is_main_thread():
             # Schedule GUI update on main thread when called from background thread
@@ -54,11 +54,19 @@ class GuiWindow:
             # Position is invalid, reset to end of final text
             self.preliminary_start_pos = self.text_widget.index("end-1c")
 
-        # Delete any existing preliminary text from the stored position to end
-        self.text_widget.delete(self.preliminary_start_pos, "end-1c")
+        # Get current end position to check if there's existing preliminary text
+        current_end = self.text_widget.index("end-1c")
 
-        # Insert new preliminary text at the stored position
-        self.text_widget.insert(self.preliminary_start_pos, text, "preliminary")
+        # Check if there's existing preliminary text
+        if self.text_widget.compare(self.preliminary_start_pos, "!=", current_end):
+            # Append with space separator
+            text_to_insert = " " + text
+        else:
+            # No existing preliminary text, insert without space
+            text_to_insert = text
+
+        # Insert new preliminary text at the end
+        self.text_widget.insert(tk.END, text_to_insert, "preliminary")
 
         # Reset the last finalized text tracker since we have new preliminary text
         self.last_finalized_text = ""

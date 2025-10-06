@@ -86,68 +86,22 @@ Downloads the Parakeet STT model and Silero VAD model:
 
 ## Architecture
 
-The system uses a **pipeline architecture** with threaded components communicating via queues:
+The system uses a **pipeline architecture** with threaded components communicating via queues.
 
-### Core Pipeline Flow
+📖 **See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation** including diagrams, threading model, data flow, and design principles.
 
-1. **AudioSource + VAD** → captures 32ms frames, detects speech → preliminary `AudioSegment` → `chunk_queue`
-2. **AudioSource** → calls **AdaptiveWindower** directly (no thread) → aggregates into finalized `AudioSegment` → `chunk_queue`
-3. **Recognizer** → processes both preliminary and finalized AudioSegments → `RecognitionResult` → `text_queue`
-4. **TextMatcher** → filters/processes text with word-level timing → `final_queue` + `partial_queue`
-5. **TwoStageDisplayHandler** → displays final and partial results
+### Quick Reference
 
-**Key Architecture:** Single `chunk_queue` receives both preliminary (instant) and finalized (high-quality) `AudioSegment` instances. AdaptiveWindower is called synchronously by AudioSource rather than running in a separate thread.
+**Core Pipeline Flow:**
 
-### Voice Activity Detection (VAD) Flow
+1. **AudioSource + VAD** → preliminary `AudioSegment` → `chunk_queue`
+2. **AdaptiveWindower** (sync call) → finalized `AudioSegment` → `chunk_queue`
+3. **Recognizer** → `RecognitionResult` → `text_queue`
+4. **TextMatcher** → GUI display (via `GuiWindow`)
 
-AudioSource now uses Silero VAD for word-level speech segmentation:
+**Key Components:** `AudioSource`, `VoiceActivityDetector`, `AdaptiveWindower`, `Recognizer`, `TextMatcher`, `GuiWindow`
 
-1. **32ms Frame Capture**: Microphone delivers 32ms audio frames (512 samples @ 16kHz)
-2. **VAD Processing**: Each frame processed through Silero VAD ONNX model
-3. **Speech Detection**:
-   - Frames with speech probability > 0.5 are accumulated
-   - Minimum speech duration: 64ms (2 frames) ensures temporal consistency
-   - Silence timeout: 32ms (1 frame) creates word-level cuts
-   - Maximum speech duration: 3000ms (3s) matches recognition window
-4. **Segment Emission**: Complete speech segments emitted as preliminary `AudioSegment` instances
-5. **Window Aggregation**: AdaptiveWindower combines words into 3s overlapping finalized `AudioSegment` instances
-
-### Data Types
-
-**`src/types.py`** defines the core data structures:
-
-- **`AudioSegment`**: Unified dataclass for both preliminary and finalized segments
-  - `type: Literal['preliminary', 'finalized']` - Discriminator field
-  - `data: np.ndarray` - Audio samples (float32, -1.0 to 1.0)
-  - `start_time: float` - Segment start in seconds
-  - `end_time: float` - Segment end in seconds
-  - `chunk_ids: list[int]` - Tracking IDs (preliminary=[single_id], finalized=[id1, id2, ...])
-
-- **`RecognitionResult`**: Speech recognition output
-  - `text: str` - Recognized text
-  - `start_time: float` - Recognition start time
-  - `end_time: float` - Recognition end time
-  - `is_preliminary: bool` - True for instant results, False for high-quality results
-
-### Key Components
-
-- **`src/types.py`**: Core dataclass definitions for AudioSegment and RecognitionResult
-- **`src/pipeline.py`**: Main `STTPipeline` class that orchestrates all components
-- **`src/AudioSource.py`**: Microphone capture + VAD, creates preliminary AudioSegments with unique chunk IDs
-- **`src/VoiceActivityDetector.py`**: Silero VAD ONNX for word-level speech segmentation
-- **`src/AdaptiveWindower.py`**: Aggregates preliminary AudioSegments into finalized windows with merged chunk_ids
-- **`src/Recognizer.py`**: Parakeet ONNX model, processes both preliminary and finalized AudioSegments
-- **`src/TextMatcher.py`**: Text processing with word-level timing preservation
-- **`src/TwoStageDisplayHandler.py`**: Console output for final and partial results
-
-### Threading Model
-
-Components run in separate threads (except AdaptiveWindower which is called directly):
-- **AudioSource**: Thread with microphone callback, creates preliminary AudioSegments
-- **Recognizer**: Thread processing chunk_queue (both preliminary and finalized AudioSegments)
-- **TextMatcher**: Thread processing text_queue RecognitionResults
-- **TwoStageDisplayHandler**: Thread displaying final/partial text
-- **AdaptiveWindower**: No thread - called synchronously by AudioSource for each preliminary segment
+**Data Types:** `AudioSegment` (preliminary/finalized), `RecognitionResult` (with `is_preliminary` flag)
 
 ## Technical Specifications
 
