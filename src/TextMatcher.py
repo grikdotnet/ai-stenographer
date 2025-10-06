@@ -3,6 +3,8 @@ import queue
 import threading
 from typing import Dict, Any, Optional, Union
 from .TextNormalizer import TextNormalizer
+from .GuiWindow import GuiWindow
+
 
 class TextMatcher:
     """Matches overlapping speech recognition results from sliding windows.
@@ -21,13 +23,13 @@ class TextMatcher:
     """
 
     def __init__(self, text_queue: queue.Queue,
-                 gui_window,
+                 gui_window: GuiWindow,
                  text_normalizer: Optional[TextNormalizer] = None,
                  time_threshold: float = 0.6,
                  verbose: bool = False
                  ) -> None:
         self.text_queue: queue.Queue = text_queue
-        self.gui_window = gui_window  # GuiWindow instance
+        self.gui_window: GuiWindow = gui_window
         self.is_running: bool = False
         self.thread: Optional[threading.Thread] = None
         self.verbose: bool = verbose
@@ -205,13 +207,7 @@ class TextMatcher:
                         print(f"TextMatcher.process_finalized(): finalize_text('{finalized_text}')")
                     self.gui_window.finalize_text(finalized_text)
 
-                # Send remaining part as partial to GUI
-                if remaining_window[0].strip():
-                    if self.verbose:
-                        print(f"TextMatcher.process_finalized(): update_partial('{remaining_window[0]}')")
-                    self.gui_window.update_partial(remaining_window[0])
-
-                # Update state with remaining window text
+                # Update state with remaining window text (not displayed until next overlap)
                 self.previous_finalized_text = remaining_window[0]
                 self.previous_finalized_timestamp = text_data['timestamp']
 
@@ -221,18 +217,13 @@ class TextMatcher:
                     print(f"TextMatcher.process_finalized(): no overlap, finalize_text('{self.previous_finalized_text}')")
                 self.gui_window.finalize_text(self.previous_finalized_text)
 
-                # Current text becomes partial
-                if self.verbose:
-                    print(f"TextMatcher.process_finalized(): update_partial('{current_text}')")
-                self.gui_window.update_partial(current_text)
-
+                # Current text stored for next overlap resolution
                 self.previous_finalized_text = current_text
                 self.previous_finalized_timestamp = text_data['timestamp']
         else:
-            # First text - all partial
+            # First text - store for overlap resolution
             if self.verbose:
-                print(f"TextMatcher.process_finalized(): first text, update_partial('{current_text}')")
-            self.gui_window.update_partial(current_text)
+                print(f"TextMatcher.process_finalized(): first text, storing '{current_text}'")
             self.previous_finalized_text = current_text
             self.previous_finalized_timestamp = text_data['timestamp']
 
