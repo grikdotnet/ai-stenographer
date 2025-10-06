@@ -86,47 +86,40 @@ Microphone Input (16kHz, mono)
         │
         ↓
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  TIER 3: Text Processing                                                 │
+│  TIER 3: Text Processing + Display                                       │
 │  Thread: TextMatcher (daemon)                                            │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  TextMatcher.process()                                                   │
 │    ├─→ text_queue.get(timeout=0.1)                                      │
-│    ├─→ resolve_overlap() - handles windowed text overlaps              │
-│    │     └─→ Uses TextNormalizer for fuzzy matching                     │
-│    │     └─→ Finds longest common subsequence                           │
-│    │     └─→ Finalizes reliable parts, keeps uncertain as partial       │
-│    ├─→ Duplicate detection (time + normalized text)                     │
-│    ├─→ final_queue.put(finalized_text)                                  │
-│    └─→ partial_queue.put(partial_text)                                  │
+│    ├─→ Routes based on is_preliminary flag:                             │
+│    │                                                                      │
+│    ├─ PRELIMINARY PATH (word-level VAD results):                        │
+│    │   └─→ process_preliminary()                                        │
+│    │       └─→ gui_window.update_partial(text)  [direct, no overlap]   │
+│    │           └─→ root.after() → GUI main thread                       │
+│    │                                                                      │
+│    └─ FINALIZED PATH (3s sliding windows):                              │
+│        └─→ process_finalized()                                          │
+│            ├─→ Duplicate detection (time + normalized text)             │
+│            ├─→ resolve_overlap() - handles windowed text overlaps       │
+│            │     └─→ Uses TextNormalizer for fuzzy matching             │
+│            │     └─→ Finds longest common subsequence                   │
+│            ├─→ gui_window.finalize_text(finalized_part)                 │
+│            │     └─→ root.after() → GUI main thread                     │
+│            └─→ gui_window.update_partial(remaining_part)                │
+│                └─→ root.after() → GUI main thread                       │
 │                                                                           │
 │  TextMatcher.finalize_pending()                                          │
 │    └─→ Called by Pipeline.stop() to flush remaining partial text        │
-└──────────────────────────────────────────────────────────────────────────┘
-        │
-        ├─ Final text (dict)
-        ├─ Partial text (dict)
-        ↓
-┌──────────────────────────────────────────────────────────────────────────┐
-│  Queues: final_queue, partial_queue (maxsize=50 each)                   │
-│  Data Type: dict                                                         │
-│    - text: str                                                           │
-│    - timestamp: float                                                    │
-└──────────────────────────────────────────────────────────────────────────┘
-        │
-        ↓
-┌──────────────────────────────────────────────────────────────────────────┐
-│  TIER 4: Display                                                         │
-│  Thread: TwoStageDisplayHandler (daemon)                                 │
-├──────────────────────────────────────────────────────────────────────────┤
-│  TwoStageDisplayHandler.process_queues()                                 │
-│    ├─→ final_queue.get_nowait() → update GUI (bold, black)             │
-│    └─→ partial_queue.get_nowait() → update GUI (italic, gray)          │
 │                                                                           │
-│  Uses root.after() to schedule GUI updates on main thread               │
+│  GuiWindow (helper, no thread):                                          │
+│    ├─→ update_partial(text) - gray/italic (temporary)                   │
+│    └─→ finalize_text(text) - black/normal (permanent)                   │
 └──────────────────────────────────────────────────────────────────────────┘
         │
+        ├─ Direct GUI calls (no queues)
         ↓
-   Tkinter GUI Window
+   Tkinter GUI Window (main thread)
 ```
 
 ---
@@ -140,8 +133,8 @@ Microphone Input (16kHz, mono)
 | **AudioSource** | Daemon | Captures microphone input, runs VAD | `chunk_queue.put()` (blocks if full) |
 | **AdaptiveWindower** | **NO THREAD** | Aggregates segments into windows | Called synchronously by AudioSource |
 | **Recognizer** | Daemon | Runs STT model on audio segments | `chunk_queue.get(timeout=0.1)`, model inference |
-| **TextMatcher** | Daemon | Processes text overlaps, deduplication | `text_queue.get(timeout=0.1)` |
-| **TwoStageDisplayHandler** | Daemon | Updates GUI with results | `final_queue.get_nowait()`, GUI updates via `root.after()` |
+| **TextMatcher** | Daemon | Routes preliminary/finalized, overlap resolution, GUI calls | `text_queue.get(timeout=0.1)`, GUI updates via `root.after()` |
+| **GuiWindow** | **NO THREAD** | Helper for GUI updates (update_partial, finalize_text) | Called by TextMatcher |
 | **Main Thread** | Main | Runs Tkinter event loop | `root.mainloop()` |
 
 ### Thread Communication
@@ -173,21 +166,24 @@ Main Thread                AudioSource Thread         Recognizer Thread
     │                            │                            │  └─→ text_queue.put()
     │                            │                            │
     │                            │                            ↓
-    │                         TextMatcher Thread    TwoStageDisplayHandler
+    │                         TextMatcher Thread           GUI Main Thread
     │                               │                          │
-    │                               │ process()                │ process_queues()
-    │                               │  ├─→ get result         │  ├─→ get final
-    │                               │  ├─→ resolve_overlap    │  ├─→ get partial
-    │                               │  ├─→ final_queue.put()  │  └─→ root.after()
-    │                               │  └─→ partial_queue.put()│     └─→ update GUI
+    │                               │ process()                │ mainloop()
+    │                               │  ├─→ get result         │
+    │                               │  ├─→ route by type       │
+    │                               │  ├─→ preliminary:        │
+    │                               │  │   update_partial()────┼─→ root.after()
+    │                               │  └─→ finalized:          │
+    │                               │      ├─resolve_overlap   │
+    │                               │      ├─finalize_text()───┼─→ root.after()
+    │                               │      └─update_partial()──┼─→ root.after()
     │                               │                          │
     │ stop()                        │                          │
-    ├───────────────────────────────┼─────────────────────────→│
+    ├───────────────────────────────┤                          │
     │  ├─→ audio_source.stop()     │                          │
     │  ├─→ recognizer.stop()       │                          │
     │  ├─→ text_matcher.finalize_pending()                    │
-    │  ├─→ text_matcher.stop()     │                          │
-    │  └─→ display_handler.stop()  │                          │
+    │  └─→ text_matcher.stop()     │                          │
     │                               │                          │
 ```
 
@@ -261,15 +257,15 @@ AudioSegment (preliminary)
                 │
                 ↓ text_queue
                 │
-        Processed Text (dict)
-          └─→ Final:   {'text': 'hello world', 'timestamp': 1.456}
-          └─→ Partial: {'text': 'how are', 'timestamp': 2.134}
+        TextMatcher (routes by is_preliminary)
+          ├─→ Preliminary: gui_window.update_partial()
+          └─→ Finalized: resolve_overlap() → gui_window.finalize_text() + update_partial()
                 │
-                ↓ final_queue / partial_queue
+                ↓ root.after() → GUI main thread
                 │
-        GUI Display
-          └─→ Final text: bold, black
-          └─→ Partial text: italic, gray
+        GUI Display (GuiWindow)
+          └─→ Final text: black, normal (permanent)
+          └─→ Partial text: gray, italic (temporary)
 ```
 
 ---
@@ -389,19 +385,20 @@ Output:
 - Time threshold: 0.6s
 - Skips duplicates from overlapping windows
 
-**Output:** Final and partial text dicts
+**Output:** Direct GUI calls via `gui_window.update_partial()` and `gui_window.finalize_text()`
 
-### 5. TwoStageDisplayHandler
+### 5. GuiWindow
 
-**Responsibility:** Update GUI with results
+**Responsibility:** Manage two-stage text display in GUI
 
 **Key Methods:**
-- `process_queues()` - Read from final/partial queues
-- Schedules GUI updates via `root.after()` (main thread)
+- `update_partial(text)` - Display temporary gray/italic text
+- `finalize_text(text)` - Convert to permanent black/normal text
+- Uses `root.after()` to marshal calls to main GUI thread
 
 **Display Styles:**
-- Final text: bold, black
-- Partial text: italic, gray
+- Final text: black, normal (permanent)
+- Partial text: gray, italic (temporary, gets replaced)
 
 ---
 
@@ -411,8 +408,6 @@ Output:
 |-------|----------|----------|-----------|---------|---------|
 | `chunk_queue` | AudioSource, AdaptiveWindower | Recognizer | `AudioSegment` | 100 | Audio segments (preliminary + finalized) |
 | `text_queue` | Recognizer | TextMatcher | `RecognitionResult` | 50 | Recognition results |
-| `final_queue` | TextMatcher | DisplayHandler | `dict` | 50 | Finalized text |
-| `partial_queue` | TextMatcher | DisplayHandler | `dict` | 50 | Partial/streaming text |
 
 ---
 
@@ -425,20 +420,19 @@ Output:
    ├─→ Load config from config/stt_config.json
    ├─→ Load Parakeet model
    ├─→ Create Tkinter GUI window
-   ├─→ Create queues (chunk, text, final, partial)
+   ├─→ Create GuiWindow (helper for TextMatcher)
+   ├─→ Create queues (chunk, text)
    ├─→ Create components:
    │     ├─→ AdaptiveWindower (no thread)
    │     ├─→ AudioSource (with windower reference)
    │     ├─→ Recognizer
-   │     ├─→ TextMatcher
-   │     └─→ TwoStageDisplayHandler
+   │     └─→ TextMatcher (with gui_window reference)
    └─→ Setup signal handlers (Ctrl+C)
 
 2. Pipeline.start()
    ├─→ audio_source.start()      → spawns daemon thread
    ├─→ recognizer.start()         → spawns daemon thread
-   ├─→ text_matcher.start()       → spawns daemon thread
-   └─→ display_handler.start()    → spawns daemon thread
+   └─→ text_matcher.start()       → spawns daemon thread
 
 3. Pipeline.run()
    └─→ root.mainloop()            → Tkinter event loop
@@ -459,12 +453,9 @@ Output:
    │     └─→ Set is_running=False → thread exits
    │
    ├─→ text_matcher.finalize_pending()
-   │     └─→ Flush remaining partial text to final_queue
+   │     └─→ Flush remaining partial text to GUI (gui_window.finalize_text())
    │
-   ├─→ text_matcher.stop()
-   │     └─→ Set is_running=False → thread exits
-   │
-   └─→ display_handler.stop()
+   └─→ text_matcher.stop()
          └─→ Set is_running=False → thread exits
 
 3. All daemon threads exit
