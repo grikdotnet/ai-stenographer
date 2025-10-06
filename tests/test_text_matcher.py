@@ -3,7 +3,7 @@ import unittest
 import queue
 import sys
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock
 
 # Add the parent directory to the path so we can import src modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -17,12 +17,20 @@ class TestTextMatcher(unittest.TestCase):
     def setUp(self):
         """Set up test fixtures"""
         self.text_queue = queue.Queue()
-        self.final_queue = queue.Queue()
-        self.partial_queue = queue.Queue()
+        self.mock_gui = Mock(spec=['update_partial', 'finalize_text'])
+
+        # Helper to create test data
+        def make_text_data(text, timestamp, is_preliminary=False):
+            return {
+                'text': text,
+                'timestamp': timestamp,
+                'is_preliminary': is_preliminary
+            }
+        self.make_text_data = make_text_data
 
     def test_resolve_overlap_with_boundary_errors(self):
         """Test window overlap resolution handling STT boundary recognition errors"""
-        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         # Window overlap resolution test cases
         resolution_cases = [
@@ -52,7 +60,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_resolve_overlap_with_punctuation(self):
         """Test resolve_overlap() handles punctuation variants correctly"""
-        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         # Test cases: punctuation should not prevent overlap detection
         cases = [
@@ -95,7 +103,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_resolve_overlap_with_case_variations(self):
         """Test resolve_overlap() handles case variations correctly"""
-        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         cases = [
             # Case should not prevent overlap detection, but original case preserved in output
@@ -126,7 +134,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_resolve_overlap_with_unicode(self):
         """Test resolve_overlap() handles Unicode and accented characters"""
-        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         cases = [
             # Accented characters should normalize for comparison
@@ -159,7 +167,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_resolve_overlap_edge_cases(self):
         """Test resolve_overlap() edge cases"""
-        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         # No overlap - should raise exception
         with self.assertRaises(Exception) as context:
@@ -198,7 +206,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_resolve_overlap_preserves_original_text(self):
         """Test that resolve_overlap() preserves original text formatting in output"""
-        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         # Original text should be preserved (case, punctuation)
         finalized, remaining = text_matcher.resolve_overlap(
@@ -210,36 +218,38 @@ class TestTextMatcher(unittest.TestCase):
         self.assertEqual(finalized, "HELLO, World!")
         self.assertEqual(remaining[0], "Today.")
 
-    def test_process_first_text(self):
-        """Test processing the very first text (no previous text)"""
-        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
+    def test_process_first_preliminary_text(self):
+        """Test processing first preliminary text"""
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
-        first_text = {
-            'text': 'hello world',
-            'timestamp': 1.0
-        }
-
-        # Process first text using the actual method
+        first_text = self.make_text_data('hello world', 1.0, is_preliminary=True)
         text_matcher.process_text(first_text)
 
-        # Verify results
-        self.assertTrue(text_matcher.final_queue.empty(), "First text should not go to final queue")
-        self.assertFalse(text_matcher.partial_queue.empty(), "First text should go to partial queue")
+        # Preliminary should call update_partial() immediately
+        self.mock_gui.update_partial.assert_called_once_with('hello world')
+        self.mock_gui.finalize_text.assert_not_called()
 
-        partial_result = text_matcher.partial_queue.get()
-        self.assertEqual(partial_result['text'], 'hello world')
-        self.assertEqual(partial_result['timestamp'], 1.0)
-        self.assertEqual(text_matcher.previous_text, 'hello world')
+    def test_process_first_finalized_text(self):
+        """Test processing first finalized text"""
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
-    def test_process_texts_with_overlap(self):
-        """Test processing sequential texts with word overlap through process_text()"""
-        text_matcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue)
+        first_text = self.make_text_data('hello world', 1.0, is_preliminary=False)
+        text_matcher.process_text(first_text)
+
+        # Finalized should call update_partial() (awaiting overlap resolution)
+        self.mock_gui.update_partial.assert_called_once_with('hello world')
+        self.mock_gui.finalize_text.assert_not_called()
+        self.assertEqual(text_matcher.previous_finalized_text, 'hello world')
+
+    def test_process_finalized_texts_with_overlap(self):
+        """Test processing sequential finalized texts with word overlap through process_text()"""
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         # Three overlapping windows to test sequential processing
         texts = [
-            {'text': 'hello world ho', 'timestamp': 0.0, "is_silence": False, "window_duration": 1.0},
-            {'text': 'world how are you do', 'timestamp': 1.0, "is_silence": False, "window_duration": 1.0},
-            {'text': 'you doing great today', 'timestamp': 2.0, "is_silence": False, "window_duration": 1.0},
+            self.make_text_data('hello world ho', 0.0, is_preliminary=False),
+            self.make_text_data('world how are you do', 1.0, is_preliminary=False),
+            self.make_text_data('you doing great today', 2.0, is_preliminary=False),
         ]
 
         # Process each text through process_text()
@@ -247,68 +257,94 @@ class TestTextMatcher(unittest.TestCase):
         text_matcher.process_text(texts[1])  # Second text -> finalize first, partial remaining
         text_matcher.process_text(texts[2])  # Third text -> finalize second, partial remaining
 
-        # Verify finalized results
-        final_results = []
-        while not text_matcher.final_queue.empty():
-            final_results.append(text_matcher.final_queue.get())
+        # Verify finalize_text was called twice (overlap resolution)
+        self.assertEqual(self.mock_gui.finalize_text.call_count, 2)
 
-        self.assertEqual(len(final_results), 2)  # Two finalizations from overlaps
-        self.assertEqual(final_results[0]['text'], 'hello world')       # From first overlap (start + common "world")
-        self.assertEqual(final_results[1]['text'], 'how are you')       # From second overlap (start + common "you")
+        # Verify the finalized texts
+        finalize_calls = [call[0][0] for call in self.mock_gui.finalize_text.call_args_list]
+        self.assertEqual(finalize_calls[0], 'hello world')       # From first overlap
+        self.assertEqual(finalize_calls[1], 'how are you')       # From second overlap
 
-        # Verify partial results
-        partial_results = []
-        while not text_matcher.partial_queue.empty():
-            partial_results.append(text_matcher.partial_queue.get())
+        # Verify update_partial was called three times
+        self.assertEqual(self.mock_gui.update_partial.call_count, 3)
 
-        self.assertEqual(len(partial_results), 3)  # Three partial texts
-        self.assertEqual(partial_results[0]['text'], 'hello world ho')    # First window as partial
-        self.assertEqual(partial_results[1]['text'], 'how are you do')    # Remaining after first overlap
-        self.assertEqual(partial_results[2]['text'], 'doing great today') # Remaining after second overlap
+        # Verify the partial texts
+        partial_calls = [call[0][0] for call in self.mock_gui.update_partial.call_args_list]
+        self.assertEqual(partial_calls[0], 'hello world ho')    # First window as partial
+        self.assertEqual(partial_calls[1], 'how are you do')    # Remaining after first overlap
+        self.assertEqual(partial_calls[2], 'doing great today') # Remaining after second overlap
 
-    def test_finalize_pending_method(self):
+    def test_finalize_pending_finalized_text(self):
         """Test explicit finalize_pending() call finalizes partial text"""
-        text_matcher = TextMatcher(
-            self.text_queue,
-            self.final_queue,
-            self.partial_queue
-        )
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
-        # Process some speech
-        speech_text = {'text': 'hello world', 'timestamp': 1.0}
+        # Process some finalized speech
+        speech_text = self.make_text_data('hello world', 1.0, is_preliminary=False)
         text_matcher.process_text(speech_text)
 
-        # Verify it went to partial queue only
-        self.assertTrue(self.final_queue.empty())
-        self.assertFalse(self.partial_queue.empty())
-        partial = self.partial_queue.get()
-        self.assertEqual(partial['text'], 'hello world')
+        # Verify it called update_partial (awaiting overlap)
+        self.mock_gui.update_partial.assert_called_once_with('hello world')
+        self.mock_gui.finalize_text.assert_not_called()
+
+        # Reset mock to clear call history
+        self.mock_gui.reset_mock()
 
         # Explicitly finalize
         text_matcher.finalize_pending()
 
         # Verify finalized
-        self.assertFalse(self.final_queue.empty())
-        final = self.final_queue.get()
-        self.assertEqual(final['text'], 'hello world')
+        self.mock_gui.finalize_text.assert_called_once_with('hello world')
 
         # State should be reset
-        self.assertEqual(text_matcher.previous_text, "")
+        self.assertEqual(text_matcher.previous_finalized_text, "")
 
     def test_finalize_pending_when_empty(self):
         """Test finalize_pending() with no pending text does nothing"""
-        text_matcher = TextMatcher(
-            self.text_queue,
-            self.final_queue,
-            self.partial_queue
-        )
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         # Call finalize with no pending text
         text_matcher.finalize_pending()
 
-        # Should not crash, queues remain empty
-        self.assertTrue(self.final_queue.empty())
-        self.assertTrue(self.partial_queue.empty())
+        # Should not crash, no GUI calls should be made
+        self.mock_gui.update_partial.assert_not_called()
+        self.mock_gui.finalize_text.assert_not_called()
+
+    def test_process_preliminary_no_overlap_resolution(self):
+        """Preliminary results should NOT use resolve_overlap()"""
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+
+        # Two preliminary results with no overlap
+        prelim1 = self.make_text_data('hello world', 1.0, is_preliminary=True)
+        prelim2 = self.make_text_data('how are you', 2.0, is_preliminary=True)
+
+        text_matcher.process_text(prelim1)
+        text_matcher.process_text(prelim2)
+
+        # Both should call update_partial() directly (no overlap resolution)
+        self.assertEqual(self.mock_gui.update_partial.call_count, 2)
+        self.mock_gui.update_partial.assert_any_call('hello world')
+        self.mock_gui.update_partial.assert_any_call('how are you')
+
+    def test_process_mixed_preliminary_finalized(self):
+        """System should handle mix of preliminary and finalized results"""
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+
+        # Preliminary result (instant, word-level)
+        prelim1 = self.make_text_data('hello', 1.0, is_preliminary=True)
+
+        # Finalized results (sliding windows with overlap)
+        final1 = self.make_text_data('hello world how', 1.5, is_preliminary=False)
+        final2 = self.make_text_data('world how are', 2.0, is_preliminary=False)
+
+        text_matcher.process_text(prelim1)
+        text_matcher.process_text(final1)
+        text_matcher.process_text(final2)
+
+        # Verify preliminary called update_partial()
+        self.mock_gui.update_partial.assert_any_call('hello')
+
+        # Verify finalized called finalize_text() after overlap resolution
+        self.assertGreater(self.mock_gui.finalize_text.call_count, 0)
 
 
 if __name__ == '__main__':

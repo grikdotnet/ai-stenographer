@@ -8,38 +8,38 @@ class TextMatcher:
     """Matches overlapping speech recognition results from sliding windows.
 
     TextMatcher processes sequential speech recognition results that may contain
-    overlapping words due to sliding window recognition. It identifies overlaps,
-    finalizes non-overlapping portions, and maintains partial results for
-    streaming output.
+    overlapping words due to sliding window recognition. Routes preliminary results
+    (word-level VAD) directly to GUI, and finalized results (sliding windows) through
+    overlap resolution before displaying.
 
     Args:
         text_queue: Queue to read recognition results from
-        final_queue: Queue to write finalized text segments to
-        partial_queue: Queue to write partial/streaming text to
+        gui_window: GUI window instance with update_partial() and finalize_text() methods
+        text_normalizer: Optional text normalizer for overlap detection
+        time_threshold: Time threshold for duplicate detection (finalized only)
+        verbose: Enable verbose logging
     """
 
     def __init__(self, text_queue: queue.Queue,
-                 final_queue: queue.Queue,
-                 partial_queue: queue.Queue,
+                 gui_window,
                  text_normalizer: Optional[TextNormalizer] = None,
                  time_threshold: float = 0.6,
                  verbose: bool = False
                  ) -> None:
         self.text_queue: queue.Queue = text_queue
-        self.final_queue: queue.Queue = final_queue
-        self.partial_queue: queue.Queue = partial_queue
+        self.gui_window = gui_window  # GuiWindow instance
         self.is_running: bool = False
         self.thread: Optional[threading.Thread] = None
         self.verbose: bool = verbose
 
-        # Enhanced duplicate detection parameters
+        # Enhanced duplicate detection parameters (for finalized path)
         self.text_normalizer: TextNormalizer = text_normalizer if text_normalizer is not None else TextNormalizer()
         self.time_threshold: float = time_threshold
 
-        # State for matching
-        self.previous_text: str = ""
-        self.finalized_text: str = ""
-        self.previous_text_timestamp: float = 0.0
+        # State only needed for finalized path (overlap resolution)
+        # Preliminary path has no state - VAD guarantees distinct segments
+        self.previous_finalized_text: str = ""
+        self.previous_finalized_timestamp: float = 0.0
 
     def find_word_overlap(self, words1: list[str], words2: list[str]) -> tuple[int, int, int]:
         """Find longest overlapping word sequence between two word lists.
@@ -119,14 +119,26 @@ class TextMatcher:
         return finalized_text, (remaining_text, window2[1])
 
     def process_text(self, text_data: Dict[str, Union[str, float, bool]]) -> None:
-        """Process a single text segment using window-based overlap resolution.
+        """Process a single text segment using appropriate path.
 
-        Uses the resolve_overlap algorithm to properly handle STT window overlaps
-        by finding reliable common subsequences and finalizing the reliable parts
-        while discarding boundary errors.
+        Routes to preliminary or finalized processing based on is_preliminary flag.
 
-        Note: Does not handle silence signals. Use finalize_pending() to
-        explicitly finalize remaining partial text.
+        Args:
+            text_data: Dictionary containing 'text', 'timestamp', 'is_preliminary'
+        """
+        is_preliminary = text_data.get('is_preliminary', False)
+
+        if is_preliminary:
+            self.process_preliminary(text_data)
+        else:
+            self.process_finalized(text_data)
+
+    def process_preliminary(self, text_data: Dict[str, Union[str, float, bool]]) -> None:
+        """Process preliminary result - no overlap resolution needed.
+
+        Preliminary results come from word-level VAD segmentation with clean
+        boundaries. They don't overlap, so we skip the overlap resolution
+        logic and go straight to GUI.
 
         Args:
             text_data: Dictionary containing 'text' and 'timestamp'
@@ -134,92 +146,95 @@ class TextMatcher:
         current_text: str = text_data['text']
 
         if self.verbose:
-            print(f"TextMatcher.process_text() current_text: received '{current_text}'")
-            print(f"TextMatcher.process_text() previous_text: '{self.previous_text}'")
+            print(f"TextMatcher.process_preliminary() received '{current_text}'")
+
+        # No duplicate detection needed - VAD guarantees distinct segments
+        # If duplicates appear, it's a bug in AudioSource/Recognizer
+
+        # Direct GUI call (no overlap resolution needed)
+        if self.verbose:
+            print(f"TextMatcher.process_preliminary() → update_partial('{current_text}')")
+        self.gui_window.update_partial(current_text)
+
+    def process_finalized(self, text_data: Dict[str, Union[str, float, bool]]) -> None:
+        """Process finalized result using window-based overlap resolution.
+
+        Finalized results come from sliding windows with overlap. Uses the
+        resolve_overlap algorithm to find reliable common subsequences and
+        finalize the reliable parts while discarding boundary errors.
+
+        Args:
+            text_data: Dictionary containing 'text' and 'timestamp'
+        """
+        current_text: str = text_data['text']
+
+        if self.verbose:
+            print(f"TextMatcher.process_finalized() current_text: received '{current_text}'")
+            print(f"TextMatcher.process_finalized() previous_text: '{self.previous_finalized_text}'")
 
         # Enhanced duplicate detection using text normalization
         # This handles punctuation variants ("Hello." vs "Hello?") while preventing
         # false positives when user says the same word multiple times
-        if self.previous_text and self.previous_text_timestamp > 0:
+        if self.previous_finalized_text and self.previous_finalized_timestamp > 0:
             # Normalize both texts for comparison
             current_normalized = self.text_normalizer.normalize_text(current_text)
-            previous_normalized = self.text_normalizer.normalize_text(self.previous_text)
-            time_diff = abs(text_data['timestamp'] - self.previous_text_timestamp)
+            previous_normalized = self.text_normalizer.normalize_text(self.previous_finalized_text)
+            time_diff = abs(text_data['timestamp'] - self.previous_finalized_timestamp)
 
             if (current_normalized == previous_normalized and
                 time_diff < self.time_threshold):
                 if self.verbose:
-                    print(f"TextMatcher.process_text() duplicate within {time_diff:.3f}s detected, skipping: '{current_text}'")
-                    print(f"  Original: '{self.previous_text}' → Normalized: '{previous_normalized}'")
+                    print(f"TextMatcher.process_finalized() duplicate within {time_diff:.3f}s detected, skipping: '{current_text}'")
+                    print(f"  Original: '{self.previous_finalized_text}' → Normalized: '{previous_normalized}'")
                     print(f"  Current: '{current_text}' → Normalized: '{current_normalized}'")
                 # Skip normalized duplicate - it's likely from overlapping windows
                 return
 
-        # Process windows in pairs using the new overlap resolution algorithm
-        if self.previous_text:
-            window1: tuple[str, float] = (self.previous_text, text_data['timestamp'])
+        # Process windows in pairs using the overlap resolution algorithm
+        if self.previous_finalized_text:
+            window1: tuple[str, float] = (self.previous_finalized_text, text_data['timestamp'])
             window2: tuple[str, float] = (current_text, text_data['timestamp'])
 
             try:
                 # Resolve overlap between windows
                 finalized_text, remaining_window = self.resolve_overlap(window1, window2)
 
-                # Queue finalized text
+                # Send finalized text to GUI
                 if finalized_text.strip():
-                    final_data: Dict[str, Union[str, float]] = {
-                        'text': finalized_text,
-                        'timestamp': text_data['timestamp']
-                    }
                     if self.verbose:
-                        print(f"TextMatcher: sending to final_queue: {final_data}")
-                    self.final_queue.put(final_data)
+                        print(f"TextMatcher.process_finalized(): finalize_text('{finalized_text}')")
+                    self.gui_window.finalize_text(finalized_text)
 
-                # Queue remaining part as partial
+                # Send remaining part as partial to GUI
                 if remaining_window[0].strip():
-                    partial_data: Dict[str, Union[str, float]] = {
-                        'text': remaining_window[0],
-                        'timestamp': remaining_window[1]
-                    }
                     if self.verbose:
-                        print(f"TextMatcher: sending to partial_queue: {partial_data}")
-                    self.partial_queue.put(partial_data)
+                        print(f"TextMatcher.process_finalized(): update_partial('{remaining_window[0]}')")
+                    self.gui_window.update_partial(remaining_window[0])
 
                 # Update state with remaining window text
-                self.previous_text = remaining_window[0]
-                self.previous_text_timestamp = text_data['timestamp']
+                self.previous_finalized_text = remaining_window[0]
+                self.previous_finalized_timestamp = text_data['timestamp']
 
             except Exception:
                 # No overlap found - finalize previous and start new
-                final_data: Dict[str, Union[str, float]] = {
-                    'text': self.previous_text,
-                    'timestamp': text_data['timestamp']
-                }
                 if self.verbose:
-                    print(f"TextMatcher: sending to final_queue: {final_data}")
-                self.final_queue.put(final_data)
+                    print(f"TextMatcher.process_finalized(): no overlap, finalize_text('{self.previous_finalized_text}')")
+                self.gui_window.finalize_text(self.previous_finalized_text)
 
                 # Current text becomes partial
-                partial_data: Dict[str, Union[str, float]] = {
-                    'text': current_text,
-                    'timestamp': text_data['timestamp']
-                }
                 if self.verbose:
-                    print(f"TextMatcher: sending to partial_queue: {partial_data}")
-                self.partial_queue.put(partial_data)
+                    print(f"TextMatcher.process_finalized(): update_partial('{current_text}')")
+                self.gui_window.update_partial(current_text)
 
-                self.previous_text = current_text
-                self.previous_text_timestamp = text_data['timestamp']
+                self.previous_finalized_text = current_text
+                self.previous_finalized_timestamp = text_data['timestamp']
         else:
             # First text - all partial
-            partial_data: Dict[str, Union[str, float]] = {
-                'text': current_text,
-                'timestamp': text_data['timestamp']
-            }
             if self.verbose:
-                print(f"sending to partial_queue: {partial_data}")
-            self.partial_queue.put(partial_data)
-            self.previous_text = current_text
-            self.previous_text_timestamp = text_data['timestamp']
+                print(f"TextMatcher.process_finalized(): first text, update_partial('{current_text}')")
+            self.gui_window.update_partial(current_text)
+            self.previous_finalized_text = current_text
+            self.previous_finalized_timestamp = text_data['timestamp']
 
     def process(self) -> None:
         """Read texts from queue and process them continuously.
@@ -246,25 +261,21 @@ class TextMatcher:
         self.thread.start()
 
     def finalize_pending(self) -> None:
-        """Finalize any remaining partial text.
+        """Finalize any remaining partial finalized text.
 
         Called explicitly by Pipeline.stop() or external observers
-        to flush pending partial text to final queue.
+        to flush pending partial text to GUI as final.
 
         This implements explicit finalization control, allowing
         external components to trigger finalization without
         TextMatcher managing its own timeout logic (SRP).
         """
-        if self.previous_text:
-            final_data: Dict[str, Union[str, float]] = {
-                'text': self.previous_text,
-                'timestamp': self.previous_text_timestamp
-            }
+        if self.previous_finalized_text:
             if self.verbose:
-                print(f"TextMatcher.finalize_pending(): {final_data}")
-            self.final_queue.put(final_data)
-            self.previous_text = ""
-            self.previous_text_timestamp = 0.0
+                print(f"TextMatcher.finalize_pending(): finalize_text('{self.previous_finalized_text}')")
+            self.gui_window.finalize_text(self.previous_finalized_text)
+            self.previous_finalized_text = ""
+            self.previous_finalized_timestamp = 0.0
 
     def stop(self) -> None:
         """Stop the background processing thread.
