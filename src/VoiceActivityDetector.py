@@ -45,6 +45,7 @@ class VoiceActivityDetector:
 
         Loads the model from the path specified in config using ONNX Runtime.
         Initializes the model state tensor for stateful inference.
+        Applies optimizations for reduced CPU usage in streaming mode.
         """
         model_path = Path(self.vad_config['model_path'])
 
@@ -55,14 +56,24 @@ class VoiceActivityDetector:
             )
 
         try:
+            # Configure session options for optimal performance
+            sess_options = onnxruntime.SessionOptions()
+            sess_options.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
+            sess_options.intra_op_num_threads = 1  # Single thread for small model
+            sess_options.inter_op_num_threads = 1
+
             self.model = onnxruntime.InferenceSession(
                 str(model_path),
+                sess_options=sess_options,
                 providers=['CPUExecutionProvider']
             )
 
             # Initialize model state (2, batch_size, 128)
             # batch_size = 1 for single audio stream
             self.model_state = np.zeros((2, 1, 128), dtype=np.float32)
+
+            # Cache sample rate input to avoid repeated allocations
+            self.sr_input = np.array([self.sample_rate], dtype=np.int64)
 
         except Exception as e:
             raise RuntimeError(f"Failed to load Silero VAD ONNX model: {e}")
@@ -112,16 +123,18 @@ class VoiceActivityDetector:
 
         # Prepare inputs for ONNX model
         # Input shape: [batch_size, audio_length]
-        audio_input = audio_frame.astype(np.float32).reshape(1, -1)
-        sr_input = np.array([self.sample_rate], dtype=np.int64)
+        # Avoid unnecessary copy if already float32
+        if audio_frame.dtype != np.float32:
+            audio_frame = audio_frame.astype(np.float32)
+        audio_input = audio_frame.reshape(1, -1)
 
-        # Run inference
+        # Run inference with cached sr_input
         ort_outputs = self.model.run(
             None,
             {
                 'input': audio_input,
                 'state': self.model_state,
-                'sr': sr_input
+                'sr': self.sr_input
             }
         )
 

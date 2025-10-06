@@ -96,7 +96,6 @@ class STTPipeline:
         2. Recognizer (stop processing audio)
         3. TextMatcher finalization (flush pending text)
         4. TextMatcher (stop processing)
-        5. DisplayHandler (stop displaying)
         """
         print("\nStopping pipeline...")
 
@@ -108,9 +107,8 @@ class STTPipeline:
         print("Finalizing pending text...")
         self.text_matcher.finalize_pending()
 
-        # Stop text processing and display
+        # Stop text processing
         self.text_matcher.stop()
-        self.display_handler.stop()
 
         print("Pipeline stopped.")
 
