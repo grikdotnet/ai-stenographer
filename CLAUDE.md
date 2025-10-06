@@ -18,9 +18,10 @@ Define types of parameters and return if possible.
 
 Instead of writing "You're absolutely correct" or similar, write "OK".
 
-Instead of claiming that everything works evaluate what may be wrong, and offer what to check.
+In the end of task execution think what can be wrong, and offer what to check.
 
 After creating git commit mesages replace "Generated with [Claude Code] ..." line or "Co-Authored-By" with a joke.
+Never commit automatically without user command or confirmation.
 
 ## Project Overview
 

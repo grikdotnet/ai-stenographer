@@ -4,6 +4,7 @@ import threading
 from typing import Dict, Any, Optional, Union
 from .TextNormalizer import TextNormalizer
 from .GuiWindow import GuiWindow
+from .types import RecognitionResult
 
 
 class TextMatcher:
@@ -120,22 +121,20 @@ class TextMatcher:
 
         return finalized_text, (remaining_text, window2[1])
 
-    def process_text(self, text_data: Dict[str, Union[str, float, bool]]) -> None:
+    def process_text(self, result: RecognitionResult) -> None:
         """Process a single text segment using appropriate path.
 
         Routes to preliminary or finalized processing based on is_preliminary flag.
 
         Args:
-            text_data: Dictionary containing 'text', 'timestamp', 'is_preliminary'
+            result: RecognitionResult with text, timing, and chunk_ids
         """
-        is_preliminary = text_data.get('is_preliminary', False)
-
-        if is_preliminary:
-            self.process_preliminary(text_data)
+        if result.is_preliminary:
+            self.process_preliminary(result)
         else:
-            self.process_finalized(text_data)
+            self.process_finalized(result)
 
-    def process_preliminary(self, text_data: Dict[str, Union[str, float, bool]]) -> None:
+    def process_preliminary(self, result: RecognitionResult) -> None:
         """Process preliminary result - no overlap resolution needed.
 
         Preliminary results come from word-level VAD segmentation with clean
@@ -143,22 +142,20 @@ class TextMatcher:
         logic and go straight to GUI.
 
         Args:
-            text_data: Dictionary containing 'text' and 'timestamp'
+            result: RecognitionResult with preliminary text and chunk_ids
         """
-        current_text: str = text_data['text']
-
         if self.verbose:
-            print(f"TextMatcher.process_preliminary() received '{current_text}'")
+            print(f"TextMatcher.process_preliminary() received '{result.text}' chunk_ids={result.chunk_ids}")
 
         # No duplicate detection needed - VAD guarantees distinct segments
         # If duplicates appear, it's a bug in AudioSource/Recognizer
 
-        # Direct GUI call (no overlap resolution needed)
+        # Pass RecognitionResult object to GUI (preserves chunk_ids)
         if self.verbose:
-            print(f"TextMatcher.process_preliminary() → update_partial('{current_text}')")
-        self.gui_window.update_partial(current_text)
+            print(f"TextMatcher.process_preliminary() → update_partial(RecognitionResult)")
+        self.gui_window.update_partial(result)
 
-    def process_finalized(self, text_data: Dict[str, Union[str, float, bool]]) -> None:
+    def process_finalized(self, result: RecognitionResult) -> None:
         """Process finalized result using window-based overlap resolution.
 
         Finalized results come from sliding windows with overlap. Uses the
@@ -166,12 +163,12 @@ class TextMatcher:
         finalize the reliable parts while discarding boundary errors.
 
         Args:
-            text_data: Dictionary containing 'text' and 'timestamp'
+            result: RecognitionResult with finalized text and chunk_ids
         """
-        current_text: str = text_data['text']
+        current_text: str = result.text
 
         if self.verbose:
-            print(f"TextMatcher.process_finalized() current_text: received '{current_text}'")
+            print(f"TextMatcher.process_finalized() current_text: received '{current_text}' chunk_ids={result.chunk_ids}")
             print(f"TextMatcher.process_finalized() previous_text: '{self.previous_finalized_text}'")
 
         # Enhanced duplicate detection using text normalization
@@ -181,7 +178,7 @@ class TextMatcher:
             # Normalize both texts for comparison
             current_normalized = self.text_normalizer.normalize_text(current_text)
             previous_normalized = self.text_normalizer.normalize_text(self.previous_finalized_text)
-            time_diff = abs(text_data['timestamp'] - self.previous_finalized_timestamp)
+            time_diff = abs(result.start_time - self.previous_finalized_timestamp)
 
             if (current_normalized == previous_normalized and
                 time_diff < self.time_threshold):
@@ -194,38 +191,57 @@ class TextMatcher:
 
         # Process windows in pairs using the overlap resolution algorithm
         if self.previous_finalized_text:
-            window1: tuple[str, float] = (self.previous_finalized_text, text_data['timestamp'])
-            window2: tuple[str, float] = (current_text, text_data['timestamp'])
+            window1: tuple[str, float] = (self.previous_finalized_text, result.start_time)
+            window2: tuple[str, float] = (current_text, result.start_time)
 
             try:
                 # Resolve overlap between windows
                 finalized_text, remaining_window = self.resolve_overlap(window1, window2)
 
-                # Send finalized text to GUI
+                # Send finalized text to GUI - create RecognitionResult with resolved text but preserve chunk_ids
                 if finalized_text.strip():
                     if self.verbose:
-                        print(f"TextMatcher.process_finalized(): finalize_text('{finalized_text}')")
-                    self.gui_window.finalize_text(finalized_text)
+                        print(f"TextMatcher.process_finalized(): finalize_text('{finalized_text}') chunk_ids={result.chunk_ids}")
+
+                    # Create new RecognitionResult with resolved text but same chunk_ids
+                    finalized_result = RecognitionResult(
+                        text=finalized_text,
+                        start_time=result.start_time,
+                        end_time=result.end_time,
+                        is_preliminary=False,
+                        chunk_ids=result.chunk_ids
+                    )
+                    self.gui_window.finalize_text(finalized_result)
 
                 # Update state with remaining window text (not displayed until next overlap)
                 self.previous_finalized_text = remaining_window[0]
-                self.previous_finalized_timestamp = text_data['timestamp']
+                self.previous_finalized_timestamp = result.start_time
 
             except Exception:
                 # No overlap found - finalize previous and start new
                 if self.verbose:
                     print(f"TextMatcher.process_finalized(): no overlap, finalize_text('{self.previous_finalized_text}')")
-                self.gui_window.finalize_text(self.previous_finalized_text)
+
+                # Create RecognitionResult for previous finalized text
+                # Note: We don't have chunk_ids for previous text, so create empty list
+                previous_result = RecognitionResult(
+                    text=self.previous_finalized_text,
+                    start_time=self.previous_finalized_timestamp,
+                    end_time=result.start_time,
+                    is_preliminary=False,
+                    chunk_ids=[]  # Previous text chunk_ids not stored
+                )
+                self.gui_window.finalize_text(previous_result)
 
                 # Current text stored for next overlap resolution
                 self.previous_finalized_text = current_text
-                self.previous_finalized_timestamp = text_data['timestamp']
+                self.previous_finalized_timestamp = result.start_time
         else:
             # First text - store for overlap resolution
             if self.verbose:
                 print(f"TextMatcher.process_finalized(): first text, storing '{current_text}'")
             self.previous_finalized_text = current_text
-            self.previous_finalized_timestamp = text_data['timestamp']
+            self.previous_finalized_timestamp = result.start_time
 
     def process(self) -> None:
         """Read texts from queue and process them continuously.
@@ -236,8 +252,8 @@ class TextMatcher:
         """
         while self.is_running:
             try:
-                text_data: Dict[str, Union[str, float]] = self.text_queue.get(timeout=0.1)
-                self.process_text(text_data)
+                result: RecognitionResult = self.text_queue.get(timeout=0.1)
+                self.process_text(result)
             except queue.Empty:
                 continue
     
@@ -264,7 +280,16 @@ class TextMatcher:
         if self.previous_finalized_text:
             if self.verbose:
                 print(f"TextMatcher.finalize_pending(): finalize_text('{self.previous_finalized_text}')")
-            self.gui_window.finalize_text(self.previous_finalized_text)
+
+            # Create RecognitionResult for pending text
+            pending_result = RecognitionResult(
+                text=self.previous_finalized_text,
+                start_time=self.previous_finalized_timestamp,
+                end_time=self.previous_finalized_timestamp,
+                is_preliminary=False,
+                chunk_ids=[]  # Pending text chunk_ids not stored
+            )
+            self.gui_window.finalize_text(pending_result)
             self.previous_finalized_text = ""
             self.previous_finalized_timestamp = 0.0
 

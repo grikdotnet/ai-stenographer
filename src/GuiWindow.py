@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import scrolledtext
-from typing import Tuple
+from typing import Tuple, List, Set, Union
+from src.types import RecognitionResult
 
 
 class GuiWindow:
@@ -8,6 +9,7 @@ class GuiWindow:
 
     Provides update_partial() and finalize_text() methods for displaying
     preliminary (gray/italic) and final (black/normal) text in a tkinter widget.
+    Uses chunk-ID tracking for accurate partial finalization.
     """
 
     def __init__(self, text_widget: scrolledtext.ScrolledText, root: tk.Tk = None) -> None:
@@ -15,6 +17,11 @@ class GuiWindow:
         self.root: tk.Tk = root
         self.preliminary_start_pos: str = "1.0"
         self.last_finalized_text: str = ""
+
+        # Chunk-ID-based tracking
+        self.preliminary_results: List[RecognitionResult] = []  # Store RecognitionResult objects
+        self.finalized_chunk_ids: Set[int] = set()  # Track which chunks are finalized
+        self.finalized_text: str = ""  # All finalized text
 
         self._setup_text_styles()
 
@@ -28,7 +35,7 @@ class GuiWindow:
         self.text_widget.tag_configure("preliminary", foreground="gray", font=("TkDefaultFont", 10, "italic"))
         self.text_widget.tag_configure("final", foreground="black", font=("TkDefaultFont", 10, "normal"))
 
-    def update_partial(self, text: str) -> None:
+    def update_partial(self, result: Union[str, RecognitionResult]) -> None:
         """Append new preliminary text to existing preliminary text.
 
         Appends new recognition results to the preliminary text region
@@ -36,17 +43,33 @@ class GuiWindow:
         in gray/italic styling to indicate it may change.
 
         Args:
-            text: Preliminary text to append (typically a single word)
+            result: RecognitionResult object with chunk_ids, or str for backward compatibility
         """
+        # Convert str to RecognitionResult for backward compatibility with old tests
+        if isinstance(result, str):
+            result = RecognitionResult(
+                text=result,
+                start_time=0.0,
+                end_time=0.0,
+                is_preliminary=True,
+                chunk_ids=[]
+            )
+
         if self.root and not self._is_main_thread():
             # Schedule GUI update on main thread when called from background thread
-            self.root.after(0, self._update_partial_safe, text)
+            self.root.after(0, self._update_partial_safe, result)
         else:
             # Direct call when on main thread or in tests
-            self._update_partial_safe(text)
+            self._update_partial_safe(result)
 
-    def _update_partial_safe(self, text: str) -> None:
-        """Thread-safe implementation of preliminary text update."""
+    def _update_partial_safe(self, result: RecognitionResult) -> None:
+        """Thread-safe implementation of preliminary text update.
+
+        Stores RecognitionResult object and appends text to widget.
+        """
+        # Store RecognitionResult object for chunk-ID tracking
+        self.preliminary_results.append(result)
+
         # Verify preliminary_start_pos is valid, reset if corrupted
         try:
             self.text_widget.index(self.preliminary_start_pos)
@@ -60,10 +83,10 @@ class GuiWindow:
         # Check if there's existing preliminary text
         if self.text_widget.compare(self.preliminary_start_pos, "!=", current_end):
             # Append with space separator
-            text_to_insert = " " + text
+            text_to_insert = " " + result.text
         else:
             # No existing preliminary text, insert without space
-            text_to_insert = text
+            text_to_insert = result.text
 
         # Insert new preliminary text at the end
         self.text_widget.insert(tk.END, text_to_insert, "preliminary")
@@ -73,60 +96,93 @@ class GuiWindow:
 
         self.text_widget.see(tk.END)
 
-    def finalize_text(self, final_text: str) -> None:
+    def finalize_text(self, result: Union[str, RecognitionResult]) -> None:
         """Convert preliminary text to final permanent text.
 
-        Removes any existing preliminary text and replaces it with finalized
-        text in black/normal styling. Updates position tracking to prepare for
-        the next preliminary text sequence.
+        Uses chunk-ID tracking to finalize only matched chunks and preserve
+        unmatched preliminary text. Re-renders finalized + remaining preliminary.
 
         Args:
-            final_text: Final text to display permanently
+            result: RecognitionResult with chunk_ids, or str for backward compatibility
         """
+        # Convert str to RecognitionResult for backward compatibility with old tests
+        if isinstance(result, str):
+            result = RecognitionResult(
+                text=result,
+                start_time=0.0,
+                end_time=0.0,
+                is_preliminary=False,
+                chunk_ids=[]
+            )
+
         if self.root and not self._is_main_thread():
             # Schedule GUI update on main thread when called from background thread
-            self.root.after(0, self._finalize_text_safe, final_text)
+            self.root.after(0, self._finalize_text_safe, result)
         else:
             # Direct call when on main thread or in tests
-            self._finalize_text_safe(final_text)
+            self._finalize_text_safe(result)
 
-    def _finalize_text_safe(self, final_text: str) -> None:
-        """Thread-safe implementation of text finalization."""
+    def _finalize_text_safe(self, result: RecognitionResult) -> None:
+        """Thread-safe implementation of text finalization using chunk-ID tracking.
+
+        Marks chunks as finalized, re-renders all text (finalized + remaining preliminary).
+        """
         # Prevent duplicate finalization of the same text
-        if final_text == self.last_finalized_text:
+        if result.text == self.last_finalized_text:
             return
 
-        # Verify preliminary_start_pos is valid, reset if corrupted
-        try:
-            self.text_widget.index(self.preliminary_start_pos)
-        except tk.TclError:
-            # Position is invalid, reset to end of final text
-            self.preliminary_start_pos = self.text_widget.index("end-1c")
-
-        # Get the current preliminary text (if any) to check if finalization is needed
-        current_end = self.text_widget.index("end-1c")
-        preliminary_text = ""
-
-        # Only proceed if there's actually preliminary text to finalize
-        if self.text_widget.compare(self.preliminary_start_pos, "!=", current_end):
-            preliminary_text = self.text_widget.get(self.preliminary_start_pos, current_end)
-
-            # Replace preliminary text with finalized text
-            self.text_widget.delete(self.preliminary_start_pos, current_end)
-            final_with_space = final_text + " "
-            self.text_widget.insert(self.preliminary_start_pos, final_with_space, "final")
-            self.preliminary_start_pos = self.text_widget.index(f"{self.preliminary_start_pos}+{len(final_with_space)}c")
-            self.last_finalized_text = final_text
+        # Mark chunks as finalized (if chunk_ids provided)
+        if result.chunk_ids:
+            self.finalized_chunk_ids.update(result.chunk_ids)
         else:
-            # No preliminary text exists - check if we should add final text
-            # Only add if this is a different final text than the last one
-            if final_text != self.last_finalized_text:
-                final_with_space = final_text + " "
-                self.text_widget.insert(self.preliminary_start_pos, final_with_space, "final")
-                self.preliminary_start_pos = self.text_widget.index(f"{self.preliminary_start_pos}+{len(final_with_space)}c")
-                self.last_finalized_text = final_text
+            # Old behavior: clear all preliminary when no chunk_ids (backward compatibility)
+            self.preliminary_results = []
+
+        # Append to finalized text
+        if self.finalized_text:
+            self.finalized_text += " " + result.text
+        else:
+            self.finalized_text = result.text
+
+        # Re-render everything
+        self._rerender_all()
+
+        # Update last finalized tracker
+        self.last_finalized_text = result.text
 
         self.text_widget.see(tk.END)
+
+    def _rerender_all(self) -> None:
+        """Re-render all text: finalized (black) + remaining preliminary (gray).
+
+        Filters out preliminary results whose chunks have been finalized.
+        """
+        # Clear everything
+        self.text_widget.delete("1.0", tk.END)
+
+        # Add finalized text (black)
+        if self.finalized_text:
+            self.text_widget.insert(tk.END, self.finalized_text + " ", "final")
+
+        # Update preliminary_start_pos to end of finalized text
+        self.preliminary_start_pos = self.text_widget.index("end-1c")
+
+        # Find preliminary results with unfinalized chunks
+        # Handle backward compatibility: if chunk_ids are empty (old tests), filter by matching text
+        if self.finalized_chunk_ids:
+            # New behavior: filter by chunk_ids
+            remaining = [
+                r for r in self.preliminary_results
+                if not any(cid in self.finalized_chunk_ids for cid in r.chunk_ids)
+            ]
+        else:
+            # Old behavior: clear all preliminary when finalizing (no chunk tracking)
+            remaining = []
+
+        # Add remaining preliminary text (gray)
+        for i, r in enumerate(remaining):
+            separator = " " if i > 0 else ""
+            self.text_widget.insert(tk.END, separator + r.text, "preliminary")
 
 
 def create_stt_window() -> Tuple[tk.Tk, scrolledtext.ScrolledText]:

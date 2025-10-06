@@ -52,12 +52,13 @@ class Recognizer:
         if not text or not text.strip():
             return None
 
-        # Create RecognitionResult with type information
+        # Create RecognitionResult with type information and chunk_ids
         result = RecognitionResult(
             text=text,
             start_time=window_data.start_time,
             end_time=window_data.end_time,
-            is_preliminary=is_preliminary
+            is_preliminary=is_preliminary,
+            chunk_ids=window_data.chunk_ids
         )
         self.text_queue.put(result)
         return result

@@ -10,6 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.TextMatcher import TextMatcher
 from src.TextNormalizer import TextNormalizer
+from src.types import RecognitionResult
 
 class TestTextMatcher(unittest.TestCase):
     """Test that TextMatcher correctly handles overlapping speech recognition results"""
@@ -213,7 +214,13 @@ class TestTextMatcher(unittest.TestCase):
         """Test processing first finalized text"""
         text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
-        first_text = {'text': 'hello world', 'timestamp': 1.0, 'is_preliminary': False}
+        first_text = RecognitionResult(
+            text='hello world',
+            start_time=1.0,
+            end_time=1.5,
+            is_preliminary=False,
+            chunk_ids=[1, 2]
+        )
         text_matcher.process_text(first_text)
 
         # First finalized text is stored but not displayed (awaiting overlap resolution)
@@ -227,9 +234,9 @@ class TestTextMatcher(unittest.TestCase):
 
         # Three overlapping windows to test sequential processing
         texts = [
-            {'text': 'hello world ho', 'timestamp': 0.0, 'is_preliminary': False},
-            {'text': 'world how are you do', 'timestamp': 1.0, 'is_preliminary': False},
-            {'text': 'you doing great today', 'timestamp': 2.0, 'is_preliminary': False},
+            RecognitionResult('hello world ho', 0.0, 0.5, False, [1, 2, 3]),
+            RecognitionResult('world how are you do', 1.0, 1.5, False, [2, 3, 4, 5, 6]),
+            RecognitionResult('you doing great today', 2.0, 2.5, False, [5, 6, 7, 8]),
         ]
 
         # Process each text through process_text()
@@ -240,10 +247,12 @@ class TestTextMatcher(unittest.TestCase):
         # Verify finalize_text was called twice (overlap resolution)
         self.assertEqual(self.mock_gui.finalize_text.call_count, 2)
 
-        # Verify the finalized texts
+        # Verify the finalized texts - now checking RecognitionResult objects
         finalize_calls = [call[0][0] for call in self.mock_gui.finalize_text.call_args_list]
-        self.assertEqual(finalize_calls[0], 'hello world')       # From first overlap
-        self.assertEqual(finalize_calls[1], 'how are you')       # From second overlap
+        self.assertIsInstance(finalize_calls[0], RecognitionResult)
+        self.assertEqual(finalize_calls[0].text, 'hello world')
+        self.assertIsInstance(finalize_calls[1], RecognitionResult)
+        self.assertEqual(finalize_calls[1].text, 'how are you')
 
         # Verify update_partial was never called (finalized flow only)
         self.mock_gui.update_partial.assert_not_called()
@@ -253,8 +262,8 @@ class TestTextMatcher(unittest.TestCase):
         text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         # Two finalized texts with no overlap
-        text1 = {'text': 'hello world', 'timestamp': 1.0, 'is_preliminary': False}
-        text2 = {'text': 'completely different', 'timestamp': 2.0, 'is_preliminary': False}
+        text1 = RecognitionResult('hello world', 1.0, 1.5, False, [1, 2])
+        text2 = RecognitionResult('completely different', 2.0, 2.5, False, [3, 4])
 
         # Process first text
         text_matcher.process_text(text1)
@@ -263,7 +272,10 @@ class TestTextMatcher(unittest.TestCase):
 
         # Process second text - no overlap, should finalize first and store second
         text_matcher.process_text(text2)
-        self.mock_gui.finalize_text.assert_called_once_with('hello world')
+        self.assertEqual(self.mock_gui.finalize_text.call_count, 1)
+        finalized = self.mock_gui.finalize_text.call_args[0][0]
+        self.assertIsInstance(finalized, RecognitionResult)
+        self.assertEqual(finalized.text, 'hello world')
         self.assertEqual(text_matcher.previous_finalized_text, 'completely different')
 
         # Verify update_partial never called
@@ -274,7 +286,7 @@ class TestTextMatcher(unittest.TestCase):
         text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         # Process some finalized speech
-        speech_text = {'text': 'hello world', 'timestamp': 1.0, 'is_preliminary': False}
+        speech_text = RecognitionResult('hello world', 1.0, 1.5, False, [1, 2])
         text_matcher.process_text(speech_text)
 
         # Verify it was stored but not displayed (awaiting overlap)
@@ -285,7 +297,10 @@ class TestTextMatcher(unittest.TestCase):
         text_matcher.finalize_pending()
 
         # Verify finalized
-        self.mock_gui.finalize_text.assert_called_once_with('hello world')
+        self.assertEqual(self.mock_gui.finalize_text.call_count, 1)
+        finalized = self.mock_gui.finalize_text.call_args[0][0]
+        self.assertIsInstance(finalized, RecognitionResult)
+        self.assertEqual(finalized.text, 'hello world')
 
         # State should be reset
         self.assertEqual(text_matcher.previous_finalized_text, "")
@@ -306,38 +321,43 @@ class TestTextMatcher(unittest.TestCase):
         text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         # Two preliminary results with no overlap
-        prelim1 = {'text': 'hello world', 'timestamp': 1.0, 'is_preliminary': True}
-        prelim2 = {'text': 'how are you', 'timestamp': 2.0, 'is_preliminary': True}
+        prelim1 = RecognitionResult('hello world', 1.0, 1.5, True, [1])
+        prelim2 = RecognitionResult('how are you', 2.0, 2.5, True, [2])
 
         text_matcher.process_text(prelim1)
 
-        self.mock_gui.update_partial.assert_called_once_with('hello world')
+        self.assertEqual(self.mock_gui.update_partial.call_count, 1)
+        partial = self.mock_gui.update_partial.call_args[0][0]
+        self.assertIsInstance(partial, RecognitionResult)
+        self.assertEqual(partial.text, 'hello world')
         self.mock_gui.finalize_text.assert_not_called()
 
         text_matcher.process_text(prelim2)
 
         # Both should call update_partial() directly (no overlap resolution)
         self.assertEqual(self.mock_gui.update_partial.call_count, 2)
-        self.mock_gui.update_partial.assert_any_call('hello world')
-        self.mock_gui.update_partial.assert_any_call('how are you')
+        calls = [call[0][0] for call in self.mock_gui.update_partial.call_args_list]
+        self.assertEqual(calls[0].text, 'hello world')
+        self.assertEqual(calls[1].text, 'how are you')
 
     def test_process_mixed_preliminary_finalized(self):
         """System should handle mix of preliminary and finalized results"""
         text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         # Preliminary result (instant, word-level)
-        prelim1 = {'text': 'hello', 'timestamp': 1.0, 'is_preliminary': True}
+        prelim1 = RecognitionResult('hello', 1.0, 1.2, True, [1])
 
         # Finalized results (sliding windows with overlap)
-        final1 = {'text': 'hello world how', 'timestamp': 1.5, 'is_preliminary': False}
-        final2 = {'text': 'world how are', 'timestamp': 2.0, 'is_preliminary': False}
+        final1 = RecognitionResult('hello world how', 1.5, 2.0, False, [1, 2, 3])
+        final2 = RecognitionResult('world how are', 2.0, 2.5, False, [2, 3, 4])
 
         text_matcher.process_text(prelim1)
         text_matcher.process_text(final1)
         text_matcher.process_text(final2)
 
         # Verify preliminary called update_partial()
-        self.mock_gui.update_partial.assert_any_call('hello')
+        partial_calls = [call[0][0] for call in self.mock_gui.update_partial.call_args_list]
+        self.assertTrue(any(p.text == 'hello' for p in partial_calls))
 
         # Verify finalized called finalize_text() after overlap resolution
         self.assertGreater(self.mock_gui.finalize_text.call_count, 0)

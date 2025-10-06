@@ -42,6 +42,7 @@ class TestRecognizer:
         assert result.start_time == 1.0
         assert result.end_time == 1.2
         assert result.is_preliminary is True
+        assert result.chunk_ids == [0]  # Verify chunk_ids copied from AudioSegment
 
 
     def test_recognizes_finalized_segments(self, mock_model):
@@ -66,6 +67,7 @@ class TestRecognizer:
         assert result.start_time == 0.0
         assert result.end_time == 3.0
         assert result.is_preliminary is False
+        assert result.chunk_ids == [0, 1, 2, 3, 4]  # Verify chunk_ids copied from AudioSegment
 
 
     def test_filters_empty_text(self, mock_model):
@@ -167,3 +169,31 @@ class TestRecognizer:
 
         assert result.start_time == 5.123
         assert result.end_time == 8.456
+
+    def test_chunk_ids_preserved_in_recognition(self, mock_model):
+        """RecognitionResult should preserve chunk_ids exactly from AudioSegment."""
+        mock_model.recognize.return_value = "chunk test"
+
+        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model)
+
+        # Test with various chunk_id patterns
+        test_cases = [
+            [1],              # Single chunk (preliminary)
+            [1, 2, 3],        # Multiple consecutive chunks
+            [5, 6, 7, 8, 9],  # Larger window
+        ]
+
+        for chunk_ids in test_cases:
+            segment = AudioSegment(
+                type='finalized',
+                data=np.full(48000, 0.1, dtype=np.float32),
+                start_time=0.0,
+                end_time=3.0,
+                chunk_ids=chunk_ids
+            )
+
+            result = recognizer.recognize_window(segment, is_preliminary=False)
+
+            # Verify chunk_ids are copied exactly (not lost or duplicated)
+            assert result.chunk_ids == chunk_ids
+            assert len(result.chunk_ids) == len(chunk_ids)

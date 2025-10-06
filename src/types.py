@@ -45,8 +45,10 @@ class RecognitionResult:
         start_time: Recognition start time in seconds
         end_time: Recognition end time in seconds
         is_preliminary: True for preliminary (instant) results, False for finalized (high-quality) results
+        chunk_ids: List of chunk IDs that contributed to this recognition result
     """
     text: str
     start_time: float
     end_time: float
     is_preliminary: bool
+    chunk_ids: list[int] = field(default_factory=list)
