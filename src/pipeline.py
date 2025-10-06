@@ -12,8 +12,7 @@ from .AudioSource import AudioSource
 from .AdaptiveWindower import AdaptiveWindower
 from .Recognizer import Recognizer
 from .TextMatcher import TextMatcher
-from .TwoStageDisplayHandler import TwoStageDisplayHandler
-from .GuiWindow import create_stt_window, run_gui_loop
+from .GuiWindow import GuiWindow, create_stt_window, run_gui_loop
 
 class STTPipeline:
     def __init__(self, model_path: str = "./models/parakeet", verbose: bool = False, window_duration: float = 2.0, step_duration: float = 1.0, config_path: str = "./config/stt_config.json") -> None:
@@ -23,8 +22,6 @@ class STTPipeline:
         # Create queues - single chunk_queue for AudioSegments (preliminary and finalized)
         self.chunk_queue: queue.Queue = queue.Queue(maxsize=100)
         self.text_queue: queue.Queue = queue.Queue(maxsize=50)
-        self.final_queue: queue.Queue = queue.Queue(maxsize=50)
-        self.partial_queue: queue.Queue = queue.Queue(maxsize=50)
 
         # Load recognition model
         self.model: Any = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3", model_path)
@@ -33,6 +30,9 @@ class STTPipeline:
         self.root: tk.Tk
         self.text_widget: scrolledtext.ScrolledText
         self.root, self.text_widget = create_stt_window()
+
+        # Create GuiWindow instance for TextMatcher
+        self.gui_window: GuiWindow = GuiWindow(self.text_widget, self.root)
 
         # Create components with unified architecture
         # AdaptiveWindower aggregates preliminary segments into finalized windows
@@ -56,13 +56,14 @@ class STTPipeline:
             verbose=verbose
         )
 
-        self.text_matcher: TextMatcher = TextMatcher(self.text_queue, self.final_queue, self.partial_queue, verbose=verbose)
-        self.display_handler: TwoStageDisplayHandler = TwoStageDisplayHandler(self.final_queue, self.partial_queue, self.text_widget, self.root)
+        # TextMatcher now handles display directly via gui_window
+        self.text_matcher: TextMatcher = TextMatcher(self.text_queue, self.gui_window, verbose=verbose)
 
         # All components (AdaptiveWindower has no thread - called directly by AudioSource)
+        # TwoStageDisplayHandler removed - functionality merged into TextMatcher + GuiWindow
         self.components: List[Any] = [
             self.audio_source, self.recognizer,
-            self.text_matcher, self.display_handler
+            self.text_matcher
         ]
 
     def _load_config(self, config_path: str) -> Dict:
