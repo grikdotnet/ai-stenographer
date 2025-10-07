@@ -55,7 +55,7 @@ class TestAudioSourceVADIntegration:
             audio_source.process_chunk_with_vad(chunk, time.time())
 
         # Flush any pending segments (simulates end of stream)
-        audio_source.flush_vad()
+        audio_source.flush()
 
         # Should have emitted at least one speech segment
         assert not chunk_queue.empty()
@@ -126,7 +126,7 @@ class TestAudioSourceVADIntegration:
             audio_source.process_chunk_with_vad(chunk, time.time())
 
         # Flush to get second segment
-        audio_source.flush_vad()
+        audio_source.flush()
 
         # Should have second segment
         assert not chunk_queue.empty(), "Second segment should be emitted after flush"
@@ -197,7 +197,7 @@ class TestAudioSourceVADIntegration:
             audio_source.process_chunk_with_vad(chunk, time.time())
 
         # Flush to get final segment
-        audio_source.flush_vad()
+        audio_source.flush()
 
         # Verify windower.process_segment was called
         assert mock_windower.process_segment.called

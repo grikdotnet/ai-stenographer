@@ -59,7 +59,7 @@ class TestPreliminaryFinalizedIntegration:
                 break
             audio_source.process_chunk_with_vad(chunk, i * config['audio']['chunk_duration'])
 
-        audio_source.flush_vad()
+        audio_source.flush()
 
         # Verify preliminary segments in queue
         assert not chunk_queue.empty()
