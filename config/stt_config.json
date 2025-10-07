@@ -9,7 +9,7 @@
     "threshold": 0.35,
     "min_speech_duration_ms": 64,
     "max_speech_duration_ms": 3000,
-    "silence_timeout_ms": 32
+    "silence_timeout_ms": 128
   },
   "windowing": {
     "window_duration": 3.0,

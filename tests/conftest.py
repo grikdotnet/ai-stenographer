@@ -129,3 +129,17 @@ def config():
             'step_size': 1.0
         }
     }
+
+
+@pytest.fixture
+def vad(config):
+    """Provide a VoiceActivityDetector instance for testing.
+
+    Args:
+        config: Configuration fixture
+
+    Returns:
+        VoiceActivityDetector: VAD instance configured with test config
+    """
+    from src.VoiceActivityDetector import VoiceActivityDetector
+    return VoiceActivityDetector(config=config, verbose=False)

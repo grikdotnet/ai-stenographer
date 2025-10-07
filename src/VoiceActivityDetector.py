@@ -1,4 +1,4 @@
-# src/VoiceActivityDetector.py
+    # src/VoiceActivityDetector.py
 import onnxruntime
 import numpy as np
 from typing import Dict, List, Any, Optional
@@ -14,12 +14,14 @@ class VoiceActivityDetector:
 
     Args:
         config: Configuration dictionary containing VAD and audio parameters
+        verbose: Enable detailed logging for debugging (default: False)
     """
 
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], verbose: bool = False):
         self.config = config
         self.vad_config = config['vad']
         self.audio_config = config['audio']
+        self.verbose = verbose
 
         self.sample_rate: int = self.audio_config['sample_rate']
         self.threshold: float = self.vad_config['threshold']

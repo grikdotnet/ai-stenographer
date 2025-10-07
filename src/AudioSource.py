@@ -20,6 +20,7 @@ class AudioSource:
 
     Args:
         chunk_queue: Queue to receive AudioSegment instances (preliminary segments)
+        vad: VoiceActivityDetector instance for speech detection
         windower: AdaptiveWindower instance to aggregate segments into windows
         config: Configuration dictionary loaded from stt_config.json (required)
         emit_silence: Whether to emit silence markers
@@ -27,6 +28,7 @@ class AudioSource:
 
     def __init__(self,
                  chunk_queue: queue.Queue,
+                 vad: VoiceActivityDetector,
                  windower: Optional[AdaptiveWindower] = None,
                  config: Optional[Dict[str, Any]] = None,
                  emit_silence: bool = False):
@@ -35,6 +37,7 @@ class AudioSource:
             raise ValueError("config is required - must be loaded from stt_config.json")
 
         self.chunk_queue: queue.Queue = chunk_queue
+        self.vad: VoiceActivityDetector = vad
         self.windower: Optional[AdaptiveWindower] = windower
 
         # Extract values from config
@@ -48,7 +51,6 @@ class AudioSource:
 
         # VAD integration (always enabled)
         self.emit_silence: bool = emit_silence
-        self.vad: VoiceActivityDetector = VoiceActivityDetector(config)
 
         # Verify chunk_duration matches VAD frame_duration
         expected_chunk_duration = config['vad']['frame_duration_ms'] / 1000.0

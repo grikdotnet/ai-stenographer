@@ -13,6 +13,7 @@ from .AdaptiveWindower import AdaptiveWindower
 from .Recognizer import Recognizer
 from .TextMatcher import TextMatcher
 from .GuiWindow import GuiWindow, create_stt_window, run_gui_loop
+from .VoiceActivityDetector import VoiceActivityDetector
 
 class STTPipeline:
     def __init__(self, model_path: str = "./models/parakeet", verbose: bool = False, window_duration: float = 2.0, step_duration: float = 1.0, config_path: str = "./config/stt_config.json") -> None:
@@ -34,6 +35,12 @@ class STTPipeline:
         # Create GuiWindow instance for TextMatcher
         self.gui_window: GuiWindow = GuiWindow(self.text_widget, self.root)
 
+        # Create VAD instance
+        self.vad: VoiceActivityDetector = VoiceActivityDetector(
+            config=self.config,
+            verbose=verbose
+        )
+
         # Create components with unified architecture
         # AdaptiveWindower aggregates preliminary segments into finalized windows
         self.adaptive_windower: AdaptiveWindower = AdaptiveWindower(
@@ -44,6 +51,7 @@ class STTPipeline:
         # AudioSource emits preliminary segments and sends to windower
         self.audio_source: AudioSource = AudioSource(
             chunk_queue=self.chunk_queue,
+            vad=self.vad,
             windower=self.adaptive_windower,
             config=self.config
         )
