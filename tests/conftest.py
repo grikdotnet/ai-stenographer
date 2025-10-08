@@ -120,7 +120,6 @@ def config():
             'model_path': './models/silero_vad/silero_vad.onnx',
             'frame_duration_ms': 32,
             'threshold': 0.5,
-            'min_speech_duration_ms': 64,
             'max_speech_duration_ms': 3000,
             'silence_timeout_ms': 32
         },
@@ -143,3 +142,21 @@ def vad(config):
     """
     from src.VoiceActivityDetector import VoiceActivityDetector
     return VoiceActivityDetector(config=config, verbose=False)
+
+
+@pytest.fixture
+def mock_windower():
+    """Provide a Mock windower for tests that don't need windowing behavior.
+
+    Returns a Mock object with process_segment() and flush() methods,
+    allowing AudioSource tests to run without windowing complexity.
+
+    Returns:
+        Mock: Mock windower with no-op methods
+    """
+    from unittest.mock import Mock
+
+    windower = Mock()
+    windower.process_segment = Mock()
+    windower.flush = Mock()
+    return windower

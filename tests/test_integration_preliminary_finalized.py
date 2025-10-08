@@ -29,7 +29,6 @@ class TestPreliminaryFinalizedIntegration:
                 'model_path': './models/silero_vad/silero_vad.onnx',
                 'threshold': 0.5,
                 'frame_duration_ms': 32,
-                'min_speech_duration_ms': 64,
                 'silence_timeout_ms': 32,
                 'max_speech_duration_ms': 3000
             },

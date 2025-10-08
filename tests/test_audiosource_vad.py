@@ -25,13 +25,12 @@ class TestAudioSourceVADIntegration:
                 'model_path': './models/silero_vad/silero_vad.onnx',
                 'threshold': 0.5,
                 'frame_duration_ms': 32,
-                'min_speech_duration_ms': 64,  # 2 frames minimum
-                'silence_timeout_ms': 32,  # 1 frame = word-level cuts
-                'max_speech_duration_ms': 3000
+                'max_speech_duration_ms': 3000,
+                'silence_energy_threshold': 0.9  # Lower for faster word-level cuts
             }
         }
 
-    def test_processes_chunks_through_vad(self, config, vad, speech_audio):
+    def test_processes_chunks_through_vad(self, config, vad, speech_audio, mock_windower):
         """AudioSource should process audio chunks through VAD and emit segments."""
         chunk_queue = queue.Queue()
 
@@ -39,6 +38,7 @@ class TestAudioSourceVADIntegration:
         audio_source = AudioSource(
             chunk_queue=chunk_queue,
             vad=vad,
+            windower=mock_windower,
             config=config
         )
 
@@ -69,7 +69,7 @@ class TestAudioSourceVADIntegration:
         assert len(segment.chunk_ids) == 1  # Preliminary segments have single chunk ID
 
 
-    def test_emits_variable_length_segments(self, config, vad, speech_with_pause_audio):
+    def test_emits_variable_length_segments(self, config, vad, speech_with_pause_audio, mock_windower):
         """AudioSource with VAD should emit segments during streaming, not just after flush.
 
         Pattern: 1s continuous speech + 0.5s silence + 1s continuous speech
@@ -80,6 +80,7 @@ class TestAudioSourceVADIntegration:
         audio_source = AudioSource(
             chunk_queue=chunk_queue,
             vad=vad,
+            windower=mock_windower,
             config=config
         )
 
@@ -142,36 +143,6 @@ class TestAudioSourceVADIntegration:
             f"Expected {expected_duration}s ±{tolerance}s, got {duration}s"
 
 
-    def test_respects_min_speech_duration(self, config, speech_audio):
-        """AudioSource VAD should filter out speech segments shorter than min_duration."""
-        from src.VoiceActivityDetector import VoiceActivityDetector
-
-        config['vad']['min_speech_duration_ms'] = 500  # 500ms minimum
-        vad = VoiceActivityDetector(config=config, verbose=False)
-
-        chunk_queue = queue.Queue()
-        audio_source = AudioSource(
-            chunk_queue=chunk_queue,
-            vad=vad,
-            config=config
-        )
-
-        # Feed only 300ms of speech (below threshold)
-        chunk_size = int(config['audio']['sample_rate'] * config['audio']['chunk_duration'])
-        short_speech = speech_audio[:4800]  # 300ms at 16kHz
-
-        for i in range(0, len(short_speech), chunk_size):
-            chunk = short_speech[i:i + chunk_size]
-            audio_source.process_chunk_with_vad(chunk, time.time())
-
-        # Should not emit segment (too short) - VAD filters these out
-        speech_segments = []
-        while not chunk_queue.empty():
-            seg = chunk_queue.get()
-            # All segments are AudioSegment instances now
-            speech_segments.append(seg)
-
-        assert len(speech_segments) == 0
 
 
     def test_calls_windower_for_each_segment(self, config, vad, speech_audio):

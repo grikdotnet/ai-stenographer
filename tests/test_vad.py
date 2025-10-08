@@ -16,8 +16,7 @@ class TestVoiceActivityDetector:
             'vad': {
                 'model_path': './models/silero_vad/silero_vad.onnx',
                 'threshold': 0.5,
-                'frame_duration_ms': 32,
-                'min_speech_duration_ms': 250
+                'frame_duration_ms': 32
             },
             'audio': {
                 'sample_rate': 16000
@@ -37,8 +36,7 @@ class TestVoiceActivityDetector:
             'vad': {
                 'model_path': './models/silero_vad/silero_vad.onnx',
                 'threshold': 0.5,
-                'frame_duration_ms': 32,
-                'min_speech_duration_ms': 250
+                'frame_duration_ms': 32
             },
             'audio': {
                 'sample_rate': 16000
@@ -60,8 +58,7 @@ class TestVoiceActivityDetector:
             'vad': {
                 'model_path': './models/silero_vad/silero_vad.onnx',
                 'threshold': 0.5,
-                'frame_duration_ms': 32,
-                'min_speech_duration_ms': 100
+                'frame_duration_ms': 32
             },
             'audio': {
                 'sample_rate': 16000
@@ -87,8 +84,7 @@ class TestVoiceActivityDetector:
             'vad': {
                 'model_path': './models/silero_vad/silero_vad.onnx',
                 'threshold': 0.5,
-                'frame_duration_ms': 32,
-                'min_speech_duration_ms': 100
+                'frame_duration_ms': 32
             },
             'audio': {
                 'sample_rate': 16000
@@ -119,8 +115,7 @@ class TestVoiceActivityDetector:
             'vad': {
                 'model_path': './models/silero_vad/silero_vad.onnx',
                 'threshold': 0.5,
-                'frame_duration_ms': 32,
-                'min_speech_duration_ms': 100
+                'frame_duration_ms': 32
             },
             'audio': {
                 'sample_rate': 16000
@@ -144,8 +139,7 @@ class TestVoiceActivityDetector:
             'vad': {
                 'model_path': './models/silero_vad/silero_vad.onnx',
                 'threshold': 0.5,
-                'frame_duration_ms': 32,
-                'min_speech_duration_ms': 100
+                'frame_duration_ms': 32
             },
             'audio': {
                 'sample_rate': 16000

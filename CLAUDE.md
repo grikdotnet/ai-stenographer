@@ -127,9 +127,8 @@ Located in `config/stt_config.json`:
     "model_path": "./models/silero_vad/silero_vad.onnx",
     "frame_duration_ms": 32,
     "threshold": 0.5,
-    "min_speech_duration_ms": 64,
     "max_speech_duration_ms": 3000,
-    "silence_timeout_ms": 32
+    "silence_energy_threshold": 1.5
   },
   "windowing": {
     "window_duration": 3.0,
@@ -142,8 +141,7 @@ Located in `config/stt_config.json`:
 
 - `frame_duration_ms: 32` - Silero VAD's optimal frame size
 - `threshold: 0.5` - Speech probability threshold (0.5 = 50% confidence)
-- `min_speech_duration_ms: 64` - Minimum 2 frames for temporal consistency, filters transient noise
-- `silence_timeout_ms: 32` - Cut at word boundaries (single frame of silence)
+- `silence_energy_threshold: 1.5` - Cumulative silence probability threshold for segment finalization
 - `max_speech_duration_ms: 3000` - Match recognition window, force splits on continuous speech
 
 **Windowing Parameters:**
@@ -153,10 +151,9 @@ Located in `config/stt_config.json`:
 
 **Design Rationale:**
 
-1. **Word-Level Granularity**: 32ms silence timeout segments speech into individual words
-2. **Temporal Consistency**: 64ms minimum (2 frames) distinguishes real speech from clicks
-3. **Recognition Context**: 3s windows provide enough context for accurate STT
-4. **Responsiveness**: 1s step size ensures quick updates while maintaining continuity
+1. **Silence Energy**: Cumulative probability scoring ensures robust silence detection
+2. **Recognition Context**: 3s windows provide enough context for accurate STT
+3. **Responsiveness**: 1s step size ensures quick updates while maintaining continuity
 
 ### Model Requirements
 

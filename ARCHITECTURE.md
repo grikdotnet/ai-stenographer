@@ -284,10 +284,9 @@ AudioSegment (preliminary)
     "chunk_duration": 0.032  // 32ms = 512 samples
   },
   "vad": {
-    "threshold": 0.5,              // 50% speech probability
-    "min_speech_duration_ms": 64,  // 2 frames minimum
-    "max_speech_duration_ms": 3000, // 3s maximum
-    "silence_timeout_ms": 32        // 1 frame = word boundary
+    "threshold": 0.5,                   // 50% speech probability
+    "max_speech_duration_ms": 3000,     // 3s maximum
+    "silence_energy_threshold": 1.5     // Cumulative silence probability
   }
 }
 ```
