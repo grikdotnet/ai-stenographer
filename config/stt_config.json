@@ -2,7 +2,12 @@
   "audio": {
     "sample_rate": 16000,
     "chunk_duration": 0.032,
-    "silence_energy_threshold": 1.2
+    "silence_energy_threshold": 1.2,
+    "rms_normalization": {
+      "enabled": true,
+      "target_rms": 0.05,
+      "silence_threshold": 0.0001
+    }
   },
   "vad": {
     "model_path": "./models/silero_vad/silero_vad.onnx",

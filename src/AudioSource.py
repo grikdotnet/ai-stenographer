@@ -63,6 +63,12 @@ class AudioSource:
         self.speech_before_silence: bool = False
         self.silence_timeout: float = config['windowing'].get('silence_timeout', 0.5)  # Default 0.5s
 
+        # RMS normalization (AGC)
+        rms_config = config['audio'].get('rms_normalization', {})
+        self.rms_normalization_enabled: bool = rms_config.get('enabled', False)
+        self.target_rms: float = rms_config.get('target_rms', 0.05)
+        self.rms_silence_threshold: float = rms_config.get('silence_threshold', 0.001)
+
         # Verify chunk_duration matches VAD frame_duration
         expected_chunk_duration = config['vad']['frame_duration_ms'] / 1000.0
         if abs(chunk_duration - expected_chunk_duration) > 0.001:
@@ -96,7 +102,11 @@ class AudioSource:
     def process_chunk_with_vad(self, audio_chunk: np.ndarray, timestamp: float) -> None:
         """Process audio chunk through VAD using cumulative probability scoring.
 
-        Calculates "amount" of silence as a sum of no-speech probability.
+        RMS Normalization (AGC):
+        - Applied before VAD processing
+        - Normalizes audio to target RMS level (default: 0.05)
+        - Skips normalization for silence (RMS < silence_threshold)
+        - Prevents boosting background noise
 
         Silence Energy Logic:
         - High speech prob (over vad threshold): reset energy to 0.0
@@ -114,11 +124,15 @@ class AudioSource:
             audio_chunk: Audio data to process (32ms frame)
             timestamp: Timestamp of this chunk
         """
+        # Apply RMS normalization (AGC) before VAD
+        if self.rms_normalization_enabled:
+            audio_chunk = self._normalize_rms(audio_chunk)
+
         vad_result = self.vad.process_frame(audio_chunk)
         speech_prob = vad_result['speech_probability']
 
         if self.verbose:
-            print(f"VAD: is_speech={vad_result['is_speech']}, prob={speech_prob:.3f}, silence_energy={self.silence_energy:.3f}")
+            print(f"VAD: is_speech={vad_result['is_speech']}")
 
         if vad_result['is_speech']:
             self.silence_energy = 0.0
@@ -200,6 +214,33 @@ class AudioSource:
         self.windower.process_segment(segment)
 
         self._reset_segment_state()
+
+
+    def _normalize_rms(self, audio_chunk: np.ndarray) -> np.ndarray:
+        """Normalize audio chunk to target RMS level (AGC).
+
+        Automatic Gain Control that boosts quiet audio and reduces loud audio
+        to maintain consistent volume level. Skips normalization for silence
+        to avoid boosting background noise.
+
+        Args:
+            audio_chunk: Audio data to normalize
+
+        Returns:
+            Normalized audio chunk
+        """
+        rms = np.sqrt(np.mean(audio_chunk**2))
+
+        if self.verbose:
+            print(f"RMS={rms:.5f}")
+
+        # Don't normalize silence (avoids boosting background noise)
+        if rms < self.rms_silence_threshold:
+            return audio_chunk
+
+        # Scale to target RMS
+        gain = self.target_rms / rms
+        return audio_chunk * gain
 
 
     def _reset_segment_state(self) -> None:
