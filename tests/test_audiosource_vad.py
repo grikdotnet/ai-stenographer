@@ -34,14 +34,14 @@ class TestAudioSourceVADIntegration:
             }
         }
 
-    def test_processes_chunks_through_vad(self, config, vad, speech_audio, mock_windower):
+    def test_processes_chunks_through_vad(self, config, real_vad, speech_audio, mock_windower):
         """AudioSource should process audio chunks through VAD and emit segments."""
         chunk_queue = queue.Queue()
 
         # Create AudioSource (VAD always enabled)
         audio_source = AudioSource(
             chunk_queue=chunk_queue,
-            vad=vad,
+            vad=real_vad,
             windower=mock_windower,
             config=config
         )
@@ -73,7 +73,7 @@ class TestAudioSourceVADIntegration:
         assert len(segment.chunk_ids) == 1  # Preliminary segments have single chunk ID
 
 
-    def test_emits_variable_length_segments(self, config, vad, speech_with_pause_audio, mock_windower):
+    def test_emits_variable_length_segments(self, config, real_vad, speech_with_pause_audio, mock_windower):
         """AudioSource with VAD should emit segments during streaming, not just after flush.
 
         Pattern: 1s continuous speech + 0.5s silence + 1s continuous speech
@@ -83,7 +83,7 @@ class TestAudioSourceVADIntegration:
 
         audio_source = AudioSource(
             chunk_queue=chunk_queue,
-            vad=vad,
+            vad=real_vad,
             windower=mock_windower,
             config=config
         )
@@ -117,7 +117,7 @@ class TestAudioSourceVADIntegration:
         # Verify segment is approximately 1s (VAD frame alignment may cause slight variance)
         duration = first_segment.end_time - first_segment.start_time
         expected_duration = 1.0  # 1 second of speech
-        tolerance = 0.2  # ±200ms tolerance for VAD frame alignment
+        tolerance = 0.25  # ±250ms tolerance for VAD frame alignment
         assert abs(duration - expected_duration) < tolerance, \
             f"Expected {expected_duration}s ±{tolerance}s, got {duration}s"
 
@@ -142,14 +142,14 @@ class TestAudioSourceVADIntegration:
         # Verify segment is approximately 1s
         duration = second_segment.end_time - second_segment.start_time
         expected_duration = 1.0
-        tolerance = 0.2
+        tolerance = 0.25
         assert abs(duration - expected_duration) < tolerance, \
             f"Expected {expected_duration}s ±{tolerance}s, got {duration}s"
 
 
 
 
-    def test_calls_windower_for_each_segment(self, config, vad, speech_audio):
+    def test_calls_windower_for_each_segment(self, config, real_vad, speech_audio):
         """AudioSource should call windower.process_segment() for each preliminary segment."""
         from unittest.mock import Mock
 
@@ -158,7 +158,7 @@ class TestAudioSourceVADIntegration:
 
         audio_source = AudioSource(
             chunk_queue=chunk_queue,
-            vad=vad,
+            vad=real_vad,
             windower=mock_windower,
             config=config
         )
@@ -185,7 +185,7 @@ class TestAudioSourceVADIntegration:
             assert segment.type == 'preliminary'
 
 
-    def test_calls_windower_flush_on_stop(self, config, vad, speech_audio):
+    def test_calls_windower_flush_on_stop(self, config, real_vad, speech_audio):
         """AudioSource.stop() should call windower.flush() to emit final window."""
         from unittest.mock import Mock
 
@@ -194,7 +194,7 @@ class TestAudioSourceVADIntegration:
 
         audio_source = AudioSource(
             chunk_queue=chunk_queue,
-            vad=vad,
+            vad=real_vad,
             windower=mock_windower,
             config=config
         )

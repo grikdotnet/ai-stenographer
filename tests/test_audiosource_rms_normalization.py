@@ -43,7 +43,7 @@ class TestAudioSourceRMSNormalization:
         }
 
     def test_normalizes_quiet_audio_to_target_rms(self, config, vad, mock_windower):
-        """Quiet audio should be boosted to target RMS level."""
+        """Buffered audio should remain raw (unnormalized) for STT, but VAD receives normalized."""
         chunk_queue = queue.Queue()
         audio_source = AudioSource(
             chunk_queue=chunk_queue,
@@ -52,31 +52,30 @@ class TestAudioSourceRMSNormalization:
             config=config
         )
 
-        # Create quiet audio chunk (RMS ~0.01, should be boosted 5x to 0.05)
+        # Create quiet audio chunk (RMS ~0.01)
         quiet_audio = np.random.randn(512).astype(np.float32) * 0.01
         original_rms = np.sqrt(np.mean(quiet_audio**2))
 
-        # Mock VAD to return speech (so we can capture the normalized audio)
         vad.process_frame = lambda x: {'is_speech': True, 'speech_probability': 0.9}
 
-        # Process chunk
+        # Process single chunk
         audio_source.process_chunk_with_vad(quiet_audio, time.time())
 
-        # Get the buffered audio (it's in speech_buffer)
+        # Get the buffered audio (should be raw, not normalized)
         buffered_audio = audio_source.speech_buffer[0]
-        normalized_rms = np.sqrt(np.mean(buffered_audio**2))
+        buffered_rms = np.sqrt(np.mean(buffered_audio**2))
 
-        # RMS should be close to target_rms (0.05)
-        target_rms = config['audio']['rms_normalization']['target_rms']
-        assert abs(normalized_rms - target_rms) < 0.01, \
-            f"Expected RMS ~{target_rms}, got {normalized_rms:.4f}"
+        # Verify buffered audio is raw (NOT boosted)
+        assert abs(buffered_rms - original_rms) < 0.001, \
+            "Buffered audio should be raw (unnormalized) for STT"
 
-        # Verify it was boosted (not reduced)
-        assert normalized_rms > original_rms, "Quiet audio should be boosted"
+        # Verify gain state was updated (proves normalization happened internally for VAD)
+        assert audio_source.current_gain > 1.0, \
+            "Gain should be > 1.0 for quiet audio (proves normalization logic ran)"
 
 
     def test_normalizes_loud_audio_to_target_rms(self, config, vad, mock_windower):
-        """Loud audio should be reduced to target RMS level."""
+        """Buffered audio should remain raw (unnormalized) for STT, gain state tracks loud audio."""
         chunk_queue = queue.Queue()
         audio_source = AudioSource(
             chunk_queue=chunk_queue,
@@ -85,27 +84,27 @@ class TestAudioSourceRMSNormalization:
             config=config
         )
 
-        # Create loud audio chunk (RMS ~0.2, should be reduced to 0.05)
+        # Create loud audio chunk (RMS ~0.2)
         loud_audio = np.random.randn(512).astype(np.float32) * 0.2
         original_rms = np.sqrt(np.mean(loud_audio**2))
 
         # Mock VAD to return speech
         vad.process_frame = lambda x: {'is_speech': True, 'speech_probability': 0.9}
 
-        # Process chunk
+        # Process single chunk
         audio_source.process_chunk_with_vad(loud_audio, time.time())
 
-        # Get the buffered audio
+        # Get the buffered audio (should be raw, not normalized)
         buffered_audio = audio_source.speech_buffer[0]
-        normalized_rms = np.sqrt(np.mean(buffered_audio**2))
+        buffered_rms = np.sqrt(np.mean(buffered_audio**2))
 
-        # RMS should be close to target_rms (0.05)
-        target_rms = config['audio']['rms_normalization']['target_rms']
-        assert abs(normalized_rms - target_rms) < 0.01, \
-            f"Expected RMS ~{target_rms}, got {normalized_rms:.4f}"
+        # Verify buffered audio is raw (NOT reduced)
+        assert abs(buffered_rms - original_rms) < 0.001, \
+            "Buffered audio should be raw (unnormalized) for STT"
 
-        # Verify it was reduced (not boosted)
-        assert normalized_rms < original_rms, "Loud audio should be reduced"
+        # Verify gain state was updated (proves normalization happened internally for VAD)
+        assert audio_source.current_gain < 1.0, \
+            "Gain should be < 1.0 for loud audio (proves normalization logic ran)"
 
 
     def test_does_not_boost_silence(self, config, vad, mock_windower):
@@ -135,11 +134,9 @@ class TestAudioSourceRMSNormalization:
         assert np.allclose(buffered_audio, silence), \
             "Silence should not be normalized (to avoid boosting background noise)"
 
-
-    def test_normalization_disabled_when_config_false(self, config, vad, mock_windower):
-        """When normalization is disabled, audio should pass through unchanged."""
-        # Disable normalization
-        config['audio']['rms_normalization']['enabled'] = False
+    def test_temporal_smoothing_prevents_sudden_gain_changes(self, config, vad, mock_windower):
+        """Gain should change gradually with temporal smoothing, not instantly."""
+        config['audio']['rms_normalization']['gain_smoothing'] = 0.9
 
         chunk_queue = queue.Queue()
         audio_source = AudioSource(
@@ -149,20 +146,114 @@ class TestAudioSourceRMSNormalization:
             config=config
         )
 
-        # Create quiet audio that would normally be boosted
+        vad.process_frame = lambda x: {'is_speech': True, 'speech_probability': 0.9}
+
+        # Process sequence: quiet → loud
+        quiet_audio = np.random.randn(512).astype(np.float32) * 0.01
+        loud_audio = np.random.randn(512).astype(np.float32) * 0.2
+
+        # First chunk: quiet (RMS ~0.01) - should increase gain
+        audio_source.process_chunk_with_vad(quiet_audio, time.time())
+        first_gain = audio_source.current_gain
+
+        # Gain should be moving up from 1.0 toward ~5.0
+        assert first_gain > 1.0, "Gain should increase for quiet audio"
+
+        # Second chunk: loud (RMS ~0.2) - should decrease gain
+        audio_source.process_chunk_with_vad(loud_audio, time.time())
+        second_gain = audio_source.current_gain
+
+        # With smoothing=0.9, gain shouldn't drop instantly to 0.25
+        # It should be between first_gain and target_gain
+        assert second_gain < first_gain, "Gain should decrease when loud audio appears"
+        assert second_gain > 0.25, "Gain shouldn't instantly reach target due to smoothing"
+
+
+    def test_maintains_gain_state_across_chunks(self, config, vad, mock_windower):
+        """Gain state should persist across multiple chunks and converge to target."""
+        config['audio']['rms_normalization']['gain_smoothing'] = 0.8
+
+        chunk_queue = queue.Queue()
+        audio_source = AudioSource(
+            chunk_queue=chunk_queue,
+            vad=vad,
+            windower=mock_windower,
+            config=config
+        )
+
+        vad.process_frame = lambda x: {'is_speech': True, 'speech_probability': 0.9}
+
+        # Process multiple chunks with consistent low RMS
+        target_rms = config['audio']['rms_normalization']['target_rms']  # 0.05
+        input_rms = 0.01  # Quiet audio
+
+        gain_values = []
+        for _ in range(10):
+            # Create new chunk with same RMS level
+            chunk = np.random.randn(512).astype(np.float32) * input_rms
+            audio_source.process_chunk_with_vad(chunk, time.time())
+            gain_values.append(audio_source.current_gain)
+
+        # Verify gain state persists (current_gain should be set)
+        assert hasattr(audio_source, 'current_gain'), "AudioSource should have current_gain attribute"
+
+        # Verify gain converges toward target_gain over time
+        # target_gain = target_rms / input_rms = 0.05 / 0.01 = 5.0
+        target_gain = target_rms / input_rms
+
+        # Later gains should be closer to target than earlier gains
+        assert abs(gain_values[-1] - target_gain) < abs(gain_values[0] - target_gain), \
+            "Gain should converge closer to target over multiple chunks"
+
+        # The last gain should be very close to target after convergence
+        assert abs(gain_values[-1] - target_gain) < 1.0, \
+            f"After 10 chunks, gain should be near target {target_gain}, got {gain_values[-1]:.2f}"
+
+
+    def test_vad_receives_normalized_stt_receives_raw(self, config, vad, mock_windower):
+        """VAD should receive normalized audio while STT receives raw audio (dual-path)."""
+        chunk_queue = queue.Queue()
+
+        # Create mock VAD to capture what it receives AND force speech detection
+        captured_vad_input = []
+
+        def mock_process_frame(audio):
+            captured_vad_input.append(audio.copy())
+            # Force speech detection so buffer gets populated
+            return {'is_speech': True, 'speech_probability': 0.9}
+
+        vad.process_frame = mock_process_frame
+
+        audio_source = AudioSource(
+            chunk_queue=chunk_queue,
+            vad=vad,
+            windower=mock_windower,
+            config=config
+        )
+
+        # Create quiet audio (RMS ~0.01, should be boosted for VAD)
         quiet_audio = np.random.randn(512).astype(np.float32) * 0.01
         original_rms = np.sqrt(np.mean(quiet_audio**2))
-
-        # Mock VAD to return speech
-        vad.process_frame = lambda x: {'is_speech': True, 'speech_probability': 0.9}
 
         # Process chunk
         audio_source.process_chunk_with_vad(quiet_audio, time.time())
 
-        # Get the buffered audio
+        # Get what VAD received
+        vad_audio = captured_vad_input[0]
+        vad_rms = np.sqrt(np.mean(vad_audio**2))
+
+        # Get what's buffered for STT
         buffered_audio = audio_source.speech_buffer[0]
         buffered_rms = np.sqrt(np.mean(buffered_audio**2))
 
-        # RMS should be unchanged (normalization disabled)
+        # VAD should receive normalized audio (boosted)
+        assert vad_rms > original_rms, \
+            "VAD should receive normalized (boosted) audio"
+
+        # Buffer should contain raw audio (not boosted)
         assert abs(buffered_rms - original_rms) < 0.001, \
-            "With normalization disabled, RMS should be unchanged"
+            "STT buffer should contain raw (unnormalized) audio"
+
+        # They should be different
+        assert not np.allclose(vad_audio, buffered_audio), \
+            "VAD input and STT buffer should be different (normalized vs raw)"

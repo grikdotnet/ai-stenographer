@@ -39,14 +39,14 @@ class TestPreliminaryFinalizedIntegration:
             }
         }
 
-    def test_audiosource_windower_integration(self, config, vad, speech_audio):
+    def test_audiosource_windower_integration(self, config, real_vad, speech_audio):
         """AudioSource should emit preliminary segments and call windower for finalized windows."""
         chunk_queue = queue.Queue()
         mock_windower = Mock()
 
         audio_source = AudioSource(
             chunk_queue=chunk_queue,
-            vad=vad,
+            vad=real_vad,
             windower=mock_windower,
             config=config
         )
@@ -140,7 +140,7 @@ class TestPreliminaryFinalizedIntegration:
         assert result2.is_preliminary is False
 
 
-    def test_full_pipeline_flow(self, config, vad, speech_audio):
+    def test_full_pipeline_flow(self, config, real_vad, speech_audio):
         """Test complete flow: AudioSource → AdaptiveWindower → Recognizer."""
         chunk_queue = queue.Queue()
         text_queue = queue.Queue()
@@ -151,7 +151,7 @@ class TestPreliminaryFinalizedIntegration:
         # Set up audio source with windower
         audio_source = AudioSource(
             chunk_queue=chunk_queue,
-            vad=vad,
+            vad=real_vad,
             windower=windower,
             config=config
         )

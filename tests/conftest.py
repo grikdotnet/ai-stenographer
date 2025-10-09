@@ -132,14 +132,38 @@ def config():
 
 
 @pytest.fixture
-def vad(config):
-    """Provide a VoiceActivityDetector instance for testing.
+def vad():
+    """Provide a mock VAD for unit tests (does not load real model).
+
+    Returns a Mock object with process_frame() method that returns speech detection.
+    For integration tests that need real VAD, use real_vad fixture instead.
+
+    Returns:
+        Mock: Mock VAD with process_frame() method
+    """
+    from unittest.mock import Mock
+
+    mock_vad = Mock()
+    # Default behavior: return speech detected
+    mock_vad.process_frame = Mock(return_value={
+        'is_speech': True,
+        'speech_probability': 0.9
+    })
+    return mock_vad
+
+
+@pytest.fixture
+def real_vad(config):
+    """Provide a real VoiceActivityDetector instance for integration tests.
+
+    Loads the actual Silero VAD ONNX model. Use this only for integration tests
+    that verify VAD behavior. Unit tests should use the 'vad' mock fixture.
 
     Args:
         config: Configuration fixture
 
     Returns:
-        VoiceActivityDetector: VAD instance configured with test config
+        VoiceActivityDetector: Real VAD instance with loaded ONNX model
     """
     from src.VoiceActivityDetector import VoiceActivityDetector
     return VoiceActivityDetector(config=config, verbose=False)

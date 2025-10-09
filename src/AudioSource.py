@@ -18,6 +18,11 @@ class AudioSource:
     processes it through Voice Activity Detection, and emits variable-length
     speech segments to chunk_queue.
 
+    Dual-Path Processing:
+    - Normalized audio is sent to VAD for consistent speech detection
+    - Raw (unnormalized) audio is buffered and sent to STT for maximum accuracy
+    - This addresses Silero VAD's volume-dependency without harming Parakeet STT
+
     Args:
         chunk_queue: Queue to receive AudioSegment instances (preliminary segments)
         vad: VoiceActivityDetector instance for speech detection
@@ -65,9 +70,11 @@ class AudioSource:
 
         # RMS normalization (AGC)
         rms_config = config['audio'].get('rms_normalization', {})
-        self.rms_normalization_enabled: bool = rms_config.get('enabled', False)
         self.target_rms: float = rms_config.get('target_rms', 0.05)
         self.rms_silence_threshold: float = rms_config.get('silence_threshold', 0.001)
+        self.gain_smoothing: float = rms_config.get('gain_smoothing', 0.9)
+        self.current_gain: float = 1.0  # Start with unity gain
+
 
         # Verify chunk_duration matches VAD frame_duration
         expected_chunk_duration = config['vad']['frame_duration_ms'] / 1000.0
@@ -102,18 +109,23 @@ class AudioSource:
     def process_chunk_with_vad(self, audio_chunk: np.ndarray, timestamp: float) -> None:
         """Process audio chunk through VAD using cumulative probability scoring.
 
-        RMS Normalization (AGC):
-        - Applied before VAD processing
-        - Normalizes audio to target RMS level (default: 0.05)
+        Dual-Path Audio Processing:
+        - Normalized audio → VAD (Silero is volume-dependent, needs consistent levels)
+        - Raw audio → speech_buffer → STT (Parakeet requires original amplitude)
+        - This ensures accurate VAD detection AND maximum STT accuracy
+
+        RMS Normalization (for VAD only):
+        - Normalizes to target RMS level (default: 0.05)
         - Skips normalization for silence (RMS < silence_threshold)
         - Prevents boosting background noise
+        - Uses temporal smoothing (α=0.85) to prevent sudden gain changes
+        - Gain state maintained in self.current_gain
 
         Silence Energy Logic:
         - High speech prob (over vad threshold): reset energy to 0.0
         - Lower prob is added up (1.0 - prob)
         - Finalize when energy >= silence_energy_threshold (e.g., 1.5)
-
-        This makes strong silence (prob=0.1) finalize faster than weak silence (prob=0.3).
+        - Strong silence (prob=0.1) finalizes faster than weak silence (prob=0.3)
 
         Silence Timeout Logic:
         - After speech ends, track silence duration from timestamp parameter
@@ -121,14 +133,12 @@ class AudioSource:
         - Reset speech_before_silence flag after flush to prevent repeated flushes
 
         Args:
-            audio_chunk: Audio data to process (32ms frame)
+            audio_chunk: Raw audio data to process (32ms frame)
             timestamp: Timestamp of this chunk
         """
-        # Apply RMS normalization (AGC) before VAD
-        if self.rms_normalization_enabled:
-            audio_chunk = self._normalize_rms(audio_chunk)
+        normalized_audio_chunk = self._normalize_rms(audio_chunk)
 
-        vad_result = self.vad.process_frame(audio_chunk)
+        vad_result = self.vad.process_frame(normalized_audio_chunk)
         speech_prob = vad_result['speech_probability']
 
         if self.verbose:
@@ -217,30 +227,42 @@ class AudioSource:
 
 
     def _normalize_rms(self, audio_chunk: np.ndarray) -> np.ndarray:
-        """Normalize audio chunk to target RMS level (AGC).
+        """Normalize audio chunk to target RMS level with temporal smoothing (AGC).
+
+        Purpose: Creates normalized audio for VAD only. The raw audio is preserved
+        for STT downstream (Parakeet requires original amplitude per NeMo design).
 
         Automatic Gain Control that boosts quiet audio and reduces loud audio
-        to maintain consistent volume level. Skips normalization for silence
-        to avoid boosting background noise.
+        to maintain consistent volume level for VAD. Uses temporal smoothing to
+        prevent sudden gain changes and transient noise amplification.
+
+        Temporal Smoothing Algorithm:
+        - Calculate target gain for current chunk: target_gain = target_rms / current_rms
+        - Smooth with previous gain: current_gain = α * current_gain + (1-α) * target_gain
+        - Apply smoothed gain to chunk
+        - Prevents sudden volume jumps between chunks (e.g., speech → pause → speech)
 
         Args:
-            audio_chunk: Audio data to normalize
+            audio_chunk: Raw audio data to normalize
 
         Returns:
-            Normalized audio chunk
+            Normalized audio chunk with smoothed gain applied (for VAD use only)
         """
         rms = np.sqrt(np.mean(audio_chunk**2))
-
-        if self.verbose:
-            print(f"RMS={rms:.5f}")
 
         # Don't normalize silence (avoids boosting background noise)
         if rms < self.rms_silence_threshold:
             return audio_chunk
 
-        # Scale to target RMS
-        gain = self.target_rms / rms
-        return audio_chunk * gain
+        target_gain = self.target_rms / rms
+
+        # Apply temporal smoothing to prevent sudden gain changes
+        # current_gain = α * old_gain + (1-α) * new_gain
+        # Higher α (e.g., 0.9) = slower, smoother changes
+        # Lower α (e.g., 0.5) = faster response
+        self.current_gain = self.gain_smoothing * self.current_gain + (1 - self.gain_smoothing) * target_gain
+
+        return audio_chunk * self.current_gain
 
 
     def _reset_segment_state(self) -> None:
