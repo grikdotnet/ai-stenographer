@@ -114,18 +114,19 @@ def config():
     return {
         'audio': {
             'sample_rate': 16000,
-            'chunk_duration': 0.032
+            'chunk_duration': 0.032,
+            'silence_energy_threshold': 1.5
         },
         'vad': {
             'model_path': './models/silero_vad/silero_vad.onnx',
             'frame_duration_ms': 32,
-            'threshold': 0.5,
-            'max_speech_duration_ms': 3000,
-            'silence_timeout_ms': 32
+            'threshold': 0.5
         },
         'windowing': {
             'window_duration': 3.0,
-            'step_size': 1.0
+            'step_size': 1.0,
+            'max_speech_duration_ms': 3000,
+            'silence_timeout': 0.5
         }
     }
 

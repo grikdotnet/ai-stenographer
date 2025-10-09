@@ -31,13 +31,14 @@ class AudioSource:
                  vad: VoiceActivityDetector,
                  windower: AdaptiveWindower,
                  config: Dict[str, Any],
-                 emit_silence: bool = False):
+                 emit_silence: bool = False,
+                 verbose: bool = False):
 
         self.chunk_queue: queue.Queue = chunk_queue
         self.vad: VoiceActivityDetector = vad
         self.windower: AdaptiveWindower = windower
+        self.verbose: bool = verbose
 
-        # Extract values from config
         self.sample_rate: int = config['audio']['sample_rate']
         chunk_duration = config['audio']['chunk_duration']
 
@@ -46,21 +47,21 @@ class AudioSource:
         self.stream: sd.InputStream | None = None
         self.chunk_id_counter: int = 0
 
-        # VAD integration (always enabled)
         self.emit_silence: bool = emit_silence
 
-        # Speech buffering state (moved from VAD)
         self.speech_buffer: List[np.ndarray] = []
         self.is_speech_active: bool = False
         self.speech_start_time: float = 0.0
 
-        # Load timing configs from config (used for buffering logic)
-        self.max_speech_duration_ms: int = config['vad']['max_speech_duration_ms']
+        self.max_speech_duration_ms: int = config['windowing']['max_speech_duration_ms']
         self.frame_duration_ms: int = config['vad']['frame_duration_ms']
 
-        # Silence energy computation (cumulative probability scoring)
         self.silence_energy: float = 0.0
-        self.silence_energy_threshold: float = config['vad'].get('silence_energy_threshold', 1.5)
+        self.silence_energy_threshold: float = config['audio'].get('silence_energy_threshold', 1.5)
+
+        self.last_speech_timestamp: float = 0.0
+        self.speech_before_silence: bool = False
+        self.silence_timeout: float = config['windowing'].get('silence_timeout', 0.5)  # Default 0.5s
 
         # Verify chunk_duration matches VAD frame_duration
         expected_chunk_duration = config['vad']['frame_duration_ms'] / 1000.0
@@ -86,11 +87,9 @@ class AudioSource:
         if status:
             print(f"Audio error: {status}")
 
-        # Convert to float32 mono
         audio_float: np.ndarray = indata[:, 0].astype(np.float32)
         current_time = time.time()
 
-        # Process through VAD
         self.process_chunk_with_vad(audio_float, current_time)
 
 
@@ -106,24 +105,39 @@ class AudioSource:
 
         This makes strong silence (prob=0.1) finalize faster than weak silence (prob=0.3).
 
+        Silence Timeout Logic:
+        - After speech ends, track silence duration from timestamp parameter
+        - If silence exceeds timeout AND speech was detected before, flush windower
+        - Reset speech_before_silence flag after flush to prevent repeated flushes
+
         Args:
             audio_chunk: Audio data to process (32ms frame)
             timestamp: Timestamp of this chunk
         """
-        # Call VAD for single frame detection
         vad_result = self.vad.process_frame(audio_chunk)
         speech_prob = vad_result['speech_probability']
 
+        if self.verbose:
+            print(f"VAD: is_speech={vad_result['is_speech']}, prob={speech_prob:.3f}, silence_energy={self.silence_energy:.3f}")
+
         if vad_result['is_speech']:
             self.silence_energy = 0.0
+            self.last_speech_timestamp = timestamp
+            self.speech_before_silence = True
             self._handle_speech_frame(audio_chunk, timestamp)
-        elif self.is_speech_active:
-            self.silence_energy += (1.0 - speech_prob)
+        else:
+            if self.is_speech_active:
+                self.silence_energy += (1.0 - speech_prob)
 
-            if self.silence_energy >= self.silence_energy_threshold:
-                # Silence ended speech - finalize segment
-                self.is_speech_active = False
-                self._finalize_segment()
+                if self.silence_energy >= self.silence_energy_threshold:
+                    self.is_speech_active = False
+                    self._finalize_segment()
+            # Check silence timeout for windower flush
+            if self.speech_before_silence:
+                silence_duration = timestamp - self.last_speech_timestamp
+                if silence_duration >= self.silence_timeout:
+                    self.windower.flush()
+                    self.speech_before_silence = False  # Reset after flush to prevent repeated flushes
 
 
     def _handle_speech_frame(self, audio_chunk: np.ndarray, timestamp: float) -> None:
@@ -141,17 +155,15 @@ class AudioSource:
             self.speech_start_time = timestamp
             self.speech_buffer = [audio_chunk]
         else:
-            # Accumulate speech
             self.speech_buffer.append(audio_chunk)
 
-            # Check if exceeded max duration
             current_duration_ms = len(self.speech_buffer) * self.frame_duration_ms
             if current_duration_ms >= self.max_speech_duration_ms:
                 self._finalize_segment()
-                # Start new segment immediately
+                # Start new segment (empty, ready for next chunk)
                 self.is_speech_active = True
                 self.speech_start_time = timestamp
-                self.speech_buffer = [audio_chunk]
+                self.speech_buffer = []
 
 
     def _finalize_segment(self) -> None:
@@ -176,13 +188,17 @@ class AudioSource:
             chunk_ids=[chunk_id]
         )
 
-        # Send to queue for instant recognition
+        if self.verbose:
+            duration_ms = len(audio_data) / self.sample_rate * 1000
+            print(f"AudioSource: created segment chunk_id={chunk_id}, duration={duration_ms:.0f}ms, samples={len(audio_data)}")
+
         self.chunk_queue.put(segment)
 
-        # Send to windower for aggregation into finalized windows
+        if self.verbose:
+            print(f"AudioSource: put preliminary segment to queue (chunk_id={chunk_id})")
+
         self.windower.process_segment(segment)
 
-        # Reset state
         self._reset_segment_state()
 
 
@@ -221,7 +237,6 @@ class AudioSource:
         if self.stream:
             self.stream.stop()
 
-        # Flush pending segments
         self.flush()
 
 
@@ -231,9 +246,7 @@ class AudioSource:
         Emits any accumulated speech in the buffer, then flushes windower.
         Useful for end-of-stream or testing scenarios.
         """
-        # Finalize any pending speech segment
         if self.is_speech_active and len(self.speech_buffer) > 0:
             self._finalize_segment()
 
-        # Flush windower to emit final window
         self.windower.flush()

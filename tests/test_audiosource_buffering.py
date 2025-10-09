@@ -20,14 +20,18 @@ class TestAudioSourceBuffering:
         return {
             'audio': {
                 'sample_rate': 16000,
-                'chunk_duration': 0.032
+                'chunk_duration': 0.032,
+                'silence_energy_threshold': 2.0  # ~4 frames for tests
             },
             'vad': {
                 'model_path': './models/silero_vad/silero_vad.onnx',
                 'threshold': 0.5,
-                'frame_duration_ms': 32,
-                'max_speech_duration_ms': 3000,
-                'silence_energy_threshold': 2.0  # ~4 frames for tests
+                'frame_duration_ms': 32
+            },
+            'windowing': {
+                'window_duration': 3.0,
+                'step_size': 1.0,
+                'max_speech_duration_ms': 3000
             }
         }
 
@@ -105,7 +109,7 @@ class TestAudioSourceBuffering:
 
     def test_handles_max_speech_duration(self, config, mock_vad, mock_windower):
         """AudioSource should split segments exceeding max_speech_duration_ms."""
-        config['vad']['max_speech_duration_ms'] = 160  # 5 frames max (160ms)
+        config['windowing']['max_speech_duration_ms'] = 160  # 5 frames max (160ms)
         chunk_queue = queue.Queue()
 
         # All speech - should auto-split at 5 frames
@@ -119,20 +123,22 @@ class TestAudioSourceBuffering:
         )
 
         frame_size = 512
-        # Feed 6 speech frames - should split at frame 5
+        # Feed 6 speech frames - should split when frame 5 reaches exact max duration
         for i in range(6):
             frame = np.random.randn(frame_size).astype(np.float32) * 0.1
             audio_source.process_chunk_with_vad(frame, float(i) * 0.032)
 
-        # Should have emitted first segment (5 frames)
+        # Should have emitted first segment (5 frames = 160ms, split at exact max duration)
         assert not chunk_queue.empty(), "Should emit segment at max duration"
 
         first_segment = chunk_queue.get()
-        assert len(first_segment.data) == 5 * frame_size, "First segment should be 5 frames"
+        assert len(first_segment.data) == 5 * frame_size, \
+            f"First segment should be 5 frames (160ms = max), got {len(first_segment.data) // frame_size} frames"
 
-        # Second segment still buffering (2 frames: frame 4 restarted buffer, then frame 5 added)
+        # Buffer now has frame 6 (second segment started)
         assert audio_source.speech_buffer is not None
-        assert len(audio_source.speech_buffer) == 2, "Should continue buffering after split"
+        assert len(audio_source.speech_buffer) == 1, \
+            f"Buffer should have 1 frame (frame 6), but has {len(audio_source.speech_buffer)} frames"
 
     def test_flush_emits_pending_segment(self, config, mock_vad, mock_windower):
         """flush() should emit any buffered speech segment."""

@@ -45,7 +45,8 @@ class STTPipeline:
         # AdaptiveWindower aggregates preliminary segments into finalized windows
         self.adaptive_windower: AdaptiveWindower = AdaptiveWindower(
             chunk_queue=self.chunk_queue,
-            config=self.config
+            config=self.config,
+            verbose=verbose
         )
 
         # AudioSource emits preliminary segments and sends to windower
@@ -53,7 +54,8 @@ class STTPipeline:
             chunk_queue=self.chunk_queue,
             vad=self.vad,
             windower=self.adaptive_windower,
-            config=self.config
+            config=self.config,
+            verbose=verbose
         )
 
         # Recognizer processes both preliminary and finalized segments

@@ -19,14 +19,18 @@ class TestAudioSourceVADIntegration:
         return {
             'audio': {
                 'sample_rate': 16000,
-                'chunk_duration': 0.032  # 32ms chunks match VAD frame size
+                'chunk_duration': 0.032,  # 32ms chunks match VAD frame size
+                'silence_energy_threshold': 0.9  # Lower for faster word-level cuts
             },
             'vad': {
                 'model_path': './models/silero_vad/silero_vad.onnx',
                 'threshold': 0.5,
-                'frame_duration_ms': 32,
-                'max_speech_duration_ms': 3000,
-                'silence_energy_threshold': 0.9  # Lower for faster word-level cuts
+                'frame_duration_ms': 32
+            },
+            'windowing': {
+                'window_duration': 3.0,
+                'step_size': 1.0,
+                'max_speech_duration_ms': 3000
             }
         }
 

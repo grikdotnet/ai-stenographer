@@ -22,9 +22,10 @@ class AdaptiveWindower:
         config: Configuration dictionary with audio and windowing parameters
     """
 
-    def __init__(self, chunk_queue: queue.Queue, config: Dict[str, Any]):
+    def __init__(self, chunk_queue: queue.Queue, config: Dict[str, Any], verbose: bool = False):
         self.chunk_queue: queue.Queue = chunk_queue
         self.config: Dict[str, Any] = config
+        self.verbose: bool = verbose
 
         self.sample_rate: int = config['audio']['sample_rate']
         self.window_duration: float = config['windowing']['window_duration']  # 3.0 seconds
@@ -114,7 +115,14 @@ class AdaptiveWindower:
             chunk_ids=unique_chunk_ids
         )
 
+        if self.verbose:
+            duration_ms = len(window_audio) / self.sample_rate * 1000
+            print(f"AdaptiveWindower: created window duration={duration_ms:.0f}ms, chunk_ids={unique_chunk_ids}, samples={len(window_audio)}")
+
         self.chunk_queue.put(window)
+
+        if self.verbose:
+            print(f"AdaptiveWindower: put finalized window to queue (chunk_ids={unique_chunk_ids})")
 
         # Update window timing for next window
         self.last_window_time = self.window_start_time
@@ -159,7 +167,14 @@ class AdaptiveWindower:
             chunk_ids=unique_chunk_ids
         )
 
+        if self.verbose:
+            duration_ms = len(window_audio) / self.sample_rate * 1000
+            print(f"AdaptiveWindower.flush(): created final window duration={duration_ms:.0f}ms, chunk_ids={unique_chunk_ids}")
+
         self.chunk_queue.put(window)
+
+        if self.verbose:
+            print(f"AdaptiveWindower.flush(): put final window to queue (chunk_ids={unique_chunk_ids})")
 
         # Clear segments
         self.segments = []

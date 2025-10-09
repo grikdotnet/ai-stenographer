@@ -251,3 +251,17 @@ class TestAdaptiveWindower:
         duration = window.end_time - window.start_time
         assert duration < 1.0  # Less than full window
         assert window.chunk_ids == [0, 1]  # Two words
+
+
+    def test_flush_idempotent_with_empty_buffer(self, config):
+        """flush() should be safe to call multiple times with empty buffer."""
+        chunk_queue = queue.Queue()
+        windower = AdaptiveWindower(chunk_queue, config)
+
+        # Call flush multiple times on empty windower
+        windower.flush()
+        windower.flush()
+        windower.flush()
+
+        # Should not crash or emit anything
+        assert chunk_queue.empty()
