@@ -4,15 +4,15 @@
     "chunk_duration": 0.032,
     "silence_energy_threshold": 1.2,
     "rms_normalization": {
-      "enabled": true,
       "target_rms": 0.05,
-      "silence_threshold": 0.0001
+      "silence_threshold": 0.0001,
+      "gain_smoothing": 0.85
     }
   },
   "vad": {
     "model_path": "./models/silero_vad/silero_vad.onnx",
     "frame_duration_ms": 32,
-    "threshold": 0.4
+    "threshold": 0.3
   },
   "windowing": {
     "window_duration": 3.0,
