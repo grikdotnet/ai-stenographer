@@ -95,11 +95,11 @@ class TestPreliminaryFinalizedIntegration:
 
         windower.flush()
 
-        # Should produce finalized windows
+        # Should produce flush windows (since we called flush())
         assert not chunk_queue.empty()
         window = chunk_queue.get()
         assert isinstance(window, AudioSegment)
-        assert window.type == 'finalized'
+        assert window.type == 'flush'
         assert len(window.chunk_ids) > 1  # Aggregated multiple chunks
 
 
@@ -127,17 +127,17 @@ class TestPreliminaryFinalizedIntegration:
         )
 
         # Process both segments
-        result1 = recognizer.recognize_window(preliminary, is_preliminary=True)
-        result2 = recognizer.recognize_window(finalized, is_preliminary=False)
+        result1 = recognizer.recognize_window(preliminary)
+        result2 = recognizer.recognize_window(finalized)
 
-        # Verify both results with correct flags
+        # Verify both results with correct status
         assert isinstance(result1, RecognitionResult)
         assert result1.text == "instant result"
-        assert result1.is_preliminary is True
+        assert result1.status == 'preliminary'
 
         assert isinstance(result2, RecognitionResult)
         assert result2.text == "quality result"
-        assert result2.is_preliminary is False
+        assert result2.status == 'final'
 
 
     def test_full_pipeline_flow(self, config, real_vad, speech_audio):
@@ -180,28 +180,30 @@ class TestPreliminaryFinalizedIntegration:
         # Recognize each segment
         results = []
         for segment in segments_to_process:
-            is_preliminary = (segment.type == 'preliminary')
-            result = recognizer.recognize_window(segment, is_preliminary=is_preliminary)
+            result = recognizer.recognize_window(segment)
             if result is not None:
                 results.append(result)
 
         # Verify we got recognition results
         assert len(results) > 0
 
-        # Check that we have both preliminary and finalized results
+        # Check that we have both preliminary and finalized/flush results
         preliminary_count = 0
         finalized_count = 0
+        flush_count = 0
 
         for result in results:
             assert isinstance(result, RecognitionResult)
-            if result.is_preliminary:
+            if result.status == 'preliminary':
                 preliminary_count += 1
-            else:
+            elif result.status == 'final':
                 finalized_count += 1
+            elif result.status == 'flush':
+                flush_count += 1
 
-        # Should have at least one of each type
+        # Should have at least one of each type (flush is like finalized)
         assert preliminary_count >= 1, "Should have preliminary results"
-        assert finalized_count >= 1, "Should have finalized results"
+        assert (finalized_count + flush_count) >= 1, "Should have finalized or flush results"
 
 
     def test_timing_preservation_through_pipeline(self, config):
@@ -221,7 +223,7 @@ class TestPreliminaryFinalizedIntegration:
         )
 
         # Process segment
-        result = recognizer.recognize_window(segment, is_preliminary=False)
+        result = recognizer.recognize_window(segment)
 
         # Check timing preserved
         assert result.start_time == 1.234

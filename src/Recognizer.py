@@ -30,17 +30,29 @@ class Recognizer:
         self.thread: Optional[threading.Thread] = None
         self.verbose: bool = verbose
 
-    def recognize_window(self, window_data: ChunkQueueItem, is_preliminary: bool = False) -> Optional[RecognitionResult]:
+    def recognize_window(self, window_data: ChunkQueueItem) -> Optional[RecognitionResult]:
         """Recognize audio and emit RecognitionResult.
+
+        Maps AudioSegment.type to RecognitionResult.status:
+        - 'preliminary' → 'preliminary'
+        - 'finalized' → 'final'
+        - 'flush' → 'flush'
 
         Args:
             window_data: AudioSegment to recognize
-            is_preliminary: True for instant results, False for high-quality
 
         Returns:
             RecognitionResult if text recognized, None if empty/silence
         """
         audio: np.ndarray = window_data.data
+
+        # Map AudioSegment.type to RecognitionResult.status
+        status_map = {
+            'preliminary': 'preliminary',
+            'finalized': 'final',
+            'flush': 'flush'
+        }
+        status = status_map[window_data.type]
 
         # Recognize
         text: str = self.model.recognize(audio)
@@ -52,12 +64,12 @@ class Recognizer:
         if not text or not text.strip():
             return None
 
-        # Create RecognitionResult with type information and chunk_ids
+        # Create RecognitionResult with mapped status
         result = RecognitionResult(
             text=text,
             start_time=window_data.start_time,
             end_time=window_data.end_time,
-            is_preliminary=is_preliminary,
+            status=status,
             chunk_ids=window_data.chunk_ids
         )
         self.text_queue.put(result)
@@ -67,15 +79,13 @@ class Recognizer:
         """Process AudioSegments from queue continuously.
 
         Reads AudioSegment instances and converts them to RecognitionResult instances.
-        Determines preliminary vs finalized based on segment type.
+        Status is determined automatically from AudioSegment.type.
         Runs until stop() is called.
         """
         while self.is_running:
             try:
                 window_data: ChunkQueueItem = self.chunk_queue.get(timeout=0.1)
-                # Determine if preliminary based on type field
-                is_preliminary: bool = (window_data.type == 'preliminary')
-                self.recognize_window(window_data, is_preliminary=is_preliminary)
+                self.recognize_window(window_data)
             except queue.Empty:
                 continue
 

@@ -218,7 +218,7 @@ class TestTextMatcher(unittest.TestCase):
             text='hello world',
             start_time=1.0,
             end_time=1.5,
-            is_preliminary=False,
+            status='final',
             chunk_ids=[1, 2]
         )
         text_matcher.process_text(first_text)
@@ -234,9 +234,9 @@ class TestTextMatcher(unittest.TestCase):
 
         # Three overlapping windows to test sequential processing
         texts = [
-            RecognitionResult('hello world ho', 0.0, 0.5, False, [1, 2, 3]),
-            RecognitionResult('world how are you do', 1.0, 1.5, False, [2, 3, 4, 5, 6]),
-            RecognitionResult('you doing great today', 2.0, 2.5, False, [5, 6, 7, 8]),
+            RecognitionResult('hello world ho', 0.0, 0.5, status='final', chunk_ids=[1, 2, 3]),
+            RecognitionResult('world how are you do', 1.0, 1.5, status='final', chunk_ids=[2, 3, 4, 5, 6]),
+            RecognitionResult('you doing great today', 2.0, 2.5, status='final', chunk_ids=[5, 6, 7, 8]),
         ]
 
         # Process each text through process_text()
@@ -262,8 +262,8 @@ class TestTextMatcher(unittest.TestCase):
         text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         # Two finalized texts with no overlap
-        text1 = RecognitionResult('hello world', 1.0, 1.5, False, [1, 2])
-        text2 = RecognitionResult('completely different', 2.0, 2.5, False, [3, 4])
+        text1 = RecognitionResult('hello world', 1.0, 1.5, status='final', chunk_ids=[1, 2])
+        text2 = RecognitionResult('completely different', 2.0, 2.5, status='final', chunk_ids=[3, 4])
 
         # Process first text
         text_matcher.process_text(text1)
@@ -286,7 +286,7 @@ class TestTextMatcher(unittest.TestCase):
         text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         # Process some finalized speech
-        speech_text = RecognitionResult('hello world', 1.0, 1.5, False, [1, 2])
+        speech_text = RecognitionResult('hello world', 1.0, 1.5, status='final', chunk_ids=[1, 2])
         text_matcher.process_text(speech_text)
 
         # Verify it was stored but not displayed (awaiting overlap)
@@ -321,8 +321,8 @@ class TestTextMatcher(unittest.TestCase):
         text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         # Two preliminary results with no overlap
-        prelim1 = RecognitionResult('hello world', 1.0, 1.5, True, [1])
-        prelim2 = RecognitionResult('how are you', 2.0, 2.5, True, [2])
+        prelim1 = RecognitionResult('hello world', 1.0, 1.5, status='preliminary', chunk_ids=[1])
+        prelim2 = RecognitionResult('how are you', 2.0, 2.5, status='preliminary', chunk_ids=[2])
 
         text_matcher.process_text(prelim1)
 
@@ -345,11 +345,11 @@ class TestTextMatcher(unittest.TestCase):
         text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         # Preliminary result (instant, word-level)
-        prelim1 = RecognitionResult('hello', 1.0, 1.2, True, [1])
+        prelim1 = RecognitionResult('hello', 1.0, 1.2, status='preliminary', chunk_ids=[1])
 
         # Finalized results (sliding windows with overlap)
-        final1 = RecognitionResult('hello world how', 1.5, 2.0, False, [1, 2, 3])
-        final2 = RecognitionResult('world how are', 2.0, 2.5, False, [2, 3, 4])
+        final1 = RecognitionResult('hello world how', 1.5, 2.0, status='final', chunk_ids=[1, 2, 3])
+        final2 = RecognitionResult('world how are', 2.0, 2.5, status='final', chunk_ids=[2, 3, 4])
 
         text_matcher.process_text(prelim1)
         text_matcher.process_text(final1)
@@ -361,6 +361,45 @@ class TestTextMatcher(unittest.TestCase):
 
         # Verify finalized called finalize_text() after overlap resolution
         self.assertGreater(self.mock_gui.finalize_text.call_count, 0)
+
+    def test_process_flush_finalizes_pending(self):
+        """Flush result with empty text should trigger finalize_pending()"""
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+
+        # 1. Process final text (gets stored in previous_finalized_text)
+        final_text = RecognitionResult('hello world', 1.0, 1.5, status='final', chunk_ids=[1, 2])
+        text_matcher.process_text(final_text)
+
+        # Verify stored but not finalized
+        self.assertEqual(text_matcher.previous_finalized_text, 'hello world')
+        self.mock_gui.finalize_text.assert_not_called()
+
+        # 2. Process flush result with empty text
+        flush_text = RecognitionResult('', 2.0, 2.0, status='flush', chunk_ids=[])
+        text_matcher.process_text(flush_text)
+
+        # Verify finalize_pending() was triggered
+        self.assertEqual(self.mock_gui.finalize_text.call_count, 1)
+        finalized = self.mock_gui.finalize_text.call_args[0][0]
+        self.assertIsInstance(finalized, RecognitionResult)
+        self.assertEqual(finalized.text, 'hello world')
+        self.assertEqual(text_matcher.previous_finalized_text, '')
+
+    def test_process_flush_with_text(self):
+        """Flush result with text should process as final, then finalize pending"""
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+
+        # Process flush result with text (from flushed audio segment)
+        flush_text = RecognitionResult('hello world', 1.0, 2.0, status='flush', chunk_ids=[1, 2])
+        text_matcher.process_text(flush_text)
+
+        # Flush processing: text -> process_finalized (stores) -> finalize_pending (finalizes & clears)
+        # Result: text should be finalized and state cleared
+        self.assertEqual(self.mock_gui.finalize_text.call_count, 1)
+        finalized = self.mock_gui.finalize_text.call_args[0][0]
+        self.assertEqual(finalized.text, 'hello world')
+        # State should be cleared after finalize
+        self.assertEqual(text_matcher.previous_finalized_text, '')
 
 
 if __name__ == '__main__':

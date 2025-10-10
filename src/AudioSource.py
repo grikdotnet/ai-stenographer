@@ -141,27 +141,32 @@ class AudioSource:
         vad_result = self.vad.process_frame(normalized_audio_chunk)
         speech_prob = vad_result['speech_probability']
 
-        if self.verbose:
-            print(f"VAD: is_speech={vad_result['is_speech']}")
-
         if vad_result['is_speech']:
             self.silence_energy = 0.0
             self.last_speech_timestamp = timestamp
             self.speech_before_silence = True
             self._handle_speech_frame(audio_chunk, timestamp)
         else:
+            silence_duration = timestamp - self.last_speech_timestamp
             if self.is_speech_active:
+                if self.verbose:
+                    print(f"AudioSource: silence_energy={self.silence_energy}, duration: {silence_duration:.2f}s chunk {self.chunk_id_counter}")
                 self.silence_energy += (1.0 - speech_prob)
 
                 if self.silence_energy >= self.silence_energy_threshold:
+                    if self.verbose:
+                        print(f"AudioSource: silence_energy_threshold reached")
                     self.is_speech_active = False
                     self._finalize_segment()
+
             # Check silence timeout for windower flush
             if self.speech_before_silence:
-                silence_duration = timestamp - self.last_speech_timestamp
                 if silence_duration >= self.silence_timeout:
-                    self.windower.flush()
+                    if self.verbose:
+                        print(f"AudioSource: silence_timeout reached")
+                    self.flush()
                     self.speech_before_silence = False  # Reset after flush to prevent repeated flushes
+                    self.last_speech_timestamp = 0.0
 
 
     def _handle_speech_frame(self, audio_chunk: np.ndarray, timestamp: float) -> None:
@@ -178,7 +183,11 @@ class AudioSource:
             self.is_speech_active = True
             self.speech_start_time = timestamp
             self.speech_buffer = [audio_chunk]
+            if self.verbose:
+                print(f"AudioSource: Starting segment at {self.speech_start_time:.2f}")
         else:
+            if self.verbose:
+                print(f"AudioSource: adding chunk to segment {self.chunk_id_counter}")
             self.speech_buffer.append(audio_chunk)
 
             current_duration_ms = len(self.speech_buffer) * self.frame_duration_ms
@@ -213,18 +222,14 @@ class AudioSource:
         )
 
         if self.verbose:
-            duration_ms = len(audio_data) / self.sample_rate * 1000
-            print(f"AudioSource: created segment chunk_id={chunk_id}, duration={duration_ms:.0f}ms, samples={len(audio_data)}")
+            print(f"AudioSource._finalize_segment(): pushed chunk_id={chunk_id}")
 
         self.chunk_queue.put(segment)
 
-        if self.verbose:
-            print(f"AudioSource: put preliminary segment to queue (chunk_id={chunk_id})")
-
         self.windower.process_segment(segment)
 
-        self._reset_segment_state()
-
+        self.speech_buffer = []
+        self.silence_energy = 0.0
 
     def _normalize_rms(self, audio_chunk: np.ndarray) -> np.ndarray:
         """Normalize audio chunk to target RMS level with temporal smoothing (AGC).
@@ -264,17 +269,6 @@ class AudioSource:
 
         return audio_chunk * self.current_gain
 
-
-    def _reset_segment_state(self) -> None:
-        """Clear buffering state after segment emission or discard.
-
-        Note: Does not modify is_speech_active - that's managed by
-        process_chunk_with_vad() based on speech/silence detection.
-        """
-        self.speech_buffer = []
-        self.silence_energy = 0.0
-
-
     def start(self) -> None:
         """Start capturing audio from the microphone.
 
@@ -313,3 +307,6 @@ class AudioSource:
             self._finalize_segment()
 
         self.windower.flush()
+        
+        if self.verbose:
+            print("AudioSource: flush()")

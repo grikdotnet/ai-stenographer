@@ -98,12 +98,12 @@ class TestAdaptiveWindower:
         # Flush to emit window
         windower.flush()
 
-        # Should create at least one window
+        # Should create at least one window (flush type since we called flush())
         assert not chunk_queue.empty()
 
         window = chunk_queue.get()
         assert isinstance(window, AudioSegment)
-        assert window.type == 'finalized'
+        assert window.type == 'flush'
         assert isinstance(window.data, np.ndarray)
         assert len(window.chunk_ids) > 1  # Should aggregate multiple chunks
 
@@ -198,7 +198,7 @@ class TestAdaptiveWindower:
 
         # Window should have aggregated chunk_ids
         assert isinstance(window, AudioSegment)
-        assert window.type == 'finalized'
+        assert window.type == 'flush'
         assert len(window.chunk_ids) == len(word_segments)  # All 5 words
         # Chunk IDs should be sorted and unique
         assert window.chunk_ids == sorted(set(window.chunk_ids))
@@ -224,7 +224,7 @@ class TestAdaptiveWindower:
         assert not chunk_queue.empty()
         window = chunk_queue.get()
         assert isinstance(window, AudioSegment)
-        assert window.type == 'finalized'
+        assert window.type == 'flush'
         assert len(window.data) > 0
         assert window.chunk_ids == [0]
 
@@ -247,7 +247,7 @@ class TestAdaptiveWindower:
         assert not chunk_queue.empty()
         window = chunk_queue.get()
         assert isinstance(window, AudioSegment)
-        assert window.type == 'finalized'
+        assert window.type == 'flush'  # UPDATE: was 'finalized'
         duration = window.end_time - window.start_time
         assert duration < 1.0  # Less than full window
         assert window.chunk_ids == [0, 1]  # Two words

@@ -21,7 +21,7 @@ class TestRecognizer:
         return MagicMock()
 
     def test_recognizes_preliminary_segments(self, mock_model):
-        """Recognizer should process preliminary segments and return result with is_preliminary=True."""
+        """Recognizer should process preliminary segments and return result with status='preliminary'."""
         mock_model.recognize.return_value = "hello world"
 
         recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model)
@@ -35,18 +35,18 @@ class TestRecognizer:
             chunk_ids=[0]
         )
 
-        result = recognizer.recognize_window(segment, is_preliminary=True)
+        result = recognizer.recognize_window(segment)
 
         assert isinstance(result, RecognitionResult)
         assert result.text == "hello world"
         assert result.start_time == 1.0
         assert result.end_time == 1.2
-        assert result.is_preliminary is True
+        assert result.status == 'preliminary'
         assert result.chunk_ids == [0]  # Verify chunk_ids copied from AudioSegment
 
 
     def test_recognizes_finalized_segments(self, mock_model):
-        """Recognizer should process finalized segments and return result with is_preliminary=False."""
+        """Recognizer should process finalized segments and return result with status='final'."""
         mock_model.recognize.return_value = "test output"
 
         recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model)
@@ -60,13 +60,13 @@ class TestRecognizer:
             chunk_ids=[0, 1, 2, 3, 4]
         )
 
-        result = recognizer.recognize_window(segment, is_preliminary=False)
+        result = recognizer.recognize_window(segment)
 
         assert isinstance(result, RecognitionResult)
         assert result.text == "test output"
         assert result.start_time == 0.0
         assert result.end_time == 3.0
-        assert result.is_preliminary is False
+        assert result.status == 'final'
         assert result.chunk_ids == [0, 1, 2, 3, 4]  # Verify chunk_ids copied from AudioSegment
 
 
@@ -86,7 +86,7 @@ class TestRecognizer:
                 end_time=float(i + 0.2),
                 chunk_ids=[i]
             )
-            result = recognizer.recognize_window(segment, is_preliminary=True)
+            result = recognizer.recognize_window(segment)
             if result is not None:
                 results.append(result)
 
@@ -140,16 +140,16 @@ class TestRecognizer:
         recognizer.chunk_queue.get = mock_get
         recognizer.process()
 
-        # Verify both results with correct is_preliminary flags
+        # Verify both results with correct status values
         results = []
         while not text_queue.empty():
             results.append(text_queue.get())
 
         assert len(results) == 2
         assert results[0].text == "instant"
-        assert results[0].is_preliminary is True
+        assert results[0].status == 'preliminary'
         assert results[1].text == "quality"
-        assert results[1].is_preliminary is False
+        assert results[1].status == 'final'
 
     def test_preserves_timing_information(self, mock_model):
         """RecognitionResult should preserve exact timing from AudioSegment."""
@@ -165,7 +165,7 @@ class TestRecognizer:
             chunk_ids=[10, 11, 12]
         )
 
-        result = recognizer.recognize_window(segment, is_preliminary=False)
+        result = recognizer.recognize_window(segment)
 
         assert result.start_time == 5.123
         assert result.end_time == 8.456
@@ -192,8 +192,47 @@ class TestRecognizer:
                 chunk_ids=chunk_ids
             )
 
-            result = recognizer.recognize_window(segment, is_preliminary=False)
+            result = recognizer.recognize_window(segment)
 
             # Verify chunk_ids are copied exactly (not lost or duplicated)
             assert result.chunk_ids == chunk_ids
             assert len(result.chunk_ids) == len(chunk_ids)
+
+    def test_recognizer_maps_segment_types_to_status(self, mock_model):
+        """Recognizer should map AudioSegment.type to RecognitionResult.status."""
+        mock_model.recognize.return_value = "test"
+
+        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model)
+
+        # Test mapping: type='preliminary' → status='preliminary'
+        preliminary_segment = AudioSegment(
+            type='preliminary',
+            data=np.full(3200, 0.1, dtype=np.float32),
+            start_time=1.0,
+            end_time=1.2,
+            chunk_ids=[0]
+        )
+        result = recognizer.recognize_window(preliminary_segment)
+        assert result.status == 'preliminary'
+
+        # Test mapping: type='finalized' → status='final'
+        finalized_segment = AudioSegment(
+            type='finalized',
+            data=np.full(48000, 0.1, dtype=np.float32),
+            start_time=0.0,
+            end_time=3.0,
+            chunk_ids=[0, 1, 2]
+        )
+        result = recognizer.recognize_window(finalized_segment)
+        assert result.status == 'final'
+
+        # Test mapping: type='flush' → status='flush'
+        flush_segment = AudioSegment(
+            type='flush',
+            data=np.full(16000, 0.1, dtype=np.float32),
+            start_time=2.0,
+            end_time=3.0,
+            chunk_ids=[5]
+        )
+        result = recognizer.recognize_window(flush_segment)
+        assert result.status == 'flush'

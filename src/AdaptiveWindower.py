@@ -47,7 +47,6 @@ class AdaptiveWindower:
         Args:
             segment: Preliminary AudioSegment from VAD with type='preliminary'
         """
-        # Add segment to buffer
         self.segments.append(segment)
 
         # Initialize window start time on first segment
@@ -158,23 +157,19 @@ class AdaptiveWindower:
             chunk_ids.extend(seg.chunk_ids)
         unique_chunk_ids = sorted(set(chunk_ids))
 
-        # Create finalized AudioSegment
+        # Create flush AudioSegment
         window = AudioSegment(
-            type='finalized',
+            type='flush',
             data=window_audio,
             start_time=actual_start,
             end_time=actual_end,
             chunk_ids=unique_chunk_ids
         )
 
-        if self.verbose:
-            duration_ms = len(window_audio) / self.sample_rate * 1000
-            print(f"AdaptiveWindower.flush(): created final window duration={duration_ms:.0f}ms, chunk_ids={unique_chunk_ids}")
-
         self.chunk_queue.put(window)
 
         if self.verbose:
-            print(f"AdaptiveWindower.flush(): put final window to queue (chunk_ids={unique_chunk_ids})")
+            print(f"AdaptiveWindower.flush(): put to queue (chunk_ids={unique_chunk_ids})")
 
         # Clear segments
         self.segments = []

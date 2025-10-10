@@ -39,7 +39,7 @@ class TextMatcher:
         self.text_normalizer: TextNormalizer = text_normalizer if text_normalizer is not None else TextNormalizer()
         self.time_threshold: float = time_threshold
 
-        # State only needed for finalized path (overlap resolution)
+        # State only needed for final/flush paths (overlap resolution)
         # Preliminary path has no state - VAD guarantees distinct segments
         self.previous_finalized_text: str = ""
         self.previous_finalized_timestamp: float = 0.0
@@ -124,35 +124,35 @@ class TextMatcher:
     def process_text(self, result: RecognitionResult) -> None:
         """Process a single text segment using appropriate path.
 
-        Routes to preliminary or finalized processing based on is_preliminary flag.
+        Routes based on status:
+        - 'preliminary': Pass through to GUI directly
+        - 'final': Overlap resolution, then to GUI
+        - 'flush': Trigger finalize_pending() to flush buffered text
 
         Args:
             result: RecognitionResult with text, timing, and chunk_ids
         """
-        if result.is_preliminary:
+        if result.status == 'preliminary':
             self.process_preliminary(result)
-        else:
+        elif result.status == 'final':
             self.process_finalized(result)
+        elif result.status == 'flush':
+            self.process_flush(result)
 
     def process_preliminary(self, result: RecognitionResult) -> None:
-        """Process preliminary result - no overlap resolution needed.
+        """Pass preliminary result - no overlap resolution needed.
 
-        Preliminary results come from word-level VAD segmentation with clean
-        boundaries. They don't overlap, so we skip the overlap resolution
+        Preliminary results come from word-level VAD segmentation. 
+        They don't overlap, so we skip the overlap resolution
         logic and go straight to GUI.
 
         Args:
             result: RecognitionResult with preliminary text and chunk_ids
         """
         if self.verbose:
-            print(f"TextMatcher.process_preliminary() received '{result.text}' chunk_ids={result.chunk_ids}")
-
-        # No duplicate detection needed - VAD guarantees distinct segments
-        # If duplicates appear, it's a bug in AudioSource/Recognizer
+            print(f"TextMatcher.process_preliminary() passing '{result.text}' chunk_ids={result.chunk_ids}")
 
         # Pass RecognitionResult object to GUI (preserves chunk_ids)
-        if self.verbose:
-            print(f"TextMatcher.process_preliminary() → update_partial(RecognitionResult)")
         self.gui_window.update_partial(result)
 
     def process_finalized(self, result: RecognitionResult) -> None:
@@ -168,7 +168,7 @@ class TextMatcher:
         current_text: str = result.text
 
         if self.verbose:
-            print(f"TextMatcher.process_finalized() current_text: received '{current_text}' chunk_ids={result.chunk_ids}")
+            print(f"TextMatcher.process_finalized() received '{current_text}' chunk_ids={result.chunk_ids}")
             print(f"TextMatcher.process_finalized() previous_text: '{self.previous_finalized_text}'")
 
         # Enhanced duplicate detection using text normalization
@@ -208,7 +208,7 @@ class TextMatcher:
                         text=finalized_text,
                         start_time=result.start_time,
                         end_time=result.end_time,
-                        is_preliminary=False,
+                        status='final',
                         chunk_ids=result.chunk_ids
                     )
                     self.gui_window.finalize_text(finalized_result)
@@ -228,7 +228,7 @@ class TextMatcher:
                     text=self.previous_finalized_text,
                     start_time=self.previous_finalized_timestamp,
                     end_time=result.start_time,
-                    is_preliminary=False,
+                    status='final',
                     chunk_ids=[]  # Previous text chunk_ids not stored
                 )
                 self.gui_window.finalize_text(previous_result)
@@ -286,12 +286,43 @@ class TextMatcher:
                 text=self.previous_finalized_text,
                 start_time=self.previous_finalized_timestamp,
                 end_time=self.previous_finalized_timestamp,
-                is_preliminary=False,
+                status='final',
                 chunk_ids=[]  # Pending text chunk_ids not stored
             )
             self.gui_window.finalize_text(pending_result)
             self.previous_finalized_text = ""
             self.previous_finalized_timestamp = 0.0
+
+    def process_flush(self, result: RecognitionResult) -> None:
+        """Process flush signal by finalizing any pending text.
+
+        Flush signals indicate end of speech segment (e.g., silence timeout).
+        The flush result may contain recognized text from the flushed audio.
+
+        Processing:
+        1. If flush has text: process it as final (overlap resolution)
+        2. Call finalize_pending() to flush any buffered text to GUI
+
+        Args:
+            result: RecognitionResult with status='flush'
+        """
+        if self.verbose:
+            print(f"TextMatcher.process_flush() received text='{result.text}', pending='{self.previous_finalized_text}'")
+
+        # If flush contains text, process it as final first
+        if result.text and result.text.strip():
+            # Create a final status result to use existing finalized logic
+            final_result = RecognitionResult(
+                text=result.text,
+                start_time=result.start_time,
+                end_time=result.end_time,
+                status='final',
+                chunk_ids=result.chunk_ids
+            )
+            self.process_finalized(final_result)
+
+        # Then finalize any pending text
+        self.finalize_pending()
 
     def stop(self) -> None:
         """Stop the background processing thread.

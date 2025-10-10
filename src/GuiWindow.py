@@ -51,7 +51,7 @@ class GuiWindow:
                 text=result,
                 start_time=0.0,
                 end_time=0.0,
-                is_preliminary=True,
+                status='preliminary',
                 chunk_ids=[]
             )
 
@@ -111,7 +111,7 @@ class GuiWindow:
                 text=result,
                 start_time=0.0,
                 end_time=0.0,
-                is_preliminary=False,
+                status='final',
                 chunk_ids=[]
             )
 

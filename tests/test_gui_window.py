@@ -278,7 +278,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             text="hello",
             start_time=0.0,
             end_time=0.5,
-            is_preliminary=True,
+            status='preliminary',
             chunk_ids=[1]
         )
         self.gui.update_partial(result)
@@ -293,7 +293,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             text="hello",
             start_time=0.0,
             end_time=0.5,
-            is_preliminary=True,
+            status='preliminary',
             chunk_ids=[1]
         )
         self.gui.update_partial(prelim)
@@ -303,7 +303,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             text="hello",
             start_time=0.0,
             end_time=0.5,
-            is_preliminary=False,
+            status='final',
             chunk_ids=[1]
         )
         self.gui.finalize_text(final)
@@ -341,7 +341,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             text="hello world how",
             start_time=0.0,
             end_time=1.5,
-            is_preliminary=False,
+            status='final',
             chunk_ids=[1, 2, 3]
         )
         self.gui.finalize_text(final)
