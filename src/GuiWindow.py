@@ -2,6 +2,7 @@ import tkinter as tk
 from tkinter import scrolledtext
 from typing import Tuple, List, Set, Union
 from src.types import RecognitionResult
+from src.GuiFactory import GuiFactory
 
 
 class GuiWindow:
@@ -19,9 +20,9 @@ class GuiWindow:
         self.last_finalized_text: str = ""
 
         # Chunk-ID-based tracking
-        self.preliminary_results: List[RecognitionResult] = []  # Store RecognitionResult objects
-        self.finalized_chunk_ids: Set[int] = set()  # Track which chunks are finalized
-        self.finalized_text: str = ""  # All finalized text
+        self.preliminary_results: List[RecognitionResult] = [] 
+        self.finalized_chunk_ids: Set[int] = set()
+        self.finalized_text: str = ""
 
         self._setup_text_styles()
 
@@ -187,9 +188,8 @@ class GuiWindow:
 
 def create_stt_window() -> Tuple[tk.Tk, scrolledtext.ScrolledText]:
     """Creates and returns a configured tkinter window with text widget for STT display."""
-    root = tk.Tk()
-    root.title("Speech-to-Text Display")
-    root.geometry("800x600")
+    # Use GuiFactory to create main window
+    root = GuiFactory.create_window("Speech-to-Text Display", "800x600")
 
     # Create main frame
     main_frame = tk.Frame(root, padx=10, pady=10)
@@ -205,8 +205,8 @@ def create_stt_window() -> Tuple[tk.Tk, scrolledtext.ScrolledText]:
                            font=("Arial", 10), fg="gray")
     status_label.pack(pady=(0, 10))
 
-    # Create text widget with scrollbar
-    text_widget = scrolledtext.ScrolledText(
+    # Use GuiFactory to create scrolled text widget
+    text_widget = GuiFactory.create_scrolled_text(
         main_frame,
         wrap=tk.WORD,
         width=80,

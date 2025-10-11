@@ -1,3 +1,4 @@
 sounddevice
 numpy
 onnx-asr
+Pillow

@@ -77,13 +77,25 @@ Runs all tests in the tests directory.
 
 ### Model Setup
 
+Models are downloaded automatically when you first run the application. If models are missing, a GUI dialog will appear:
+
 ```bash
-python download_model.py
+python main.py
 ```
 
-Downloads the Parakeet STT model and Silero VAD model:
-- Parakeet: `./models/parakeet/`
-- Silero VAD: `./models/silero_vad/`
+**First run (models missing):**
+- Dialog appears showing required models (~2GB total)
+- Click "Download Models" to download automatically
+- Progress bars show download status
+- Pipeline starts after successful download
+
+**Subsequent runs:**
+- No dialog shown if models already exist
+- Pipeline starts immediately
+
+The application downloads:
+- Parakeet STT Model (~1.5GB) → `./models/parakeet/`
+- Silero VAD Model (~0.2GB) → `./models/silero_vad/`
 
 ## Architecture
 
@@ -170,12 +182,23 @@ Located in `config/stt_config.json`:
 
 ### Testing Infrastructure
 
+**Core Pipeline Tests:**
 - **`tests/conftest.py`**: Pytest fixtures for test data (downloads Silero's en.wav once)
 - **`tests/test_vad.py`**: 3 unit tests for VoiceActivityDetector
 - **`tests/test_audiosource_vad.py`**: 3 integration tests for AudioSource + VAD (uses AudioSegment)
 - **`tests/test_adaptive_windower.py`**: 6 tests for AdaptiveWindower (uses AudioSegment with chunk_ids)
+- **`tests/test_gui_window.py`**: 22 tests for GuiWindow (preliminary/final text display)
+
+**Model Download Tests:**
+- **`tests/test_model_manager.py`**: 8 tests for ModelManager (model detection and download)
+- **`tests/test_gui_factory.py`**: 4 tests for GuiFactory (shared GUI infrastructure)
+- **`tests/test_model_download_dialog.py`**: 6 tests for ModelDownloadDialog (GUI download flow)
+- **`tests/test_main_integration.py`**: 3 integration tests for main.py startup flow
+
+**Test Principles:**
 - **Real audio**: Tests use downloaded speech samples, not synthetic audio
 - **Type safety**: All tests use AudioSegment and RecognitionResult dataclasses
+- **TDD approach**: Tests written before implementation
 
 ## Dependencies
 
@@ -187,3 +210,24 @@ Located in `config/stt_config.json`:
 - scipy: Audio resampling in tests
 - queue, threading: Pipeline coordination
 - pytest: Testing framework
+- tkinter: GUI (model download dialog, text display)
+- huggingface_hub: Model downloads from HuggingFace
+
+## Key Components
+
+**Core Pipeline:**
+- **`src/pipeline.py`**: Main STTPipeline orchestrator
+- **`src/AudioSource.py`**: Microphone audio capture with VAD integration
+- **`src/VoiceActivityDetector.py`**: Silero VAD for speech detection
+- **`src/AdaptiveWindower.py`**: Segment finalization logic
+- **`src/Recognizer.py`**: Parakeet STT inference
+- **`src/TextMatcher.py`**: Duplicate text filtering
+- **`src/GuiWindow.py`**: Two-stage text display (preliminary/final)
+
+**Model Management:**
+- **`src/ModelManager.py`**: Model detection, download, and validation
+- **`src/ModelDownloadDialog.py`**: GUI dialog for downloading missing models
+- **`src/GuiFactory.py`**: Shared GUI component factory
+
+**Data Types:**
+- **`src/types.py`**: AudioSegment, RecognitionResult dataclasses

@@ -20,6 +20,9 @@ class STTPipeline:
         # Load configuration
         self.config: Dict = self._load_config(config_path)
 
+        # Track if pipeline is stopped (for idempotent stop())
+        self._is_stopped: bool = False
+
         # Create queues - single chunk_queue for AudioSegments (preliminary and finalized)
         self.chunk_queue: queue.Queue = queue.Queue(maxsize=100)
         self.text_queue: queue.Queue = queue.Queue(maxsize=50)
@@ -106,7 +109,15 @@ class STTPipeline:
         2. Recognizer (stop processing audio)
         3. TextMatcher finalization (flush pending text)
         4. TextMatcher (stop processing)
+
+        This method is idempotent - safe to call multiple times.
         """
+        # Check if already stopped
+        if self._is_stopped:
+            return
+
+        self._is_stopped = True
+
         print("\nStopping pipeline...")
 
         # Stop audio capture and recognition
@@ -129,10 +140,24 @@ class STTPipeline:
             self.stop()
             sys.exit(0)
 
+        def on_window_close() -> None:
+            """Handle window close event - stop pipeline gracefully."""
+            self.stop()
+            try:
+                self.root.destroy()
+            except tk.TclError:
+                pass
+
         signal.signal(signal.SIGINT, signal_handler)
+
+        # Register window close handler
+        self.root.protocol("WM_DELETE_WINDOW", on_window_close)
 
         try:
             # Run GUI main loop
             run_gui_loop(self.root)
         except KeyboardInterrupt:
+            self.stop()
+        finally:
+            # Ensure pipeline is stopped even if GUI exits unexpectedly
             self.stop()
