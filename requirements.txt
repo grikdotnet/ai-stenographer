@@ -1,4 +1,6 @@
 sounddevice
 numpy
+onnxruntime
 onnx-asr
 Pillow
+huggingface_hub
