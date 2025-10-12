@@ -14,6 +14,7 @@ ENV/
 *.swo
 
 Thumbs.db
+PLAN.md
 
 models/
 *.onnx
