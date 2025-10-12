@@ -1,0 +1,30 @@
+License and Terms of Use
+
+Copyright © 2025 Grigori Kochanov
+
+This software (“AI Stenographer”) is provided free of charge and may be used for personal or commercial purposes.
+
+1. No Warranty
+
+The Application is provided “as is”, without warranty of any kind, express or implied, including but not limited to the warranties of merchantability, fitness for a particular purpose, or noninfringement.
+In no event shall the author or contributors be liable for any claim, damages, or other liability, whether in an action of contract, tort, or otherwise, arising from, out of, or in connection with the Application or the use or other dealings in the Application.
+
+2. Open Source Components
+
+The Application may include or depend on third-party open-source libraries. Each such component remains the property of its respective author and is distributed under its own license. Copies of these licenses are included or publicly available from their original sources.
+
+3. Usage
+
+You may use, copy, and distribute the Application freely, including for commercial purposes.
+
+You may not misrepresent the origin of the Application or claim authorship.
+
+Modifying or redistributing the Application under your own name requires clear attribution to the original author.
+
+4. Privacy
+
+The Application performs all processing locally on your device and does not transmit or collect user data.
+
+5. Acknowledgment
+
+By using the Application, you acknowledge that you have read and understood this license and agree to its terms.

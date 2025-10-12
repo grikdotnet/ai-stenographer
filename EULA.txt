@@ -1,0 +1,44 @@
+End User License Agreement (EULA)
+
+Last updated: October, 2025
+Publisher: Grigori Kochanov
+Application: AI Stenographer
+
+1. Acceptance of Terms
+
+By downloading, installing, or using the Application, you agree to be bound by this End User License Agreement (“Agreement”).
+If you do not agree, do not install or use the Application.
+
+2. License Grant
+
+The Publisher grants you a non-exclusive, worldwide, royalty-free license to use, copy, and distribute the Application for personal or commercial purposes.
+
+3. Ownership
+
+The Application is licensed, not sold. All rights not expressly granted are reserved by the Publisher.
+The Application may include third-party open-source components, each under its own license. Copies of these licenses are included or available from their respective sources.
+
+4. Modifications and Redistribution
+
+You may redistribute the Application in unmodified form.
+If you modify or incorporate it into another product, you must give clear attribution to the original author or publisher.
+
+5. Disclaimer of Warranty
+
+The Application is provided “as is”, without warranty of any kind, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, or noninfringement.
+
+6. Limitation of Liability
+
+In no event shall the Publisher or contributors be liable for any damages or losses arising out of the use or inability to use the Application, even if advised of the possibility of such damages.
+
+7. Privacy
+
+The Application processes all data locally on your device and does not collect, transmit, or store personal data.
+
+8. Termination
+
+This Agreement is effective until terminated. You may terminate it by deleting the Application. The Publisher may terminate it if you violate its terms.
+
+9. Governing Law
+
+This Agreement shall be governed by and construed in accordance with the laws of [Your Country or Region], without regard to its conflict of law provisions.
