@@ -402,17 +402,22 @@ def main():
         print("\nError: Failed to compile third-party packages")
         return 1
 
-    # Step 18: Copy assets and configuration
+    # Step 18: Clean up redundant package metadata
+    if not cleanup_package_metadata(paths["lib"]):
+        print("\nError: Failed to clean package metadata")
+        return 1
+
+    # Step 19: Copy assets and configuration
     if not copy_assets_and_config(project_root, build_dir, paths["app"]):
         print("\nError: Failed to copy assets and configuration")
         return 1
 
-    # Step 19: Create README documentation
+    # Step 20: Create README documentation
     if not create_readme(build_dir):
         print("\nError: Failed to create README")
         return 1
 
-    # Step 20: Create launcher shortcut
+    # Step 21: Create launcher shortcut
     if not create_launcher(build_dir):
         print("\nError: Failed to create launcher shortcut")
         return 1
@@ -1124,6 +1129,89 @@ def compile_site_packages(python_exe: Path, site_packages_dir: Path) -> bool:
 
     except Exception as e:
         print(f"  [ERROR] Compilation error: {e}")
+        return False
+
+
+def cleanup_package_metadata(site_packages_dir: Path) -> bool:
+    """
+    Removes redundant package metadata folders from site-packages.
+
+    After license collection to LICENSES/ folder, the following are redundant:
+    - *.dist-info/ folders (contain licenses, metadata, RECORD files)
+    - *.egg-info/ folders (legacy package metadata)
+
+    These folders are not needed for runtime and can be safely removed to
+    reduce distribution size.
+
+    EXCEPTION: Some packages use importlib.metadata to detect optional dependencies,
+    so we preserve metadata for packages that are runtime-checked:
+    - hf_xet (checked by huggingface_hub)
+
+    Args:
+        site_packages_dir: Directory containing third-party packages (Lib/site-packages/)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    print("Cleaning up redundant package metadata...")
+
+    # Packages whose metadata must be preserved for runtime detection
+    PRESERVE_METADATA = {"hf_xet"}
+
+    try:
+        # Find all metadata folders
+        dist_info_dirs = list(site_packages_dir.glob("*.dist-info"))
+        egg_info_dirs = list(site_packages_dir.glob("*.egg-info"))
+
+        # Filter out preserved packages
+        def should_preserve(metadata_dir: Path) -> bool:
+            """Check if metadata folder should be preserved"""
+            dir_name = metadata_dir.name
+            # Extract package name from metadata folder (e.g., "hf_xet-1.1.10.dist-info" -> "hf_xet")
+            package_name = dir_name.split("-")[0]
+            return package_name in PRESERVE_METADATA
+
+        dist_info_dirs = [d for d in dist_info_dirs if not should_preserve(d)]
+        egg_info_dirs = [e for e in egg_info_dirs if not should_preserve(e)]
+
+        all_metadata_dirs = dist_info_dirs + egg_info_dirs
+
+        if not all_metadata_dirs:
+            print("  No metadata folders found (already clean)")
+            return True
+
+        # Calculate size before cleanup
+        total_size = 0
+        for metadata_dir in all_metadata_dirs:
+            if metadata_dir.is_dir():
+                total_size += sum(f.stat().st_size for f in metadata_dir.rglob("*") if f.is_file())
+            elif metadata_dir.is_file():
+                total_size += metadata_dir.stat().st_size
+
+        size_mb = total_size / (1024 * 1024)
+
+        # Remove metadata directories
+        removed_count = 0
+        for metadata_dir in all_metadata_dirs:
+            try:
+                if metadata_dir.is_dir():
+                    shutil.rmtree(metadata_dir)
+                elif metadata_dir.is_file():
+                    metadata_dir.unlink()
+                removed_count += 1
+            except Exception as e:
+                print(f"  [WARNING] Failed to remove {metadata_dir.name}: {e}")
+
+        print(f"  Removed {removed_count} metadata folders ({size_mb:.1f}MB)")
+        print(f"  - {len(dist_info_dirs)} .dist-info folders")
+        print(f"  - {len(egg_info_dirs)} .egg-info folders")
+        if PRESERVE_METADATA:
+            print(f"  Preserved metadata for: {', '.join(sorted(PRESERVE_METADATA))}")
+
+        return True
+
+    except Exception as e:
+        print(f"  [ERROR] Cleanup error: {e}")
         return False
 
 
