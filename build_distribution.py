@@ -266,7 +266,25 @@ def main():
     # Clean previous build
     if build_dir.exists():
         print(f"Cleaning previous build: {build_dir}")
-        shutil.rmtree(build_dir)
+
+        def handle_remove_readonly(func, path, exc):
+            """Error handler for Windows readonly/locked files."""
+            import stat
+            import os
+
+            # Try to change permissions and retry
+            try:
+                os.chmod(path, stat.S_IWRITE)
+                func(path)
+            except:
+                # If still fails, skip this file
+                print(f"  [SKIP] Cannot remove: {Path(path).name}")
+
+        try:
+            shutil.rmtree(build_dir, onerror=handle_remove_readonly)
+        except Exception as e:
+            print(f"  Warning: Cleanup had errors: {e}")
+            print(f"  Continuing anyway...")
 
     # Step 1: Download Python embeddable package
     try:
@@ -379,17 +397,22 @@ def main():
         print("\nError: Failed to compile code to bytecode")
         return 1
 
-    # Step 17: Copy assets and configuration
+    # Step 17: Compile third-party packages to bytecode
+    if not compile_site_packages(python_exe, paths["lib"]):
+        print("\nError: Failed to compile third-party packages")
+        return 1
+
+    # Step 18: Copy assets and configuration
     if not copy_assets_and_config(project_root, build_dir, paths["app"]):
         print("\nError: Failed to copy assets and configuration")
         return 1
 
-    # Step 18: Create README documentation
+    # Step 19: Create README documentation
     if not create_readme(build_dir):
         print("\nError: Failed to create README")
         return 1
 
-    # Step 19: Create launcher shortcut
+    # Step 20: Create launcher shortcut
     if not create_launcher(build_dir):
         print("\nError: Failed to create launcher shortcut")
         return 1
@@ -1024,6 +1047,74 @@ def compile_to_pyc(python_exe: Path, app_dir: Path) -> bool:
 
         # Remove __pycache__ directories
         pycache_dirs = list(app_dir.rglob('__pycache__'))
+        for pycache_dir in pycache_dirs:
+            shutil.rmtree(pycache_dir)
+        if pycache_dirs:
+            print(f"  Removed {len(pycache_dirs)} __pycache__ directories")
+
+        return True
+
+    except Exception as e:
+        print(f"  [ERROR] Compilation error: {e}")
+        return False
+
+
+def compile_site_packages(python_exe: Path, site_packages_dir: Path) -> bool:
+    """
+    Compiles all .py files in site-packages to .pyc bytecode and removes sources.
+
+    This reduces distribution size and provides consistency with application code.
+    Compiles all third-party packages to bytecode-only format.
+
+    Args:
+        python_exe: Path to python.exe
+        site_packages_dir: Directory containing third-party packages (Lib/site-packages/)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    print("Compiling third-party packages to bytecode...")
+
+    try:
+        # Use compileall module to compile all .py files
+        # -b flag creates .pyc files alongside .py files (not in __pycache__)
+        cmd = [
+            str(python_exe),
+            "-m", "compileall",
+            "-b",  # Write bytecode to .pyc files (same directory as .py)
+            "-q",  # Quiet mode
+            str(site_packages_dir)
+        ]
+
+        print(f"  Compiling site-packages...")
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=300  # 5 minutes timeout for large packages
+        )
+
+        if result.returncode != 0:
+            print(f"  [ERROR] Compilation failed:")
+            print(f"  {result.stderr}")
+            return False
+
+        # Count compiled files before cleanup
+        pyc_files = list(site_packages_dir.rglob('*.pyc'))
+        pyc_count = len(pyc_files)
+        print(f"  Compiled {pyc_count} .pyc files")
+
+        # Calculate size before cleanup
+        py_files = list(site_packages_dir.rglob('*.py'))
+        size_before = sum(f.stat().st_size for f in py_files) / (1024 * 1024)
+
+        # Remove source .py files (keep only .pyc)
+        for py_file in py_files:
+            py_file.unlink()
+        print(f"  Removed {len(py_files)} .py source files ({size_before:.1f}MB)")
+
+        # Remove __pycache__ directories
+        pycache_dirs = list(site_packages_dir.rglob('__pycache__'))
         for pycache_dir in pycache_dirs:
             shutil.rmtree(pycache_dir)
         if pycache_dirs:
