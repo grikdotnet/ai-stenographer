@@ -57,16 +57,6 @@ def show_download_dialog(parent: tk.Tk, missing_models: List[str], model_dir=Non
     )
     title_label.pack(anchor=tk.W, pady=(0, 5))
 
-    # License reference text
-    license_label = tk.Label(
-        content_frame,
-        text="This app will download the Parakeet-TDT-0.6B-v3 model by NVIDIA (CC BY 4.0).\nLicense: https://creativecommons.org/licenses/by/4.0/",
-        font=("Arial", 9),
-        fg="gray",
-        justify=tk.LEFT
-    )
-    license_label.pack(anchor=tk.W, pady=(0, 15))
-
     # Models frame
     models_frame = tk.Frame(content_frame)
     models_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
@@ -94,6 +84,20 @@ def show_download_dialog(parent: tk.Tk, missing_models: List[str], model_dir=Non
         )
         status_label.pack(anchor=tk.W, pady=(2, 0))
         status_labels[model] = status_label
+
+    # License reference text
+    license_label = tk.Label(
+        content_frame,
+        text="The Parakeet-TDT-0.6B-v3 model by NVIDIA (CC BY 4.0)\n"+
+            "   License: https://creativecommons.org/licenses/by/4.0/\n"+
+            "The Silero VAD model by Silero Team (MIT)\n"+
+            "   License: https://opensource.org/licenses/MIT.",
+        font=("Arial", 9),
+        fg="gray",
+        justify=tk.LEFT
+    )
+    license_label.pack(anchor=tk.W, pady=(0, 15))
+
 
     # Buttons frame
     button_frame = tk.Frame(content_frame)

@@ -4,7 +4,11 @@ ModelManager handles model download and validation for STT pipeline.
 from pathlib import Path
 from typing import List, Callable, Optional
 from huggingface_hub import snapshot_download, hf_hub_download
+from huggingface_hub.utils import disable_progress_bars
 import shutil
+
+# Disable tqdm progress bars to prevent freezing with pythonw.exe (no console)
+disable_progress_bars()
 
 
 MODEL_DIR = Path("./models")
@@ -129,6 +133,9 @@ class ModelManager:
         Uses ignore_patterns to skip unnecessary files (quantized models,
         unused feature extractors, and documentation), saving ~800MB.
 
+        Progress bars are disabled globally via disable_progress_bars() to
+        prevent freezing when running with pythonw.exe (no console attached).
+
         Args:
             model_dir: Directory to download model to
         """
@@ -149,6 +156,9 @@ class ModelManager:
         HuggingFace downloads to onnx/model.onnx, but the application expects
         silero_vad.onnx at the root. This method copies the file and removes
         the onnx directory to save disk space.
+
+        Progress bars are disabled globally via disable_progress_bars() to
+        prevent freezing when running with pythonw.exe (no console attached).
 
         Args:
             model_dir: Directory to download model to
