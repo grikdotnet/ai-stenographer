@@ -10,8 +10,8 @@ from src.ModelManager import ModelManager
 
 # Model size information
 MODEL_SIZES = {
-    'parakeet': '~1.5GB',
-    'silero_vad': '~0.2GB'
+    'parakeet': '~1.5 GB',
+    'silero_vad': '2 MB'
 }
 
 MODEL_NAMES = {
@@ -44,12 +44,6 @@ def show_download_dialog(parent: tk.Tk, missing_models: List[str], model_dir=Non
     # Progress tracking (text-only, no animated progress bars)
     status_labels: Dict[str, tk.Label] = {}
 
-    # Calculate total size
-    total_size = sum(
-        float(MODEL_SIZES[model].replace('~', '').replace('GB', ''))
-        for model in missing_models
-    )
-
     # Main content frame
     content_frame = tk.Frame(dialog, padx=20, pady=20)
     content_frame.pack(fill=tk.BOTH, expand=True)
@@ -62,15 +56,6 @@ def show_download_dialog(parent: tk.Tk, missing_models: List[str], model_dir=Non
         justify=tk.LEFT
     )
     title_label.pack(anchor=tk.W, pady=(0, 5))
-
-    # Total size label
-    size_label = tk.Label(
-        content_frame,
-        text=f"Total size: ~{total_size:.1f}GB",
-        font=("Arial", 10),
-        fg="gray"
-    )
-    size_label.pack(anchor=tk.W, pady=(0, 5))
 
     # License reference text
     license_label = tk.Label(
@@ -133,7 +118,7 @@ def show_download_dialog(parent: tk.Tk, missing_models: List[str], model_dir=Non
                     # Update status (text-only)
                     if status == 'downloading':
                         status_labels[model_name].config(
-                            text="Downloading... (this may take several minutes)",
+                            text="Downloading... (this may take time)",
                             fg="blue"
                         )
                     elif status == 'complete':
