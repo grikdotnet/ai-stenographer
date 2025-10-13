@@ -1,3 +1,5 @@
+![AI Stenographer](./stenographer.jpg)
+
 # AI Stenographer
 
 **AI Stenographer** is a free, offline, real-time speech recognition desktop application designed for personal use. It converts spoken words into text in real time, without requiring an internet connection.
