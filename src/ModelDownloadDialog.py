@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import messagebox
 from typing import List, Dict
 import threading
+import os
 from src.ModelManager import ModelManager
 
 
@@ -137,15 +138,18 @@ def show_download_dialog(parent: tk.Tk, missing_models: List[str], model_dir=Non
             try:
                 # Check if cancelled before starting download
                 if download_state['cancelled']:
+                    download_state['active'] = False
                     return
 
                 success = ModelManager.download_models(model_dir=model_dir, progress_callback=progress_callback)
 
                 # Check if cancelled after download
                 if download_state['cancelled']:
+                    download_state['active'] = False
                     return
 
                 def finish_download():
+                    download_state['active'] = False  # Mark download as complete
                     if success:
                         result['success'] = True
                         dialog.quit()  # Exit mainloop
@@ -163,6 +167,7 @@ def show_download_dialog(parent: tk.Tk, missing_models: List[str], model_dir=Non
                 traceback.print_exc()
 
                 def show_error():
+                    download_state['active'] = False  # Mark download as complete
                     messagebox.showerror("Error", f"Download failed: {str(e)}", parent=dialog)
                     download_btn.config(state=tk.NORMAL)
                     exit_btn.config(state=tk.NORMAL)
@@ -174,17 +179,41 @@ def show_download_dialog(parent: tk.Tk, missing_models: List[str], model_dir=Non
         thread.start()
 
     def on_exit():
-        """Handles exit button click."""
+        """
+        Handles exit button click.
+
+        Forces process termination if download is active to prevent
+        pythonw.exe from hanging on blocking network operations.
+        """
         download_state['cancelled'] = True
         result['success'] = False
+
+        # Force terminate if download is in progress
+        if download_state['active']:
+            # huggingface_hub downloads are blocking and cannot be cancelled gracefully
+            # Use os._exit() to immediately terminate the process
+            os._exit(0)
+
         dialog.quit()  # Exit mainloop
         dialog.destroy()
 
     # Handle window close (X button)
     def on_close():
-        """Handles window close button."""
+        """
+        Handles window close button.
+
+        Forces process termination if download is active to prevent
+        pythonw.exe from hanging on blocking network operations.
+        """
         download_state['cancelled'] = True
         result['success'] = False
+
+        # Force terminate if download is in progress
+        if download_state['active']:
+            # huggingface_hub downloads are blocking and cannot be cancelled gracefully
+            # Use os._exit() to immediately terminate the process
+            os._exit(0)
+
         dialog.quit()  # Exit mainloop
         dialog.destroy()
 
