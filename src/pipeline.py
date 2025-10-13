@@ -16,7 +16,7 @@ from .GuiWindow import GuiWindow, create_stt_window, run_gui_loop
 from .VoiceActivityDetector import VoiceActivityDetector
 
 class STTPipeline:
-    def __init__(self, model_path: str = "./models/parakeet", verbose: bool = False, window_duration: float = 2.0, step_duration: float = 1.0, config_path: str = "./config/stt_config.json") -> None:
+    def __init__(self, model_path: str = "./models/parakeet", models_dir: Path = None, verbose: bool = False, window_duration: float = 2.0, step_duration: float = 1.0, config_path: str = "./config/stt_config.json") -> None:
         # Load configuration
         self.config: Dict = self._load_config(config_path)
 
@@ -38,9 +38,15 @@ class STTPipeline:
         # Create GuiWindow instance for TextMatcher
         self.gui_window: GuiWindow = GuiWindow(self.text_widget, self.root)
 
+        # Determine absolute path for VAD model
+        if models_dir is None:
+            models_dir = Path("./models")
+        vad_model_path = models_dir / "silero_vad" / "silero_vad.onnx"
+
         # Create VAD instance
         self.vad: VoiceActivityDetector = VoiceActivityDetector(
             config=self.config,
+            model_path=vad_model_path,
             verbose=verbose
         )
 

@@ -2,10 +2,9 @@
 ModelDownloadDialog provides GUI for downloading missing models.
 """
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import messagebox
 from typing import List, Dict
 import threading
-from src.GuiFactory import GuiFactory
 from src.ModelManager import ModelManager
 
 
@@ -21,13 +20,14 @@ MODEL_NAMES = {
 }
 
 
-def show_download_dialog(parent: tk.Tk, missing_models: List[str]) -> bool:
+def show_download_dialog(parent: tk.Tk, missing_models: List[str], model_dir=None) -> bool:
     """
     Shows modal dialog for downloading missing models.
 
     Args:
         parent: Parent Tk window (can be None or withdrawn, will create standalone window)
         missing_models: List of model names to download
+        model_dir: Directory to download models to (defaults to ./models)
 
     Returns:
         True if download succeeded, False if user cancelled
@@ -41,8 +41,7 @@ def show_download_dialog(parent: tk.Tk, missing_models: List[str]) -> bool:
     # Result tracking
     result = {'success': False}
 
-    # Progress tracking
-    progress_bars: Dict[str, ttk.Progressbar] = {}
+    # Progress tracking (text-only, no animated progress bars)
     status_labels: Dict[str, tk.Label] = {}
 
     # Calculate total size
@@ -71,7 +70,17 @@ def show_download_dialog(parent: tk.Tk, missing_models: List[str]) -> bool:
         font=("Arial", 10),
         fg="gray"
     )
-    size_label.pack(anchor=tk.W, pady=(0, 15))
+    size_label.pack(anchor=tk.W, pady=(0, 5))
+
+    # License reference text
+    license_label = tk.Label(
+        content_frame,
+        text="This app will download the Parakeet-TDT-0.6B-v3 model by NVIDIA (CC BY 4.0).\nLicense: https://creativecommons.org/licenses/by/4.0/",
+        font=("Arial", 9),
+        fg="gray",
+        justify=tk.LEFT
+    )
+    license_label.pack(anchor=tk.W, pady=(0, 15))
 
     # Models frame
     models_frame = tk.Frame(content_frame)
@@ -82,7 +91,7 @@ def show_download_dialog(parent: tk.Tk, missing_models: List[str]) -> bool:
         model_frame = tk.Frame(models_frame)
         model_frame.pack(fill=tk.X, pady=5)
 
-        # Model label
+        # Model label with checkbox
         model_label = tk.Label(
             model_frame,
             text=f"☐ {MODEL_NAMES.get(model, model)} ({MODEL_SIZES.get(model, 'unknown size')})",
@@ -91,29 +100,22 @@ def show_download_dialog(parent: tk.Tk, missing_models: List[str]) -> bool:
         )
         model_label.pack(anchor=tk.W)
 
-        # Progress bar (initially hidden) - use indeterminate mode since HF doesn't provide progress
-        progress_bar = GuiFactory.create_progress_bar(
-            model_frame,
-            length=400,
-            mode='indeterminate'
-        )
-        progress_bars[model] = progress_bar
-
-        # Status label
+        # Status label (text-only progress)
         status_label = tk.Label(
             model_frame,
             text="",
             font=("Arial", 9),
             fg="gray"
         )
+        status_label.pack(anchor=tk.W, pady=(2, 0))
         status_labels[model] = status_label
 
     # Buttons frame
     button_frame = tk.Frame(content_frame)
     button_frame.pack(side=tk.BOTTOM, pady=(10, 0))
 
-    # Track if download is in progress
-    downloading = {'active': False}
+    # Track if download is in progress and if cancelled
+    download_state = {'active': False, 'cancelled': False}
 
     def on_download():
         """Handles download button click."""
@@ -122,30 +124,21 @@ def show_download_dialog(parent: tk.Tk, missing_models: List[str]) -> bool:
         exit_btn.config(state=tk.DISABLED)
 
         # Mark download as active
-        downloading['active'] = True
-
-        # Show progress bars
-        for model in missing_models:
-            progress_bars[model].pack(fill=tk.X, pady=(5, 0))
-            status_labels[model].pack(anchor=tk.W)
+        download_state['active'] = True
 
         def progress_callback(model_name: str, progress: float, status: str):
             """Updates progress UI from download thread."""
             def update_ui():
-                if model_name in progress_bars:
-                    # Update status
+                if model_name in status_labels:
+                    # Update status (text-only)
                     if status == 'downloading':
-                        # Start indeterminate animation
-                        progress_bars[model_name].start(10)
-                        status_labels[model_name].config(text="Downloading... (check terminal for progress)", fg="blue")
+                        status_labels[model_name].config(
+                            text="Downloading... (this may take several minutes)",
+                            fg="blue"
+                        )
                     elif status == 'complete':
-                        # Stop animation and show completion
-                        progress_bars[model_name].stop()
-                        progress_bars[model_name]['value'] = 100
                         status_labels[model_name].config(text="✓ Complete", fg="green")
                     elif status == 'error':
-                        # Stop animation and show error
-                        progress_bars[model_name].stop()
                         status_labels[model_name].config(text="✗ Error", fg="red")
 
             dialog.after(0, update_ui)
@@ -153,12 +146,19 @@ def show_download_dialog(parent: tk.Tk, missing_models: List[str]) -> bool:
         def download_thread():
             """Runs download in background thread."""
             try:
-                success = ModelManager.download_models(progress_callback=progress_callback)
+                # Check if cancelled before starting download
+                if download_state['cancelled']:
+                    return
+
+                success = ModelManager.download_models(model_dir=model_dir, progress_callback=progress_callback)
+
+                # Check if cancelled after download
+                if download_state['cancelled']:
+                    return
 
                 def finish_download():
                     if success:
                         result['success'] = True
-                        messagebox.showinfo("Success", "Models downloaded successfully!", parent=dialog)
                         dialog.quit()  # Exit mainloop
                         dialog.destroy()
                     else:
@@ -186,6 +186,7 @@ def show_download_dialog(parent: tk.Tk, missing_models: List[str]) -> bool:
 
     def on_exit():
         """Handles exit button click."""
+        download_state['cancelled'] = True
         result['success'] = False
         dialog.quit()  # Exit mainloop
         dialog.destroy()
@@ -193,6 +194,7 @@ def show_download_dialog(parent: tk.Tk, missing_models: List[str]) -> bool:
     # Handle window close (X button)
     def on_close():
         """Handles window close button."""
+        download_state['cancelled'] = True
         result['success'] = False
         dialog.quit()  # Exit mainloop
         dialog.destroy()

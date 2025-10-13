@@ -10,7 +10,6 @@
     }
   },
   "vad": {
-    "model_path": "./models/silero_vad/silero_vad.onnx",
     "frame_duration_ms": 32,
     "threshold": 0.3
   },
@@ -21,7 +20,6 @@
     "silence_timeout": 0.5
   },
   "recognition": {
-    "model_name": "parakeet",
-    "model_path": "./models/parakeet/"
+    "model_name": "parakeet"
   }
 }

@@ -1,24 +1,27 @@
 """
-License Collection Script for Distribution
+LicenseCollector - Automated third-party license collection for distribution.
 
-This script collects all license files from installed Python packages
-and organizes them for distribution compliance.
+This module collects license files from installed Python packages and
+organizes them for distribution compliance.
 
 Usage:
-    python scripts/collect_licenses.py
+    from src.LicenseCollector import LicenseCollector
 
-Outputs:
-    - LICENSES/ directory with all third-party licenses
-    - THIRD_PARTY_NOTICES.txt with attribution information
+    collector = LicenseCollector(output_dir="LICENSES")
+    collector.collect_all_licenses()
+    collector.create_python_license_entry()
+    collector.generate_notices_file()
+    collector.generate_readme()
+
+Integrated into:
+    - build_distribution.py (step 10)
+    - rebuild_quick.py (optional with --refresh-licenses)
 """
-
-import os
 import sys
 import shutil
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Optional
 import subprocess
-import json
 
 
 class LicenseCollector:
@@ -51,6 +54,12 @@ class LicenseCollector:
     ]
 
     def __init__(self, output_dir: str = 'LICENSES'):
+        """
+        Initialize LicenseCollector.
+
+        Args:
+            output_dir: Directory to store collected licenses (default: 'LICENSES')
+        """
         self.output_dir = Path(output_dir)
         self.site_packages = self._get_site_packages_path()
         self.collected_licenses: List[Dict] = []
@@ -139,6 +148,9 @@ class LicenseCollector:
     def collect_package_license(self, package_name: str) -> bool:
         """
         Collect license file for a specific package.
+
+        Args:
+            package_name: Name of the package to collect license for
 
         Returns:
             True if license was found and collected, False otherwise
@@ -377,44 +389,3 @@ modification, and distribution without requiring source code disclosure.
             f.write("of this software to comply with third-party license requirements.\n")
 
         print(f"  OK: LICENSES/README.txt created")
-
-    def run(self):
-        """Run the complete license collection process."""
-        print("\n" + "="*70)
-        print("LICENSE COLLECTION FOR DISTRIBUTION")
-        print("="*70)
-
-        # Collect all licenses
-        self.collect_all_licenses()
-
-        # Add Python license
-        self.create_python_license_entry()
-
-        # Generate notices file
-        self.generate_notices_file()
-
-        # Generate README
-        self.generate_readme()
-
-        print("\n" + "="*70)
-        print("LICENSE COLLECTION COMPLETE")
-        print("="*70)
-        print(f"\nFiles created:")
-        print(f"  - LICENSES/ directory with {len(self.collected_licenses)} licenses")
-        print(f"  - THIRD_PARTY_NOTICES.txt")
-        print("\nNext steps:")
-        print("  1. Review THIRD_PARTY_NOTICES.txt")
-        print("  2. Check LICENSES/ directory for completeness")
-        print("  3. Include both in your distribution archive")
-        print("  4. Add attribution to your About dialog")
-        print()
-
-
-def main():
-    """Main entry point."""
-    collector = LicenseCollector()
-    collector.run()
-
-
-if __name__ == '__main__':
-    main()

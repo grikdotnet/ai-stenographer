@@ -28,6 +28,9 @@ from typing import Dict
 import re
 import subprocess
 
+# Import LicenseCollector for automated license collection
+from src.LicenseCollector import LicenseCollector
+
 
 # Python version to download
 PYTHON_VERSION = "3.13.5"
@@ -251,7 +254,7 @@ def verify_signatures(runtime_dir: Path) -> bool:
 def main():
     """Main build script entry point."""
     print("=" * 60)
-    print("STT Distribution Builder - Steps 1-8")
+    print("STT Distribution Builder")
     print("=" * 60)
 
     # Setup paths
@@ -330,26 +333,32 @@ def main():
         print("\nWarning: Tkinter verification failed")
         print("GUI functionality may not work")
 
-    # Step 10: Copy legal documents
+    # Step 10: Collect third-party licenses
+    if not collect_third_party_licenses(project_root):
+        print("\nError: License collection failed")
+        print("LICENSES/ folder and THIRD_PARTY_NOTICES.txt are required for distribution")
+        return 1
+
+    # Step 11: Copy legal documents
     try:
         copy_legal_documents(project_root, build_dir)
     except Exception as e:
         print(f"\nError copying legal documents: {e}")
         return 1
 
-    # Step 11: Install dependencies
+    # Step 12: Install dependencies
     requirements_file = project_root / "requirements.txt"
     if not install_dependencies(python_exe, paths["lib"], requirements_file):
         print("\nError: Dependency installation failed")
         return 1
 
-    # Step 12: Verify native libraries
+    # Step 13: Verify native libraries
     lib_results = verify_native_libraries(paths["lib"])
     if not all(lib_results.values()):
         print("\nWarning: Some native libraries missing")
         print("Application may not work correctly")
 
-    # Step 13: Test critical imports
+    # Step 14: Test critical imports
     critical_modules = ["numpy", "onnxruntime", "sounddevice", "onnx_asr", "tkinter"]
     import_results = test_imports(python_exe, critical_modules)
     failed_imports = [m for m, success in import_results.items() if not success]
@@ -358,29 +367,29 @@ def main():
         print(f"\nWarning: Failed to import: {', '.join(failed_imports)}")
         print("Application may not work correctly")
 
-    # Step 14: Copy application code
+    # Step 15: Copy application code
     src_dir = project_root / "src"
     main_py = project_root / "main.py"
     if not copy_application_code(src_dir, main_py, paths["app"]):
         print("\nError: Failed to copy application code")
         return 1
 
-    # Step 15: Compile to bytecode
+    # Step 16: Compile to bytecode
     if not compile_to_pyc(python_exe, paths["app"]):
         print("\nError: Failed to compile code to bytecode")
         return 1
 
-    # Step 16: Copy assets and configuration
+    # Step 17: Copy assets and configuration
     if not copy_assets_and_config(project_root, build_dir, paths["app"]):
         print("\nError: Failed to copy assets and configuration")
         return 1
 
-    # Step 17: Create README documentation
+    # Step 18: Create README documentation
     if not create_readme(build_dir):
         print("\nError: Failed to create README")
         return 1
 
-    # Step 18: Create launcher shortcut
+    # Step 19: Create launcher shortcut
     if not create_launcher(build_dir):
         print("\nError: Failed to create launcher shortcut")
         return 1
@@ -635,26 +644,61 @@ def verify_tkinter(python_exe: Path) -> bool:
         print(f"  [ERROR] Error verifying tkinter: {e}")
         return False
 
+def collect_third_party_licenses(project_root: Path) -> bool:
+    """
+    Collects third-party license files for distribution.
+
+    Uses LicenseCollector to automatically gather licenses from all runtime
+    dependencies and create THIRD_PARTY_NOTICES.txt.
+
+    This ensures licenses are always up-to-date with installed dependencies.
+
+    Args:
+        project_root: Project root directory
+
+    Returns:
+        True if license collection succeeded, False otherwise
+    """
+    print("Collecting third-party licenses...")
+
+    try:
+        # Create LicenseCollector with default output directory
+        collector = LicenseCollector(output_dir=str(project_root / "LICENSES"))
+
+        # Run the collection process
+        collector.collect_all_licenses()
+        collector.create_python_license_entry()
+        collector.generate_notices_file()
+        collector.generate_readme()
+
+        print(f"  Collected {len(collector.collected_licenses)} licenses")
+        return True
+
+    except Exception as e:
+        print(f"  [ERROR] License collection failed: {e}")
+        return False
+
+
 def copy_legal_documents(project_root: Path, build_dir: Path) -> None:
     """
     Copies legal documents to distribution root.
-    
+
     Copies:
     - LICENSE.txt (main license)
     - EULA.txt (end user license agreement)
     - THIRD_PARTY_NOTICES.txt (attribution)
     - LICENSES/ folder (third-party licenses)
-    
+
     Args:
         project_root: Project root directory
         build_dir: Build root directory (STT-Stenographer/)
     """
     print("Copying legal documents...")
-    
+
     # Copy legal text files to root
     legal_files = ["LICENSE.txt", "EULA.txt", "THIRD_PARTY_NOTICES.txt"]
     copied = 0
-    
+
     for legal_file in legal_files:
         src = project_root / legal_file
         if src.exists():
@@ -663,11 +707,11 @@ def copy_legal_documents(project_root: Path, build_dir: Path) -> None:
             copied += 1
         else:
             print(f"  Warning: {legal_file} not found")
-    
+
     # Copy LICENSES/ folder
     licenses_src = project_root / "LICENSES"
     licenses_dest = build_dir / "LICENSES"
-    
+
     if licenses_src.exists():
         if licenses_dest.exists():
             shutil.rmtree(licenses_dest)
@@ -676,7 +720,7 @@ def copy_legal_documents(project_root: Path, build_dir: Path) -> None:
         print(f"  Copied LICENSES/ folder ({license_count} packages)")
     else:
         print(f"  Warning: LICENSES/ folder not found")
-    
+
     print(f"Legal documents: {copied} files + LICENSES/ folder")
 
 

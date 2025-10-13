@@ -1,5 +1,6 @@
 # tests/test_vad.py
 import numpy as np
+from pathlib import Path
 from src.VoiceActivityDetector import VoiceActivityDetector
 
 
@@ -14,7 +15,6 @@ class TestVoiceActivityDetector:
         """VAD should identify silence audio as non-speech."""
         config = {
             'vad': {
-                'model_path': './models/silero_vad/silero_vad.onnx',
                 'threshold': 0.5,
                 'frame_duration_ms': 32
             },
@@ -23,7 +23,8 @@ class TestVoiceActivityDetector:
             }
         }
 
-        vad = VoiceActivityDetector(config)
+        model_path = Path('./models/silero_vad/silero_vad.onnx')
+        vad = VoiceActivityDetector(config, model_path)
         result = vad.process_frame(silence_audio[:512])
 
         assert result['is_speech'] is False
@@ -34,7 +35,6 @@ class TestVoiceActivityDetector:
         """VAD should identify real speech audio as speech."""
         config = {
             'vad': {
-                'model_path': './models/silero_vad/silero_vad.onnx',
                 'threshold': 0.5,
                 'frame_duration_ms': 32
             },
@@ -43,7 +43,8 @@ class TestVoiceActivityDetector:
             }
         }
 
-        vad = VoiceActivityDetector(config)
+        model_path = Path('./models/silero_vad/silero_vad.onnx')
+        vad = VoiceActivityDetector(config, model_path)
         # Process frame from middle of speech (skip first frame which may be silence/noise)
         # Frame 1 (at 512 samples = 32ms) contains speech based on empirical testing
         result = vad.process_frame(speech_audio[512:1024])
@@ -56,7 +57,6 @@ class TestVoiceActivityDetector:
         """VAD should detect speech in presence of background noise."""
         config = {
             'vad': {
-                'model_path': './models/silero_vad/silero_vad.onnx',
                 'threshold': 0.5,
                 'frame_duration_ms': 32
             },
@@ -65,7 +65,8 @@ class TestVoiceActivityDetector:
             }
         }
 
-        vad = VoiceActivityDetector(config)
+        model_path = Path('./models/silero_vad/silero_vad.onnx')
+        vad = VoiceActivityDetector(config, model_path)
 
         # Add very low noise (0.1%) to speech - Silero is robust to this level
         # Use frame 1 (512:1024) which contains speech
@@ -82,7 +83,6 @@ class TestVoiceActivityDetector:
         """VAD should maintain ONNX model state for temporal context."""
         config = {
             'vad': {
-                'model_path': './models/silero_vad/silero_vad.onnx',
                 'threshold': 0.5,
                 'frame_duration_ms': 32
             },
@@ -91,7 +91,8 @@ class TestVoiceActivityDetector:
             }
         }
 
-        vad = VoiceActivityDetector(config)
+        model_path = Path('./models/silero_vad/silero_vad.onnx')
+        vad = VoiceActivityDetector(config, model_path)
 
         # Process two consecutive frames
         frame1 = speech_audio[512:1024]
@@ -113,7 +114,6 @@ class TestVoiceActivityDetector:
         """reset_model_state should clear ONNX model state only."""
         config = {
             'vad': {
-                'model_path': './models/silero_vad/silero_vad.onnx',
                 'threshold': 0.5,
                 'frame_duration_ms': 32
             },
@@ -122,7 +122,8 @@ class TestVoiceActivityDetector:
             }
         }
 
-        vad = VoiceActivityDetector(config)
+        model_path = Path('./models/silero_vad/silero_vad.onnx')
+        vad = VoiceActivityDetector(config, model_path)
 
         # Process frame to populate model state
         vad.process_frame(speech_audio[512:1024])
@@ -137,7 +138,6 @@ class TestVoiceActivityDetector:
         """VAD should not maintain application-level buffers (SRP test)."""
         config = {
             'vad': {
-                'model_path': './models/silero_vad/silero_vad.onnx',
                 'threshold': 0.5,
                 'frame_duration_ms': 32
             },
@@ -146,7 +146,8 @@ class TestVoiceActivityDetector:
             }
         }
 
-        vad = VoiceActivityDetector(config)
+        model_path = Path('./models/silero_vad/silero_vad.onnx')
+        vad = VoiceActivityDetector(config, model_path)
 
         # VAD should NOT have these application-level attributes
         assert not hasattr(vad, 'speech_buffer'), "VAD should not buffer speech frames"

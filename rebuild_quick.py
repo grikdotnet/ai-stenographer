@@ -8,17 +8,22 @@ Only updates:
 - Application code (recompiles .py -> .pyc)
 - Config files
 - Assets
+- Legal documents (optional: --refresh-licenses)
 
 Usage:
-    python rebuild_quick.py
+    python rebuild_quick.py                  # Update code only
+    python rebuild_quick.py --refresh-licenses  # Also refresh licenses
 """
 import sys
 import shutil
 from pathlib import Path
 import subprocess
 
+# Import LicenseCollector for optional license refresh
+from src.LicenseCollector import LicenseCollector
 
-def quick_rebuild():
+
+def quick_rebuild(refresh_licenses=False):
     """Quick rebuild - only updates application code and assets."""
     print("=" * 60)
     print("Quick Rebuild - Application Code Only")
@@ -111,6 +116,20 @@ def quick_rebuild():
         shutil.copy2(stenographer_jpg, assets_dest / "stenographer.jpg")
         print(f"   Copied stenographer.jpg")
 
+    # Optional: Refresh licenses if requested
+    if refresh_licenses:
+        print("\n6b. Refreshing third-party licenses...")
+        try:
+            collector = LicenseCollector(output_dir=str(project_root / "LICENSES"))
+            collector.collect_all_licenses()
+            collector.create_python_license_entry()
+            collector.generate_notices_file()
+            collector.generate_readme()
+            print(f"   Refreshed {len(collector.collected_licenses)} licenses")
+        except Exception as e:
+            print(f"   Warning: License refresh failed: {e}")
+            print(f"   Continuing with existing licenses...")
+
     # Step 7: Copy legal documents to root
     print("\n7. Copying legal documents...")
     legal_files = ["LICENSE.txt", "EULA.txt", "THIRD_PARTY_NOTICES.txt"]
@@ -134,6 +153,8 @@ def quick_rebuild():
 
     print("\n" + "=" * 60)
     print("Quick rebuild completed!")
+    if refresh_licenses:
+        print("  (with license refresh)")
     print(f"Build directory: {build_dir}")
     print("\nYou can now test with:")
     print(f'  cd "{build_dir}"')
@@ -144,4 +165,11 @@ def quick_rebuild():
 
 
 if __name__ == "__main__":
-    sys.exit(quick_rebuild())
+    # Parse command-line arguments
+    refresh_licenses = "--refresh-licenses" in sys.argv
+
+    if "--help" in sys.argv or "-h" in sys.argv:
+        print(__doc__)
+        sys.exit(0)
+
+    sys.exit(quick_rebuild(refresh_licenses=refresh_licenses))

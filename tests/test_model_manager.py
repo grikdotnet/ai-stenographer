@@ -172,7 +172,7 @@ class TestModelManager:
 
     @patch('src.ModelManager.hf_hub_download')
     def test_silero_download_creates_correct_path(self, mock_download, tmp_path):
-        """Verifies Silero VAD is downloaded to the path expected by config."""
+        """Verifies Silero VAD is downloaded to the path expected by application."""
         # Mock download to simulate HuggingFace behavior
         def create_silero(*args, **kwargs):
             local_dir = Path(kwargs.get('local_dir', ''))
@@ -186,12 +186,36 @@ class TestModelManager:
         mock_download.side_effect = create_silero
 
         with patch('src.ModelManager.MODEL_DIR', tmp_path):
-            ModelManager._download_silero()
+            ModelManager._download_silero(tmp_path)
 
-            # After download, file should be at location expected by config
+            # After download, file should be at location expected by application
             expected_path = tmp_path / "silero_vad" / "silero_vad.onnx"
             assert expected_path.exists(), f"Expected model at {expected_path}"
 
-            # Original HuggingFace download location should also exist
-            hf_path = tmp_path / "silero_vad" / "onnx" / "model.onnx"
-            assert hf_path.exists(), f"HuggingFace download at {hf_path}"
+            # Original HuggingFace download directory should be removed to save space
+            hf_path = tmp_path / "silero_vad" / "onnx"
+            assert not hf_path.exists(), f"HuggingFace onnx directory should be removed"
+
+    @patch('src.ModelManager.snapshot_download')
+    def test_parakeet_download_ignores_unused_files(self, mock_snapshot, tmp_path):
+        """Verifies Parakeet download uses ignore_patterns to skip unused files."""
+        def create_parakeet(*args, **kwargs):
+            # Verify ignore_patterns is passed
+            assert 'ignore_patterns' in kwargs
+            assert '*.int8.onnx' in kwargs['ignore_patterns']
+            assert 'nemo128.onnx' in kwargs['ignore_patterns']
+            assert 'README.md' in kwargs['ignore_patterns']
+
+            local_dir = Path(kwargs.get('local_dir', ''))
+            local_dir.mkdir(parents=True, exist_ok=True)
+            (local_dir / "encoder-model.onnx").write_text("mock")
+            return str(local_dir)
+
+        mock_snapshot.side_effect = create_parakeet
+
+        with patch('src.ModelManager.MODEL_DIR', tmp_path):
+            ModelManager._download_parakeet(tmp_path)
+
+            # Verify the main model file exists
+            expected_path = tmp_path / "parakeet" / "encoder-model.onnx"
+            assert expected_path.exists(), f"Expected model at {expected_path}"

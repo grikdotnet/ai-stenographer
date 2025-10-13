@@ -213,6 +213,7 @@ if __name__ == "__main__":
         loading_window.update_message("The Stenographer is getting ready ...")
         pipeline = STTPipeline(
             model_path=str(MODELS_DIR / "parakeet"),
+            models_dir=MODELS_DIR,
             config_path=str(get_config_path("stt_config.json", PATHS)),
             verbose=verbose,
             window_duration=window_duration,

@@ -3,4 +3,4 @@ numpy
 onnxruntime
 onnx-asr
 Pillow
-huggingface_hub
+huggingface_hub[hf_xet]

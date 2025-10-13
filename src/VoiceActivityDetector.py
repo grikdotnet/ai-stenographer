@@ -14,13 +14,15 @@ class VoiceActivityDetector:
 
     Args:
         config: Configuration dictionary containing VAD and audio parameters
+        model_path: Absolute path to the Silero VAD ONNX model file
         verbose: Enable detailed logging for debugging (default: False)
     """
 
-    def __init__(self, config: Dict[str, Any], verbose: bool = False):
+    def __init__(self, config: Dict[str, Any], model_path: Path, verbose: bool = False):
         self.config = config
         self.vad_config = config['vad']
         self.audio_config = config['audio']
+        self.model_path = model_path
         self.verbose = verbose
 
         self.sample_rate: int = self.audio_config['sample_rate']
@@ -42,11 +44,11 @@ class VoiceActivityDetector:
     def _load_model(self) -> None:
         """Load Silero VAD ONNX model from local path.
 
-        Loads the model from the path specified in config using ONNX Runtime.
+        Loads the model from the absolute path provided during initialization.
         Initializes the model state tensor for stateful inference.
         Applies optimizations for reduced CPU usage in streaming mode.
         """
-        model_path = Path(self.vad_config['model_path'])
+        model_path = self.model_path
 
         if not model_path.exists():
             raise FileNotFoundError(
