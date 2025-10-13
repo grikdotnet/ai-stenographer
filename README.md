@@ -2,10 +2,17 @@
 
 # AI Stenographer
 
-**AI Stenographer** is a free, offline, real-time speech recognition desktop application designed for personal use. It converts spoken words into text in real time, without requiring an internet connection.
+**AI Stenographer** is a free, offline, real-time speech recognition desktop application designed for work and personal use. It converts spoken words into text in real time, without an internet connection and without sending any data anywhere.
+
+The Stenographer is good to create logs of meetings and conversations, observing any standards of security and confidentiality.
+
+It may be of use for people with hearing impairments.
+
+It can work in the background on a modern notebook, consuming 0.5% of CPU, just in case you want to recall what you talked about.
 
 ## Features
 
+- 20 European languages
 - Real-time speech-to-text conversion
 - Fully offline operation
 - Lightweight and portable
