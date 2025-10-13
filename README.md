@@ -28,9 +28,10 @@
 
 ## Requirements
 
-- Windows 10 or higher (or specify if other OS supported)
+- Windows 10 or 11
 - Microphone
-- No internet connection required
+- It Downloads a 2.5GB speech recognition model
+- Consumes 2.5GB RAM, low CPU load, no GPU required
 
 ## License
 
