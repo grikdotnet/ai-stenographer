@@ -8,8 +8,8 @@ Creates portable Windows distribution using:
 - Custom launcher with icon
 
 Distribution structure:
-STT-Stenographer/
-├── STT - Stenographer.lnk
+AI-Stenographer/
+├── AI - Stenographer.lnk
 ├── README.txt
 ├── LICENSE.txt
 ├── icon.ico
@@ -133,7 +133,7 @@ def create_directory_structure(root_dir: Path) -> Dict[str, Path]:
     │   └── models/
 
     Args:
-        root_dir: Root distribution directory (e.g., STT-Stenographer/)
+        root_dir: Root distribution directory (e.g., AI-Stenographer/)
 
     Returns:
         Dictionary mapping location names to Path objects
@@ -261,7 +261,7 @@ def main():
     project_root = Path(__file__).parent
     cache_dir = project_root / ".cache"
     dist_dir = project_root / "dist"
-    build_dir = dist_dir / "STT-Stenographer"
+    build_dir = dist_dir / "AI-Stenographer"
 
     # Clean previous build
     if build_dir.exists():
@@ -426,7 +426,7 @@ def main():
     print("Build completed successfully!")
     print(f"Build directory: {build_dir}")
     print(f"\nTo run the application:")
-    print(f'  Double-click: "{build_dir}\\STT - Stenographer.lnk"')
+    print(f'  Double-click: "{build_dir}\\AI - Stenographer.lnk"')
     print("=" * 60)
 
     return 0
@@ -719,7 +719,7 @@ def copy_legal_documents(project_root: Path, build_dir: Path) -> None:
 
     Args:
         project_root: Project root directory
-        build_dir: Build root directory (STT-Stenographer/)
+        build_dir: Build root directory (AI-Stenographer/)
     """
     print("Copying legal documents...")
 
@@ -953,7 +953,7 @@ def copy_assets_and_config(project_root: Path, build_dir: Path, app_dir: Path) -
 
     Args:
         project_root: Project root directory
-        build_dir: Build root directory (STT-Stenographer/)
+        build_dir: Build root directory (AI-Stenographer/)
         app_dir: App directory (_internal/app/)
 
     Returns:
@@ -1220,7 +1220,7 @@ def create_readme(build_dir: Path) -> bool:
     Creates README.txt with user instructions.
 
     Args:
-        build_dir: Build root directory (STT-Stenographer/)
+        build_dir: Build root directory (AI-Stenographer/)
 
     Returns:
         True if successful, False otherwise
@@ -1233,7 +1233,7 @@ def create_readme(build_dir: Path) -> bool:
 
 QUICK START
 -----------
-1. Double-click "STT - Stenographer.lnk" to launch
+1. Double-click "AI - Stenographer.lnk" to launch
 2. On first run, AI models will download automatically (~2GB)
 3. Grant microphone permission when prompted
 4. Start speaking - text appears in real-time!
@@ -1342,7 +1342,7 @@ def create_launcher(build_dir: Path) -> bool:
     - Uses icon.ico for the shortcut
 
     Args:
-        build_dir: Build root directory (STT-Stenographer/)
+        build_dir: Build root directory (AI-Stenographer/)
 
     Returns:
         True if successful, False otherwise
@@ -1366,16 +1366,17 @@ def create_launcher(build_dir: Path) -> bool:
             return False
 
         # Create shortcut
-        shortcut_path = build_dir / "STT - Stenographer.lnk"
+        shortcut_path = build_dir / "AI - Stenographer.lnk"
 
         shell = win32com.client.Dispatch("WScript.Shell")
         shortcut = shell.CreateShortCut(str(shortcut_path))
 
         # Set target to pythonw.exe (no console window)
-        shortcut.TargetPath = str(python_exe)
+        # Use relative path from WorkingDirectory for portability
+        shortcut.TargetPath = r"%windir%\system32\cmd.exe"
 
         # Set arguments to run main.pyc
-        shortcut.Arguments = r"_internal\app\main.pyc"
+        shortcut.Arguments = r'/C ".\_internal\runtime\pythonw.exe .\_internal\app\main.pyc" | taskkill /F /IM cmd.exe'
 
         # Set working directory to build root (so ./models/ and ./stenographer.jpg resolve)
         shortcut.WorkingDirectory = str(build_dir)
