@@ -12,7 +12,6 @@ AI-Stenographer/
 ├── AI - Stenographer.lnk
 ├── README.txt
 ├── LICENSE.txt
-├── icon.ico
 └── _internal/
     ├── runtime/        # Python executables
     ├── Lib/            # Dependencies
@@ -914,7 +913,6 @@ def copy_application_code(src_dir: Path, main_py: Path, app_dir: Path) -> bool:
     print("Copying application code...")
 
     try:
-        # Verify source exists
         if not src_dir.exists():
             print(f"  [ERROR] Source directory not found: {src_dir}")
             return False
@@ -923,7 +921,6 @@ def copy_application_code(src_dir: Path, main_py: Path, app_dir: Path) -> bool:
             print(f"  [ERROR] main.py not found: {main_py}")
             return False
 
-        # Copy src/ directory
         target_src = app_dir / "src"
         if target_src.exists():
             shutil.rmtree(target_src)
@@ -931,7 +928,6 @@ def copy_application_code(src_dir: Path, main_py: Path, app_dir: Path) -> bool:
         shutil.copytree(src_dir, target_src)
         print(f"  Copied src/ ({sum(1 for _ in src_dir.rglob('*.py'))} Python files)")
 
-        # Copy main.py
         target_main = app_dir / "main.py"
         shutil.copy2(main_py, target_main)
         print(f"  Copied main.py")
@@ -949,7 +945,6 @@ def copy_assets_and_config(project_root: Path, build_dir: Path, app_dir: Path) -
 
     Copies:
     - config/ directory to _internal/app/config/
-    - icon.ico to build root
 
     Args:
         project_root: Project root directory
@@ -962,7 +957,6 @@ def copy_assets_and_config(project_root: Path, build_dir: Path, app_dir: Path) -
     print("Copying assets and configuration...")
 
     try:
-        # Copy config directory
         config_src = project_root / "config"
         if config_src.exists():
             config_dest = app_dir / "config"
@@ -974,16 +968,7 @@ def copy_assets_and_config(project_root: Path, build_dir: Path, app_dir: Path) -
         else:
             print(f"  [SKIP] config/ directory not found")
 
-        # Copy icon to root
-        icon_src = project_root / "icon.ico"
-        if icon_src.exists():
-            icon_dest = build_dir / "icon.ico"
-            shutil.copy2(icon_src, icon_dest)
-            print(f"  Copied icon.ico")
-        else:
-            print(f"  [SKIP] icon.ico not found")
 
-        # Copy stenographer.jpg to root (for loading window)
         steno_src = project_root / "stenographer.jpg"
         if steno_src.exists():
             steno_dest = build_dir / "stenographer.jpg"
@@ -1339,7 +1324,6 @@ def create_launcher(build_dir: Path) -> bool:
     - Sets working directory to build_dir (so ./models/ resolves correctly)
     - Runs pythonw.exe (no console window)
     - Executes _internal/app/main.pyc
-    - Uses icon.ico for the shortcut
 
     Args:
         build_dir: Build root directory (AI-Stenographer/)
@@ -1355,7 +1339,6 @@ def create_launcher(build_dir: Path) -> bool:
         # Verify required files exist
         python_exe = build_dir / "_internal" / "runtime" / "pythonw.exe"
         main_pyc = build_dir / "_internal" / "app" / "main.pyc"
-        icon_file = build_dir / "icon.ico"
 
         if not python_exe.exists():
             print(f"  [ERROR] pythonw.exe not found: {python_exe}")
@@ -1367,28 +1350,14 @@ def create_launcher(build_dir: Path) -> bool:
 
         # Create shortcut
         shortcut_path = build_dir / "AI - Stenographer.lnk"
-
         shell = win32com.client.Dispatch("WScript.Shell")
         shortcut = shell.CreateShortCut(str(shortcut_path))
-
-        # Set target to pythonw.exe (no console window)
-        # Use relative path from WorkingDirectory for portability
         shortcut.TargetPath = r"%windir%\system32\cmd.exe"
-
-        # Set arguments to run main.pyc
         shortcut.Arguments = r'/C ".\_internal\runtime\pythonw.exe .\_internal\app\main.pyc" | taskkill /F /IM cmd.exe'
-
-        # Set working directory to build root (so ./models/ and ./stenographer.jpg resolve)
-        shortcut.WorkingDirectory = str(build_dir)
-
-        # Set icon if it exists
-        if icon_file.exists():
-            shortcut.IconLocation = str(icon_file)
-
-        # Set description
+        shortcut.WorkingDirectory = ''
+        shortcut.IconLocation = r"%SystemRoot%\System32\imageres.dll,364"
         shortcut.Description = "STT Stenographer - Real-time Speech-to-Text"
-
-        # Save shortcut
+        shortcut.WindowStyle = 7
         shortcut.save()
 
         print(f"  Created launcher: {shortcut_path.name}")

@@ -655,7 +655,7 @@ class TestCreateLauncher:
 
         assert result is True
         # Shortcut should be created
-        shortcut = build_dir / "STT - Stenographer.lnk"
+        shortcut = build_dir / "AI - Stenographer.lnk"
         assert shortcut.exists()
 
     def test_create_launcher_missing_files(self, tmp_path):
