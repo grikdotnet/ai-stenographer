@@ -1,20 +1,24 @@
 # CLAUDE.md
 
-Test driven development only: plan, design and create tests first, implement code after tests are ready. SOLID design is mandatory.
-Work only on a task you were given. Before adding features on your own initiative, offer and ask.
+Test driven development: first plan tests, design and create tests, implement code later. SOLID design is mandatory.
 
 The test should focus on:
 
-- Output behavior - Does it produce correct text results?
+- Output behavior - Does it produce correct results?
 - Logic - Does it do what expected?
-- Queue interaction - Are results properly queued?
+- Queue interaction
 
-Write tests to check the application code, never re-implement application logic in tests.
+Create tests to check the application code, never re-implement application logic in tests.
 Avoid tests of parameters passed to methods, variables assignments and other checks that make no sense.
 
-Create dockblocks to describe logic and algorithms. Avoid commenting separate operations, skip comments which  duplicate function names and variables.
+Create dockblocks to describe logic and algorithms. Comment logic instead of commenting code.
+Avoid comments duplicating code, example:
+|  # RMS normalization
+|  rms_config = config['audio'].get('rms_normalization', {})
 
-Define types of parameters and return if possible.
+Before doing anything check whether the tofo item is in the task definition, or it is made up. Before doing anything on your own initiative, ask for the user confirmation.
+
+Define types of parameters and return where possible.
 
 Instead of writing "You're absolutely correct" or similar, write "OK".
 
@@ -22,6 +26,10 @@ In the end of task execution think what can be wrong, and offer what to check.
 
 After creating git commit mesages replace "Generated with [Claude Code] ..." line or "Co-Authored-By" with a joke.
 Never commit automatically without user command or confirmation.
+
+Instead of starting the answer with "You're absolutely right!" or "Good question!" or another standard phrase, be creative, maybe write just "OK", "Fine", or RPG-style like "As you whish, my master", or a sarcasm like "Oh now we go again!", "What options do I have?".
+
+Sarcasm and jokes are welcome everywhere.
 
 ## Project Overview
 
