@@ -1,6 +1,7 @@
 # src/Recognizer.py
 import queue
 import threading
+import logging
 import numpy as np
 from typing import Any, Optional
 from src.types import ChunkQueueItem, RecognitionResult
@@ -58,8 +59,8 @@ class Recognizer:
         text: str = self.model.recognize(audio)
 
         if self.verbose:
-            print(f"recognize(): chunk_ids={window_data.chunk_ids}")
-            print(f"recognize(): text: '{text}'")
+            logging.debug(f"recognize(): chunk_ids={window_data.chunk_ids}")
+            logging.debug(f"recognize(): text: '{text}'")
 
         if not text or not text.strip():
             return None

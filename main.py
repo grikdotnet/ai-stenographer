@@ -1,7 +1,9 @@
 # main.py
 import sys
+import logging
 from pathlib import Path
 from typing import Dict
+from logging.handlers import RotatingFileHandler
 from src.ModelManager import ModelManager
 from src.ModelDownloadDialog import show_download_dialog
 from src.LoadingWindow import LoadingWindow
@@ -78,6 +80,7 @@ def resolve_paths(script_path: Path) -> Dict[str, Path]:
             "MODELS_DIR": internal_dir / "models",
             "CONFIG_DIR": app_dir / "config",
             "ASSETS_DIR": app_dir / "assets",
+            "LOGS_DIR": root_dir / "logs",
         }
     else:
         # Development mode: ./main.py
@@ -90,6 +93,7 @@ def resolve_paths(script_path: Path) -> Dict[str, Path]:
             "MODELS_DIR": project_dir / "models",
             "CONFIG_DIR": project_dir / "config",
             "ASSETS_DIR": project_dir,  # Assets in project root during dev
+            "LOGS_DIR": project_dir / "logs",
         }
 
 
@@ -147,6 +151,55 @@ def ensure_models_dir(paths: Dict[str, Path]) -> Path:
     return models_dir
 
 
+def setup_logging(logs_dir: Path, verbose: bool = False, is_frozen: bool = False):
+    """
+    Configure logging for both terminal and frozen GUI modes.
+
+    Creates log directory, sets up file rotation, and optionally adds console
+    output when running from terminal.
+
+    Args:
+        logs_dir: Directory to store log files
+        verbose: If True, set DEBUG level; otherwise INFO
+        is_frozen: If True, skip console handler (frozen app has no console)
+    """
+    # Create logs directory
+    logs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Determine log level
+    level = logging.DEBUG if verbose else logging.INFO
+
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(level)
+
+    # Clear any existing handlers
+    root_logger.handlers.clear()
+
+    # Create formatter
+    formatter = logging.Formatter('[%(asctime)s] [%(levelname)s] %(message)s')
+
+    # Add rotating file handler (10MB max, keep 5 files)
+    log_file = logs_dir / "stenographer.log"
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=10 * 1024 * 1024,  # 10MB
+        backupCount=5
+    )
+    file_handler.setLevel(level)
+    file_handler.setFormatter(formatter)
+    root_logger.addHandler(file_handler)
+
+    # Add console handler only if not frozen (terminal mode)
+    if not is_frozen:
+        console_handler = logging.StreamHandler(sys.stdout)
+        console_handler.setLevel(level)
+        console_handler.setFormatter(formatter)
+        root_logger.addHandler(console_handler)
+
+    logging.info(f"Logging initialized: level={logging.getLevelName(level)}, frozen={is_frozen}")
+
+
 # ============================================================================
 # RESOLVE PATHS AT MODULE LOAD TIME
 # ============================================================================
@@ -164,6 +217,7 @@ APP_DIR = PATHS["APP_DIR"]
 ROOT_DIR = PATHS["ROOT_DIR"]
 MODELS_DIR = PATHS["MODELS_DIR"]
 CONFIG_DIR = PATHS["CONFIG_DIR"]
+LOGS_DIR = PATHS["LOGS_DIR"]
 
 # Ensure models directory exists
 ensure_models_dir(PATHS)
@@ -172,6 +226,12 @@ if __name__ == "__main__":
     loading_window = None
     try:
         verbose = "-v" in sys.argv
+
+        # Detect if running from frozen executable
+        is_frozen = getattr(sys, 'frozen', False)
+
+        # Setup logging BEFORE anything else
+        setup_logging(LOGS_DIR, verbose=verbose, is_frozen=is_frozen)
 
         window_duration = 2.0  # Default: 2 seconds
         step_duration = 1.0    # Default: 1 second (50% overlap)
@@ -199,7 +259,7 @@ if __name__ == "__main__":
             success = show_download_dialog(None, missing_models, MODELS_DIR)
 
             if not success:
-                print("Model download cancelled. Exiting.")
+                logging.info("Model download cancelled. Exiting.")
                 sys.exit(1)
 
             # Re-create loading window after download
@@ -229,14 +289,14 @@ if __name__ == "__main__":
         pipeline.run()
 
     except KeyboardInterrupt:
-        print("\nInterrupted by user.")
+        logging.info("Interrupted by user.")
         if loading_window:
             loading_window.close()
         sys.exit(0)
     except Exception as e:
-        print(f"ERROR: {type(e).__name__}: {e}")
+        logging.error(f"ERROR: {type(e).__name__}: {e}")
         import traceback
-        traceback.print_exc()
+        logging.error(traceback.format_exc())
         if loading_window:
             loading_window.close()
         sys.exit(1)

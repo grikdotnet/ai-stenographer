@@ -1,6 +1,7 @@
 """
 ModelManager handles model download and validation for STT pipeline.
 """
+import logging
 from pathlib import Path
 from typing import List, Callable, Optional
 from huggingface_hub import snapshot_download, hf_hub_download
@@ -85,9 +86,9 @@ class ModelManager:
             return True
 
         except Exception as e:
-            print(f"Model download error: {type(e).__name__}: {e}")
+            logging.error(f"Model download error: {type(e).__name__}: {e}")
             import traceback
-            traceback.print_exc()
+            logging.error(traceback.format_exc())
 
             if progress_callback:
                 progress_callback(model_name if 'model_name' in locals() else 'unknown', 0.0, 'error')

@@ -1,5 +1,6 @@
 # src/AdaptiveWindower.py
 import numpy as np
+import logging
 import queue
 from typing import Dict, List, Any, Optional
 from src.types import AudioSegment
@@ -116,12 +117,12 @@ class AdaptiveWindower:
 
         if self.verbose:
             duration_ms = len(window_audio) / self.sample_rate * 1000
-            print(f"AdaptiveWindower: created window duration={duration_ms:.0f}ms, chunk_ids={unique_chunk_ids}, samples={len(window_audio)}")
+            logging.debug(f"AdaptiveWindower: created window duration={duration_ms:.0f}ms, chunk_ids={unique_chunk_ids}, samples={len(window_audio)}")
 
         self.chunk_queue.put(window)
 
         if self.verbose:
-            print(f"AdaptiveWindower: put finalized window to queue (chunk_ids={unique_chunk_ids})")
+            logging.debug(f"AdaptiveWindower: put finalized window to queue (chunk_ids={unique_chunk_ids})")
 
         # Update window timing for next window
         self.last_window_time = self.window_start_time
@@ -169,7 +170,7 @@ class AdaptiveWindower:
         self.chunk_queue.put(window)
 
         if self.verbose:
-            print(f"AdaptiveWindower.flush(): put to queue (chunk_ids={unique_chunk_ids})")
+            logging.debug(f"AdaptiveWindower.flush(): put to queue (chunk_ids={unique_chunk_ids})")
 
         # Clear segments
         self.segments = []

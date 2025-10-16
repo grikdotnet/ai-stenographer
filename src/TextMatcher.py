@@ -1,6 +1,7 @@
 # src/TextMatcher.py
 import queue
 import threading
+import logging
 from typing import Dict, Any, Optional, Union
 from .TextNormalizer import TextNormalizer
 from .GuiWindow import GuiWindow
@@ -150,7 +151,7 @@ class TextMatcher:
             result: RecognitionResult with preliminary text and chunk_ids
         """
         if self.verbose:
-            print(f"TextMatcher.process_preliminary() passing '{result.text}' chunk_ids={result.chunk_ids}")
+            logging.debug(f"TextMatcher.process_preliminary() passing '{result.text}' chunk_ids={result.chunk_ids}")
 
         # Pass RecognitionResult object to GUI (preserves chunk_ids)
         self.gui_window.update_partial(result)
@@ -168,8 +169,8 @@ class TextMatcher:
         current_text: str = result.text
 
         if self.verbose:
-            print(f"TextMatcher.process_finalized() received '{current_text}' chunk_ids={result.chunk_ids}")
-            print(f"TextMatcher.process_finalized() previous_text: '{self.previous_finalized_text}'")
+            logging.debug(f"TextMatcher.process_finalized() received '{current_text}' chunk_ids={result.chunk_ids}")
+            logging.debug(f"TextMatcher.process_finalized() previous_text: '{self.previous_finalized_text}'")
 
         # Enhanced duplicate detection using text normalization
         # This handles punctuation variants ("Hello." vs "Hello?") while preventing
@@ -183,9 +184,9 @@ class TextMatcher:
             if (current_normalized == previous_normalized and
                 time_diff < self.time_threshold):
                 if self.verbose:
-                    print(f"TextMatcher.process_finalized() duplicate within {time_diff:.3f}s detected, skipping: '{current_text}'")
-                    print(f"  Original: '{self.previous_finalized_text}' → Normalized: '{previous_normalized}'")
-                    print(f"  Current: '{current_text}' → Normalized: '{current_normalized}'")
+                    logging.debug(f"TextMatcher.process_finalized() duplicate within {time_diff:.3f}s detected, skipping: '{current_text}'")
+                    logging.debug(f"  Original: '{self.previous_finalized_text}' → Normalized: '{previous_normalized}'")
+                    logging.debug(f"  Current: '{current_text}' → Normalized: '{current_normalized}'")
                 # Skip normalized duplicate - it's likely from overlapping windows
                 return
 
@@ -201,7 +202,7 @@ class TextMatcher:
                 # Send finalized text to GUI - create RecognitionResult with resolved text but preserve chunk_ids
                 if finalized_text.strip():
                     if self.verbose:
-                        print(f"TextMatcher.process_finalized(): finalize_text('{finalized_text}') chunk_ids={result.chunk_ids}")
+                        logging.debug(f"TextMatcher.process_finalized(): finalize_text('{finalized_text}') chunk_ids={result.chunk_ids}")
 
                     # Create new RecognitionResult with resolved text but same chunk_ids
                     finalized_result = RecognitionResult(
@@ -220,7 +221,7 @@ class TextMatcher:
             except Exception:
                 # No overlap found - finalize previous and start new
                 if self.verbose:
-                    print(f"TextMatcher.process_finalized(): no overlap, finalize_text('{self.previous_finalized_text}')")
+                    logging.debug(f"TextMatcher.process_finalized(): no overlap, finalize_text('{self.previous_finalized_text}')")
 
                 # Create RecognitionResult for previous finalized text
                 # Note: We don't have chunk_ids for previous text, so create empty list
@@ -239,7 +240,7 @@ class TextMatcher:
         else:
             # First text - store for overlap resolution
             if self.verbose:
-                print(f"TextMatcher.process_finalized(): first text, storing '{current_text}'")
+                logging.debug(f"TextMatcher.process_finalized(): first text, storing '{current_text}'")
             self.previous_finalized_text = current_text
             self.previous_finalized_timestamp = result.start_time
 
@@ -279,7 +280,7 @@ class TextMatcher:
         """
         if self.previous_finalized_text:
             if self.verbose:
-                print(f"TextMatcher.finalize_pending(): finalize_text('{self.previous_finalized_text}')")
+                logging.debug(f"TextMatcher.finalize_pending(): finalize_text('{self.previous_finalized_text}')")
 
             # Create RecognitionResult for pending text
             pending_result = RecognitionResult(
@@ -307,7 +308,7 @@ class TextMatcher:
             result: RecognitionResult with status='flush'
         """
         if self.verbose:
-            print(f"TextMatcher.process_flush() received text='{result.text}', pending='{self.previous_finalized_text}'")
+            logging.debug(f"TextMatcher.process_flush() received text='{result.text}', pending='{self.previous_finalized_text}'")
 
         # If flush contains text, process it as final first
         if result.text and result.text.strip():

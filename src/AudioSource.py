@@ -4,6 +4,7 @@ import sounddevice as sd
 import queue
 import numpy as np
 import time
+import logging
 from typing import Dict, Any, List, TYPE_CHECKING
 from src.VoiceActivityDetector import VoiceActivityDetector
 from src.types import AudioSegment
@@ -98,7 +99,7 @@ class AudioSource:
             status: Status information from sounddevice
         """
         if status:
-            print(f"Audio error: {status}")
+            logging.error(f"Audio error: {status}")
 
         audio_float: np.ndarray = indata[:, 0].astype(np.float32)
         current_time = time.time()
@@ -150,12 +151,12 @@ class AudioSource:
             silence_duration = timestamp - self.last_speech_timestamp
             if self.is_speech_active:
                 if self.verbose:
-                    print(f"AudioSource: silence_energy={self.silence_energy}, duration: {silence_duration:.2f}s chunk {self.chunk_id_counter}")
+                    logging.debug(f"AudioSource: silence_energy={self.silence_energy}, duration: {silence_duration:.2f}s chunk {self.chunk_id_counter}")
                 self.silence_energy += (1.0 - speech_prob)
 
                 if self.silence_energy >= self.silence_energy_threshold:
                     if self.verbose:
-                        print(f"AudioSource: silence_energy_threshold reached")
+                        logging.debug(f"AudioSource: silence_energy_threshold reached")
                     self.is_speech_active = False
                     self._finalize_segment()
 
@@ -163,7 +164,7 @@ class AudioSource:
             if self.speech_before_silence:
                 if silence_duration >= self.silence_timeout:
                     if self.verbose:
-                        print(f"AudioSource: silence_timeout reached")
+                        logging.debug(f"AudioSource: silence_timeout reached")
                     self.flush()
                     self.speech_before_silence = False  # Reset after flush to prevent repeated flushes
                     self.last_speech_timestamp = 0.0
@@ -184,10 +185,10 @@ class AudioSource:
             self.speech_start_time = timestamp
             self.speech_buffer = [audio_chunk]
             if self.verbose:
-                print(f"AudioSource: Starting segment at {self.speech_start_time:.2f}")
+                logging.debug(f"AudioSource: Starting segment at {self.speech_start_time:.2f}")
         else:
             if self.verbose:
-                print(f"AudioSource: adding chunk to segment {self.chunk_id_counter}")
+                logging.debug(f"AudioSource: adding chunk to segment {self.chunk_id_counter}")
             self.speech_buffer.append(audio_chunk)
 
             current_duration_ms = len(self.speech_buffer) * self.frame_duration_ms
@@ -222,7 +223,7 @@ class AudioSource:
         )
 
         if self.verbose:
-            print(f"AudioSource._finalize_segment(): pushed chunk_id={chunk_id}")
+            logging.debug(f"AudioSource._finalize_segment(): pushed chunk_id={chunk_id}")
 
         self.chunk_queue.put(segment)
 
@@ -307,6 +308,6 @@ class AudioSource:
             self._finalize_segment()
 
         self.windower.flush()
-        
+
         if self.verbose:
-            print("AudioSource: flush()")
+            logging.debug("AudioSource: flush()")

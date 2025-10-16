@@ -1,6 +1,7 @@
 import queue
 import signal
 import sys
+import logging
 import onnx_asr
 import json
 from pathlib import Path
@@ -102,10 +103,10 @@ class STTPipeline:
             return json.load(f)
 
     def start(self) -> None:
-        print("Starting STT Pipeline...")
+        logging.info("Starting STT Pipeline...")
         for component in self.components:
             component.start()
-        print("Pipeline running. Press Ctrl+C to stop.")
+        logging.info("Pipeline running. Press Ctrl+C to stop.")
 
     def stop(self) -> None:
         """Stop all pipeline components.
@@ -124,20 +125,20 @@ class STTPipeline:
 
         self._is_stopped = True
 
-        print("\nStopping pipeline...")
+        logging.info("Stopping pipeline...")
 
         # Stop audio capture and recognition
         self.audio_source.stop()
         self.recognizer.stop()
 
         # Finalize any pending partial text before stopping TextMatcher
-        print("Finalizing pending text...")
+        logging.info("Finalizing pending text...")
         self.text_matcher.finalize_pending()
 
         # Stop text processing
         self.text_matcher.stop()
 
-        print("Pipeline stopped.")
+        logging.info("Pipeline stopped.")
 
     def run(self) -> None:
         self.start()
