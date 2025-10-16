@@ -21,7 +21,7 @@ It can work in the background on a modern notebook, consuming 0.5% of CPU, just 
 
 ## Installation
 
-1. Download the distributive package: [Version 1](https://github.com/grikdotnet/ai-stenographer/releases/download/V1/STT-Stenographer.zip).
+1. Download the distributive package: [Version 1](https://github.com/grikdotnet/ai-stenographer/releases/download/1.01/AI-Stenographer.zip).
 2. Extract the downloaded ZIP package.
 3. Run the `STT - Stenographer` icon.
 
