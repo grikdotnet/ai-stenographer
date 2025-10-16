@@ -253,7 +253,7 @@ def verify_signatures(runtime_dir: Path) -> bool:
 def main():
     """Main build script entry point."""
     print("=" * 60)
-    print("STT Distribution Builder")
+    print("AI Distribution Builder")
     print("=" * 60)
 
     # Setup paths
@@ -1213,7 +1213,7 @@ def create_readme(build_dir: Path) -> bool:
     print("Creating README.txt...")
 
     try:
-        readme_content = """STT Stenographer - Real-time Speech-to-Text
+        readme_content = """AI Stenographer - Real-time Speech-to-Text
 ===============================================
 
 QUICK START
@@ -1356,7 +1356,7 @@ def create_launcher(build_dir: Path) -> bool:
         shortcut.Arguments = r'/C ".\_internal\runtime\pythonw.exe .\_internal\app\main.pyc" | taskkill /F /IM cmd.exe'
         shortcut.WorkingDirectory = ''
         shortcut.IconLocation = r"%SystemRoot%\System32\imageres.dll,364"
-        shortcut.Description = "STT Stenographer - Real-time Speech-to-Text"
+        shortcut.Description = "AI Stenographer - Real-time Speech-to-Text"
         shortcut.WindowStyle = 7
         shortcut.save()
 

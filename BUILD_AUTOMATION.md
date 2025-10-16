@@ -149,7 +149,7 @@ Select option by number and press Enter.
 python build_distribution.py
 
 # 2. Verify it works
-cd dist/STT-Stenographer
+cd dist/AI-Stenographer
 _internal\runtime\pythonw.exe _internal\app\main.pyc
 ```
 
@@ -161,7 +161,7 @@ _internal\runtime\pythonw.exe _internal\app\main.pyc
 # 3. Run quick rebuild
 python rebuild_quick.py
 # 4. Test
-cd dist/STT-Stenographer && _internal\runtime\pythonw.exe _internal\app\main.pyc
+cd dist/AI-Stenographer && _internal\runtime\pythonw.exe _internal\app\main.pyc
 
 # Option B: Automatic rebuild (recommended)
 # 1. Start watcher in terminal
@@ -173,17 +173,17 @@ python watch_and_rebuild.py
 ### Before Release
 ```bash
 # 1. Clean build
-python -c "import shutil; shutil.rmtree('dist/STT-Stenographer', ignore_errors=True)"
+python -c "import shutil; shutil.rmtree('dist/AI-Stenographer', ignore_errors=True)"
 
 # 2. Full build
 python build_distribution.py
 
 # 3. Test thoroughly
-cd dist/STT-Stenographer
+cd dist/AI-Stenographer
 _internal\runtime\pythonw.exe _internal\app\main.pyc
 
-# 4. Package (when Step 9 is implemented)
-# Creates STT-Stenographer-v1.0.zip
+# 4. Package (optional future enhancement)
+# Creates AI-Stenographer-v1.0.zip
 ```
 
 ---
@@ -216,7 +216,7 @@ python build_distribution.py
 ### "Error compiling bytecode"
 **Check:**
 1. Python syntax errors in source files
-2. Python.exe exists in dist/STT-Stenographer/_internal/runtime/
+2. Python.exe exists in dist/AI-Stenographer/_internal/runtime/
 
 **Solution:**
 ```bash
@@ -283,8 +283,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v3
         with:
-          name: STT-Stenographer
-          path: dist/STT-Stenographer-v*.zip
+          name: AI-Stenographer
+          path: dist/AI-Stenographer-v*.zip
 ```
 
 ---
@@ -336,9 +336,9 @@ Speed up full builds by using pip's parallel download:
 After successful build:
 ```
 dist/
-└── STT-Stenographer/
-    ├── STT - Stenographer.lnk    # Launcher (Step 19)
-    ├── README.txt                 # User documentation (Step 18)
+└── AI-Stenographer/
+    ├── AI - Stenographer.lnk     # Launcher (Step 21)
+    ├── README.txt                 # User documentation (Step 20)
     ├── LICENSE.txt                # Main application license (Step 11)
     ├── EULA.txt                   # End user agreement (Step 11)
     ├── THIRD_PARTY_NOTICES.txt    # Attribution info (Step 10 + 11)
@@ -411,9 +411,37 @@ ls LICENSES/
 
 ---
 
+## Build Steps Summary
+
+The full build process consists of 21 steps:
+
+1. Download Python embeddable package
+2. Create directory structure
+3. Extract Python to runtime directory
+4. Verify digital signatures
+5. Copy tkinter module from system Python
+6. Create python313._pth configuration
+7. Enable pip in embedded Python
+8. Verify pip is available
+9. Verify tkinter is importable
+10. Collect third-party licenses
+11. Copy legal documents (LICENSE.txt, EULA.txt)
+12. Install dependencies from requirements.txt
+13. Verify native libraries (.dll/.pyd files)
+14. Test critical imports (numpy, onnxruntime, etc.)
+15. Copy application code (src/, main.py)
+16. Compile application code to bytecode
+17. Compile site-packages to bytecode
+18. Cleanup package metadata (.dist-info)
+19. Copy assets and configuration files
+20. Create README.txt documentation
+21. Create launcher shortcut (.lnk file)
+
+---
+
 ## Next Steps
 
-After completing all 19 build steps, you'll have:
+After completing all 21 build steps, you'll have:
 - ✓ Automated full builds with license collection
 - ✓ Quick rebuilds for development
 - ✓ File watching for instant updates
@@ -421,5 +449,5 @@ After completing all 19 build steps, you'll have:
 - ✓ Professional Windows application
 - ✓ Legal compliance documentation
 
-**Current Status:** All 19 steps implemented
+**Current Status:** All 21 steps implemented
 **Next:** Package into distributable ZIP (future enhancement)
