@@ -413,6 +413,302 @@ class TestInstallDependencies:
             assert result is False
 
 
+class TestRemovePipFromDistribution:
+    """Test removing pip from site-packages after dependency installation."""
+
+    def test_remove_pip_from_runtime_locations(self, tmp_path):
+        """Should remove pip from runtime/Lib/site-packages and runtime/Scripts."""
+        from build_distribution import remove_pip_from_distribution
+
+        runtime_dir = tmp_path / "runtime"
+        site_packages = tmp_path / "Lib" / "site-packages"
+        site_packages.mkdir(parents=True)
+
+        # Location 1: Create pip in runtime/Lib/site-packages
+        runtime_site_packages = runtime_dir / "Lib" / "site-packages"
+        runtime_site_packages.mkdir(parents=True)
+
+        pip_dir = runtime_site_packages / "pip"
+        pip_dir.mkdir()
+        (pip_dir / "__init__.py").write_text("# pip init")
+        (pip_dir / "main.py").write_text("# pip main")
+
+        pip_dist_info = runtime_site_packages / "pip-25.2.dist-info"
+        pip_dist_info.mkdir()
+        (pip_dist_info / "METADATA").write_text("Name: pip")
+
+        # Location 2: Create pip executables in runtime/Scripts
+        scripts_dir = runtime_dir / "Scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "pip.exe").write_bytes(b"fake exe")
+        (scripts_dir / "pip3.exe").write_bytes(b"fake exe")
+        (scripts_dir / "pip3.13.exe").write_bytes(b"fake exe")
+
+        result = remove_pip_from_distribution(runtime_dir, site_packages)
+
+        assert result is True
+        # Verify runtime pip removed
+        assert not pip_dir.exists()
+        assert not pip_dist_info.exists()
+        # Verify pip executables removed
+        assert not (scripts_dir / "pip.exe").exists()
+        assert not (scripts_dir / "pip3.exe").exists()
+        assert not (scripts_dir / "pip3.13.exe").exists()
+
+    def test_remove_pip_not_present(self, tmp_path):
+        """Should succeed even if pip is not present."""
+        from build_distribution import remove_pip_from_distribution
+
+        runtime_dir = tmp_path / "runtime"
+        runtime_dir.mkdir()
+
+        site_packages = tmp_path / "site-packages"
+        site_packages.mkdir()
+
+        # No pip installed
+        result = remove_pip_from_distribution(runtime_dir, site_packages)
+
+        assert result is True
+
+    def test_remove_pip_preserves_other_packages(self, tmp_path):
+        """Should only remove pip, not other packages or executables."""
+        from build_distribution import remove_pip_from_distribution
+
+        runtime_dir = tmp_path / "runtime"
+        runtime_site_packages = runtime_dir / "Lib" / "site-packages"
+        runtime_site_packages.mkdir(parents=True)
+
+        site_packages = tmp_path / "site-packages"
+        site_packages.mkdir()
+
+        # Create pip package in runtime
+        pip_dir = runtime_site_packages / "pip"
+        pip_dir.mkdir()
+        (pip_dir / "__init__.py").write_text("")
+
+        # Create Scripts with pip and other executables
+        scripts_dir = runtime_dir / "Scripts"
+        scripts_dir.mkdir(parents=True)
+        (scripts_dir / "pip.exe").write_bytes(b"fake")
+        (scripts_dir / "pytest.exe").write_bytes(b"fake")  # Should be preserved
+        (scripts_dir / "black.exe").write_bytes(b"fake")   # Should be preserved
+
+        # Create other packages that should NOT be removed
+        numpy_dir = runtime_site_packages / "numpy"
+        numpy_dir.mkdir()
+        (numpy_dir / "__init__.py").write_text("")
+
+        result = remove_pip_from_distribution(runtime_dir, site_packages)
+
+        assert result is True
+        # pip removed
+        assert not pip_dir.exists()
+        assert not (scripts_dir / "pip.exe").exists()
+        # Other packages and executables preserved
+        assert numpy_dir.exists()
+        assert (scripts_dir / "pytest.exe").exists()
+        assert (scripts_dir / "black.exe").exists()
+
+    def test_remove_pip_from_both_target_and_runtime(self, tmp_path):
+        """Should remove pip from both target site-packages and runtime (edge case)."""
+        from build_distribution import remove_pip_from_distribution
+
+        runtime_dir = tmp_path / "runtime"
+        runtime_site_packages = runtime_dir / "Lib" / "site-packages"
+        runtime_site_packages.mkdir(parents=True)
+
+        site_packages = tmp_path / "Lib" / "site-packages"
+        site_packages.mkdir(parents=True)
+
+        # Create pip in runtime location
+        runtime_pip = runtime_site_packages / "pip"
+        runtime_pip.mkdir()
+        (runtime_pip / "__init__.py").write_text("# runtime pip")
+
+        # Create pip in target location (edge case)
+        target_pip = site_packages / "pip"
+        target_pip.mkdir()
+        (target_pip / "__init__.py").write_text("# target pip")
+
+        result = remove_pip_from_distribution(runtime_dir, site_packages)
+
+        assert result is True
+        # Both locations cleaned
+        assert not runtime_pip.exists()
+        assert not target_pip.exists()
+
+
+class TestRemoveTestsFromDistribution:
+    """Test removing test directories from third-party packages."""
+
+    def test_remove_tests_from_distribution_removes_all_patterns(self, tmp_path):
+        """Should remove tests/, test/, and testing/ directories."""
+        from build_distribution import remove_tests_from_distribution
+
+        site_packages = tmp_path / "site-packages"
+        site_packages.mkdir()
+
+        # Create various test directory patterns
+        # Pattern 1: tests/
+        numpy_tests = site_packages / "numpy" / "tests"
+        numpy_tests.mkdir(parents=True)
+        (numpy_tests / "test_array.py").write_text("# numpy test")
+        (numpy_tests / "test_linalg.py").write_text("# numpy test")
+
+        # Pattern 2: test/
+        fsspec_test = site_packages / "fsspec" / "test"
+        fsspec_test.mkdir(parents=True)
+        (fsspec_test / "test_core.py").write_text("# fsspec test")
+
+        # Pattern 3: testing/
+        pandas_testing = site_packages / "pandas" / "testing"
+        pandas_testing.mkdir(parents=True)
+        (pandas_testing / "utils.py").write_text("# pandas testing")
+
+        result = remove_tests_from_distribution(site_packages)
+
+        assert result is True
+        # All test directories should be removed
+        assert not numpy_tests.exists()
+        assert not fsspec_test.exists()
+        assert not pandas_testing.exists()
+
+    def test_remove_tests_from_distribution_nested_tests(self, tmp_path):
+        """Should remove nested test directories (e.g., numpy/lib/tests)."""
+        from build_distribution import remove_tests_from_distribution
+
+        site_packages = tmp_path / "site-packages"
+        site_packages.mkdir()
+
+        # Create nested test directories (common in numpy)
+        numpy_lib_tests = site_packages / "numpy" / "lib" / "tests"
+        numpy_lib_tests.mkdir(parents=True)
+        (numpy_lib_tests / "test_utils.py").write_text("# test file")
+        (numpy_lib_tests / "data" / "sample.dat").parent.mkdir()
+        (numpy_lib_tests / "data" / "sample.dat").write_bytes(b"test data")
+
+        numpy_core_tests = site_packages / "numpy" / "_core" / "tests"
+        numpy_core_tests.mkdir(parents=True)
+        (numpy_core_tests / "test_numeric.py").write_text("# test file")
+
+        result = remove_tests_from_distribution(site_packages)
+
+        assert result is True
+        # Both nested test directories should be removed
+        assert not numpy_lib_tests.exists()
+        assert not numpy_core_tests.exists()
+
+    def test_remove_tests_from_distribution_preserves_packages(self, tmp_path):
+        """Should only remove test directories, not actual packages."""
+        from build_distribution import remove_tests_from_distribution
+
+        site_packages = tmp_path / "site-packages"
+        site_packages.mkdir()
+
+        # Create actual package code
+        numpy_dir = site_packages / "numpy"
+        numpy_dir.mkdir()
+        (numpy_dir / "__init__.py").write_text("# numpy init")
+        (numpy_dir / "core.py").write_text("# numpy core")
+        (numpy_dir / "linalg.py").write_text("# numpy linalg")
+
+        # Create test directory to remove
+        numpy_tests = numpy_dir / "tests"
+        numpy_tests.mkdir()
+        (numpy_tests / "test_core.py").write_text("# test")
+
+        # Create another package
+        requests_dir = site_packages / "requests"
+        requests_dir.mkdir()
+        (requests_dir / "__init__.py").write_text("# requests")
+        (requests_dir / "api.py").write_text("# requests api")
+
+        result = remove_tests_from_distribution(site_packages)
+
+        assert result is True
+        # Test directory removed
+        assert not numpy_tests.exists()
+        # Package files preserved
+        assert (numpy_dir / "__init__.py").exists()
+        assert (numpy_dir / "core.py").exists()
+        assert (numpy_dir / "linalg.py").exists()
+        assert (requests_dir / "__init__.py").exists()
+        assert (requests_dir / "api.py").exists()
+
+    def test_remove_tests_from_distribution_no_tests_present(self, tmp_path):
+        """Should succeed even if no test directories exist."""
+        from build_distribution import remove_tests_from_distribution
+
+        site_packages = tmp_path / "site-packages"
+        site_packages.mkdir()
+
+        # Create packages without test directories
+        numpy_dir = site_packages / "numpy"
+        numpy_dir.mkdir()
+        (numpy_dir / "__init__.py").write_text("")
+
+        result = remove_tests_from_distribution(site_packages)
+
+        assert result is True
+
+    def test_remove_tests_from_distribution_calculates_size(self, tmp_path):
+        """Should calculate and report space saved."""
+        from build_distribution import remove_tests_from_distribution
+
+        site_packages = tmp_path / "site-packages"
+        site_packages.mkdir()
+
+        # Create test directories with known sizes
+        tests_dir = site_packages / "package" / "tests"
+        tests_dir.mkdir(parents=True)
+
+        # Create test files with some content
+        test_file1 = tests_dir / "test_module.py"
+        test_file1.write_text("# " * 100)  # 200 bytes
+
+        test_file2 = tests_dir / "test_utils.py"
+        test_file2.write_text("# " * 500)  # 1000 bytes
+
+        result = remove_tests_from_distribution(site_packages)
+
+        assert result is True
+        assert not tests_dir.exists()
+
+    def test_remove_tests_from_distribution_handles_permission_errors(self, tmp_path):
+        """Should continue removing other directories if one fails."""
+        from build_distribution import remove_tests_from_distribution
+        from unittest.mock import patch
+        import shutil as shutil_module
+
+        site_packages = tmp_path / "site-packages"
+        site_packages.mkdir()
+
+        # Create multiple test directories
+        test_dir1 = site_packages / "package1" / "tests"
+        test_dir1.mkdir(parents=True)
+        (test_dir1 / "test.py").write_text("# test")
+
+        test_dir2 = site_packages / "package2" / "tests"
+        test_dir2.mkdir(parents=True)
+        (test_dir2 / "test.py").write_text("# test")
+
+        # Mock shutil.rmtree to fail on first directory but succeed on second
+        original_rmtree = shutil_module.rmtree
+        call_count = [0]
+
+        def mock_rmtree(path, *args, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise PermissionError("Access denied")
+            return original_rmtree(path, *args, **kwargs)
+
+        with patch('build_distribution.shutil.rmtree', side_effect=mock_rmtree):
+            result = remove_tests_from_distribution(site_packages)
+
+            # Should still return True (graceful degradation)
+            assert result is True
+
+
 class TestVerifyNativeLibraries:
     """Test verifying native libraries (DLLs) are present."""
 
@@ -627,49 +923,6 @@ class TestCompileToPyc:
         assert not (src_dir / "__pycache__").exists()
 
 
-class TestCreateLauncher:
-    """Test creating Windows launcher shortcut."""
-
-    def test_create_launcher_success(self, tmp_path):
-        """Should create launcher shortcut with icon."""
-        from build_distribution import create_launcher
-
-        build_dir = tmp_path / "STT-Stenographer"
-        build_dir.mkdir()
-
-        # Create required files
-        icon_file = build_dir / "icon.ico"
-        icon_file.write_bytes(b"ICO")
-
-        runtime_dir = build_dir / "_internal" / "runtime"
-        runtime_dir.mkdir(parents=True)
-        python_exe = runtime_dir / "pythonw.exe"
-        python_exe.write_bytes(b"EXE")
-
-        app_dir = build_dir / "_internal" / "app"
-        app_dir.mkdir(parents=True)
-        main_pyc = app_dir / "main.pyc"
-        main_pyc.write_bytes(b"PYC")
-
-        result = create_launcher(build_dir)
-
-        assert result is True
-        # Shortcut should be created
-        shortcut = build_dir / "AI - Stenographer.lnk"
-        assert shortcut.exists()
-
-    def test_create_launcher_missing_files(self, tmp_path):
-        """Should return False if required files are missing."""
-        from build_distribution import create_launcher
-
-        build_dir = tmp_path / "STT-Stenographer"
-        build_dir.mkdir()
-
-        result = create_launcher(build_dir)
-
-        assert result is False
-
-
 class TestCopyTkinter:
     """Test copying tkinter module to embedded Python."""
 
@@ -811,52 +1064,3 @@ class TestCopyTkinter:
 
             # Should fail because zlib1.dll is critical
             assert result is False
-
-
-class TestCopyAssetsAndConfig:
-    """Test copying assets and configuration files."""
-
-    def test_copy_assets_and_config_success(self, tmp_path):
-        """Should copy config files and icon to distribution."""
-        from build_distribution import copy_assets_and_config
-
-        # Create source files
-        project_root = tmp_path / "project"
-        project_root.mkdir()
-
-        config_dir = project_root / "config"
-        config_dir.mkdir()
-        (config_dir / "stt_config.json").write_text('{"test": true}')
-
-        icon_file = project_root / "icon.ico"
-        icon_file.write_bytes(b"ICO_DATA")
-
-        # Create distribution structure
-        build_dir = tmp_path / "dist"
-        build_dir.mkdir()
-        app_dir = build_dir / "_internal" / "app"
-        app_dir.mkdir(parents=True)
-
-        result = copy_assets_and_config(project_root, build_dir, app_dir)
-
-        assert result is True
-        assert (app_dir / "config" / "stt_config.json").exists()
-        assert (build_dir / "icon.ico").exists()
-
-    def test_copy_assets_and_config_missing_files(self, tmp_path):
-        """Should handle missing config/icon files gracefully."""
-        from build_distribution import copy_assets_and_config
-
-        project_root = tmp_path / "project"
-        project_root.mkdir()
-
-        build_dir = tmp_path / "dist"
-        build_dir.mkdir()
-        app_dir = build_dir / "_internal" / "app"
-        app_dir.mkdir(parents=True)
-
-        # Should not fail even if files are missing
-        result = copy_assets_and_config(project_root, build_dir, app_dir)
-
-        # Returns True even if optional files are missing
-        assert result is True

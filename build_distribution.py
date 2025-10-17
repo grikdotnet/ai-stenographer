@@ -369,6 +369,16 @@ def main():
         print("\nError: Dependency installation failed")
         return 1
 
+    # Step 12a: Remove pip from distribution (not needed at runtime)
+    if not remove_pip_from_distribution(paths["runtime"], paths["lib"]):
+        print("\nWarning: Failed to remove pip from distribution")
+        print("Build will continue, but distribution size will be larger")
+
+    # Step 12b: Remove test directories from third-party packages
+    if not remove_tests_from_distribution(paths["lib"]):
+        print("\nWarning: Failed to remove test directories from distribution")
+        print("Build will continue, but distribution size will be larger")
+
     # Step 13: Verify native libraries
     lib_results = verify_native_libraries(paths["lib"])
     if not all(lib_results.values()):
@@ -401,22 +411,27 @@ def main():
         print("\nError: Failed to compile third-party packages")
         return 1
 
-    # Step 18: Clean up redundant package metadata
+    # Step 18: Package .pyc files into .zip archives (reduce filesystem overhead)
+    if not zip_site_packages(paths["lib"]):
+        print("\nError: Failed to package .pyc files into .zip archives")
+        return 1
+
+    # Step 19: Clean up redundant package metadata
     if not cleanup_package_metadata(paths["lib"]):
         print("\nError: Failed to clean package metadata")
         return 1
 
-    # Step 19: Copy assets and configuration
+    # Step 20: Copy assets and configuration
     if not copy_assets_and_config(project_root, build_dir, paths["app"]):
         print("\nError: Failed to copy assets and configuration")
         return 1
 
-    # Step 20: Create README documentation
+    # Step 21: Create README documentation
     if not create_readme(build_dir):
         print("\nError: Failed to create README")
         return 1
 
-    # Step 21: Create launcher shortcut
+    # Step 22: Create launcher shortcut
     if not create_launcher(build_dir):
         print("\nError: Failed to create launcher shortcut")
         return 1
@@ -754,25 +769,25 @@ def copy_legal_documents(project_root: Path, build_dir: Path) -> None:
 def install_dependencies(python_exe: Path, target_dir: Path, requirements: Path) -> bool:
     """
     Installs Python dependencies from requirements.txt.
-    
+
     Uses pip to install packages into target directory (site-packages).
-    
+
     Args:
         python_exe: Path to python.exe in embedded Python
         target_dir: Target directory for packages (Lib/site-packages)
         requirements: Path to requirements.txt
-    
+
     Returns:
         True if installation succeeded, False otherwise
     """
     print(f"Installing dependencies from {requirements.name}...")
-    
+
     if not requirements.exists():
         print(f"Error: {requirements} not found")
         return False
-    
+
     target_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # Run pip install with --target flag
     cmd = [
         str(python_exe),
@@ -782,16 +797,16 @@ def install_dependencies(python_exe: Path, target_dir: Path, requirements: Path)
         "--no-warn-script-location",
         "--disable-pip-version-check"
     ]
-    
+
     print(f"Running: pip install -r {requirements.name} --target {target_dir.name}/")
-    
+
     result = subprocess.run(
         cmd,
         capture_output=True,
         text=True,
         cwd=requirements.parent
     )
-    
+
     if result.returncode == 0:
         print("Dependencies installed successfully")
         # Show installed packages summary
@@ -801,6 +816,158 @@ def install_dependencies(python_exe: Path, target_dir: Path, requirements: Path)
     else:
         print(f"Error installing dependencies:")
         print(result.stderr)
+        return False
+
+
+def remove_tests_from_distribution(site_packages_dir: Path) -> bool:
+    """
+    Removes test directories from third-party packages.
+
+    Many Python packages include their unit tests when installed, which are
+    completely unnecessary for a frozen distribution. This removes common
+    test directory patterns to save significant space (~30MB+).
+
+    Removes:
+    - */tests/ directories (most common pattern)
+    - */test/ directories (alternate pattern)
+    - */testing/ directories (used by some packages)
+
+    Args:
+        site_packages_dir: Directory containing third-party packages (_internal/Lib/site-packages/)
+
+    Returns:
+        True if successful, False on error
+    """
+    print("Removing test directories from third-party packages...")
+
+    try:
+        removed_count = 0
+        total_size = 0
+        test_patterns = ["tests", "test", "testing"]
+
+        for pattern in test_patterns:
+            # Find all directories matching the test pattern
+            # Use rglob to find them recursively in packages
+            test_dirs = list(site_packages_dir.rglob(pattern))
+
+            for test_dir in test_dirs:
+                # Only remove if it's actually a directory
+                if not test_dir.is_dir():
+                    continue
+
+                # Calculate size before removal
+                try:
+                    dir_size = sum(f.stat().st_size for f in test_dir.rglob("*") if f.is_file())
+                    total_size += dir_size
+
+                    # Remove the directory
+                    shutil.rmtree(test_dir)
+                    removed_count += 1
+                except Exception as e:
+                    # Skip if we can't remove (permission issues, etc.)
+                    print(f"  [SKIP] Could not remove {test_dir.relative_to(site_packages_dir)}: {e}")
+
+        if removed_count > 0:
+            size_mb = total_size / (1024 * 1024)
+            print(f"  Removed {removed_count} test directories")
+            print(f"  Space saved: {size_mb:.1f}MB")
+        else:
+            print("  No test directories found (already clean)")
+
+        return True
+
+    except Exception as e:
+        print(f"  [ERROR] Failed to remove tests: {e}")
+        return False
+
+
+def remove_pip_from_distribution(runtime_dir: Path, site_packages_dir: Path) -> bool:
+    """
+    Removes pip from distribution after dependency installation.
+
+    Pip is only needed during build to install dependencies. At runtime, the
+    application never uses pip. Removing it saves significant space (857 files).
+
+    Pip is installed in two locations by get-pip.py:
+    1. runtime/Lib/site-packages/pip/ - the pip package
+    2. runtime/Scripts/ - pip executables (pip.exe, pip3.exe, etc.)
+
+    This function removes pip from BOTH locations.
+
+    Args:
+        runtime_dir: Directory containing Python runtime (_internal/runtime/)
+        site_packages_dir: Directory containing third-party packages (_internal/Lib/site-packages/)
+
+    Returns:
+        True if successful (even if pip wasn't found), False on error
+    """
+    print("Removing pip from distribution (not needed at runtime)...")
+
+    try:
+        removed_items = []
+        total_size = 0
+
+        # Location 1: Remove pip from runtime/Lib/site-packages/
+        runtime_site_packages = runtime_dir / "Lib" / "site-packages"
+        if runtime_site_packages.exists():
+            # Remove pip package directory
+            pip_dir = runtime_site_packages / "pip"
+            if pip_dir.exists() and pip_dir.is_dir():
+                pip_size = sum(f.stat().st_size for f in pip_dir.rglob("*") if f.is_file())
+                total_size += pip_size
+                file_count = sum(1 for _ in pip_dir.rglob("*") if _.is_file())
+                shutil.rmtree(pip_dir)
+                removed_items.append(f"runtime/pip/ ({file_count} files)")
+
+            # Remove pip metadata folders (pip-*.dist-info)
+            pip_dist_info = list(runtime_site_packages.glob("pip-*.dist-info"))
+            for dist_info in pip_dist_info:
+                if dist_info.is_dir():
+                    dist_info_size = sum(f.stat().st_size for f in dist_info.rglob("*") if f.is_file())
+                    total_size += dist_info_size
+                    shutil.rmtree(dist_info)
+                    removed_items.append(f"runtime/{dist_info.name}/")
+
+        # Location 2: Remove pip executables from runtime/Scripts/
+        scripts_dir = runtime_dir / "Scripts"
+        if scripts_dir.exists():
+            pip_exes = list(scripts_dir.glob("pip*.exe"))
+            for pip_exe in pip_exes:
+                if pip_exe.is_file():
+                    exe_size = pip_exe.stat().st_size
+                    total_size += exe_size
+                    pip_exe.unlink()
+                    removed_items.append(f"Scripts/{pip_exe.name}")
+
+        # Location 3: Remove pip from target site-packages (if it exists there)
+        # This shouldn't normally happen, but check just in case
+        pip_dir_target = site_packages_dir / "pip"
+        if pip_dir_target.exists() and pip_dir_target.is_dir():
+            pip_size = sum(f.stat().st_size for f in pip_dir_target.rglob("*") if f.is_file())
+            total_size += pip_size
+            file_count = sum(1 for _ in pip_dir_target.rglob("*") if _.is_file())
+            shutil.rmtree(pip_dir_target)
+            removed_items.append(f"target/pip/ ({file_count} files)")
+
+        pip_dist_info_target = list(site_packages_dir.glob("pip-*.dist-info"))
+        for dist_info in pip_dist_info_target:
+            if dist_info.is_dir():
+                dist_info_size = sum(f.stat().st_size for f in dist_info.rglob("*") if f.is_file())
+                total_size += dist_info_size
+                shutil.rmtree(dist_info)
+                removed_items.append(f"target/{dist_info.name}/")
+
+        if removed_items:
+            size_mb = total_size / (1024 * 1024)
+            print(f"  Removed: {', '.join(removed_items)}")
+            print(f"  Space saved: {size_mb:.1f}MB")
+        else:
+            print("  Pip not found (already removed or not installed)")
+
+        return True
+
+    except Exception as e:
+        print(f"  [ERROR] Failed to remove pip: {e}")
         return False
 
 
@@ -1313,6 +1480,157 @@ Python: 3.13.0
 
     except Exception as e:
         print(f"  [ERROR] Failed to create README: {e}")
+        return False
+
+
+def zip_site_packages(site_packages_dir: Path) -> bool:
+    """
+    Packages .pyc files into .zip archives to reduce filesystem overhead.
+
+    Creates one .zip archive per package/module containing all .pyc files,
+    while preserving native binaries (.pyd, .dll) and data folders outside.
+
+    Strategy:
+    - Package directories (e.g., numpy/) → numpy.zip with all .pyc files
+    - Single .pyc files (e.g., sounddevice.pyc) → sounddevice.zip
+    - Native binaries (.pyd, .dll) stay uncompressed outside .zip
+    - Data folders (*.libs/, *_data/) stay uncompressed
+    - Metadata (.dist-info/) preserved for runtime detection
+
+    Args:
+        site_packages_dir: Path to site-packages directory
+
+    Returns:
+        True if successful, False otherwise
+
+    Example reduction:
+        Before: 2,997 .pyc files across ~40 packages
+        After: ~40 .zip files + ~300 native binaries
+    """
+    print("Packaging .pyc files into .zip archives...")
+
+    try:
+        # Folders to preserve (contain native libraries or runtime data)
+        DATA_FOLDER_PATTERNS = {'.libs', '_data', '.dist-info', '.egg-info'}
+
+        def is_data_folder(path: Path) -> bool:
+            """Check if folder should be preserved uncompressed."""
+            return any(pattern in path.name for pattern in DATA_FOLDER_PATTERNS)
+
+        def has_native_extensions(package_dir: Path) -> bool:
+            """Check if package contains native extensions (.pyd, .dll)."""
+            return any(package_dir.rglob('*.pyd')) or any(package_dir.rglob('*.dll'))
+
+        # Find all top-level items (packages and single-file modules)
+        top_level_items = []
+
+        for item in site_packages_dir.iterdir():
+            # Skip data folders and metadata
+            if is_data_folder(item):
+                continue
+
+            # Skip already created .zip files (in case of re-run)
+            if item.suffix == '.zip':
+                continue
+
+            # Skip special files
+            if item.name.startswith('.') or item.suffix == '.pth':
+                continue
+
+            top_level_items.append(item)
+
+        if not top_level_items:
+            print("  No packages found to zip")
+            return True
+
+        zipped_count = 0
+        pyc_count = 0
+
+        for item in top_level_items:
+            if item.is_dir():
+                package_name = item.name
+
+                # Skip packages with native extensions - they must stay on filesystem
+                if has_native_extensions(item):
+                    continue
+
+                # Package directory - zip all .pyc files
+                zip_path = site_packages_dir / f"{package_name}.zip"
+
+                # Collect all .pyc files recursively
+                pyc_files = list(item.rglob('*.pyc'))
+
+                if not pyc_files:
+                    # No .pyc files, skip this package
+                    continue
+
+                # Count non-.pyc files to see if package will remain after zipping
+                all_files = list(item.rglob('*'))
+                non_pyc_files = [f for f in all_files if f.is_file() and f.suffix != '.pyc']
+
+                if non_pyc_files:
+                    # Package has non-.pyc content (e.g., py.typed, templates/)
+                    # Can't zip because directory must stay on filesystem
+                    # Zipping would cause import conflicts (dir vs zip)
+                    continue
+
+                # Package is pure .pyc - safe to zip and remove directory
+                # Create .zip archive
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for pyc_file in pyc_files:
+                        # Store with relative path from site-packages
+                        arcname = pyc_file.relative_to(site_packages_dir)
+                        zf.write(pyc_file, arcname)
+
+                # Remove .pyc files after successful archiving
+                for pyc_file in pyc_files:
+                    pyc_file.unlink()
+                    pyc_count += 1
+
+                # Clean up empty directories
+                # Walk bottom-up to remove empty subdirectories first
+                for subdir in sorted(item.rglob('*'), reverse=True):
+                    if subdir.is_dir() and not any(subdir.iterdir()):
+                        subdir.rmdir()
+
+                # Package directory should now be empty - remove it
+                if not any(item.iterdir()):
+                    item.rmdir()
+
+                zipped_count += 1
+
+            elif item.is_file() and item.suffix == '.pyc':
+                # Single-file module - keep as-is (.pyc files can be imported directly)
+                # No need to zip single files - they're already small and importable
+                pass
+
+        print(f"  Created {zipped_count} .zip archives from {pyc_count} .pyc files")
+
+        # Create sitecustomize.py to add .zip files to sys.path
+        if zipped_count > 0:
+            sitecustomize_content = '''"""
+Site customization for AI-Stenographer distribution.
+
+Automatically adds .zip archives in site-packages to sys.path for zipimport.
+"""
+import sys
+from pathlib import Path
+
+# Find all .zip files in site-packages and add them to sys.path
+site_packages = Path(__file__).parent
+for zip_file in site_packages.glob('*.zip'):
+    zip_path = str(zip_file)
+    if zip_path not in sys.path:
+        sys.path.insert(0, zip_path)
+'''
+            sitecustomize_path = site_packages_dir / "sitecustomize.py"
+            sitecustomize_path.write_text(sitecustomize_content, encoding='utf-8')
+            print(f"  Created sitecustomize.py for zipimport support")
+
+        return True
+
+    except Exception as e:
+        print(f"  [ERROR] Failed to zip site-packages: {e}")
         return False
 
 
