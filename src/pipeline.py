@@ -28,8 +28,12 @@ class STTPipeline:
         self.chunk_queue: queue.Queue = queue.Queue(maxsize=100)
         self.text_queue: queue.Queue = queue.Queue(maxsize=50)
 
-        # Load recognition model
-        self.model: Any = onnx_asr.load_model("nemo-parakeet-tdt-0.6b-v3", model_path)
+        # Load recognition model with CPU provider only (avoid OpenVINO warnings)
+        self.model: Any = onnx_asr.load_model(
+            "nemo-parakeet-tdt-0.6b-v3",
+            model_path,
+            providers=['CPUExecutionProvider']
+        )
 
         # Create GUI window
         self.root: tk.Tk
