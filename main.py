@@ -163,6 +163,13 @@ def setup_logging(logs_dir: Path, verbose: bool = False, is_frozen: bool = False
         verbose: If True, set DEBUG level; otherwise INFO
         is_frozen: If True, skip console handler (frozen app has no console)
     """
+    # Reconfigure sys.stdout to use UTF-8 encoding BEFORE creating handlers
+    # This prevents UnicodeEncodeError on Windows when logging non-ASCII characters
+    if not is_frozen and hasattr(sys.stdout, 'buffer'):
+        import io
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
+
     # Create logs directory
     logs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -180,11 +187,13 @@ def setup_logging(logs_dir: Path, verbose: bool = False, is_frozen: bool = False
     formatter = logging.Formatter('[%(asctime)s] [%(levelname)s] %(message)s')
 
     # Add rotating file handler (10MB max, keep 5 files)
+    # Use UTF-8 encoding for log file to support Unicode
     log_file = logs_dir / "stenographer.log"
     file_handler = RotatingFileHandler(
         log_file,
         maxBytes=10 * 1024 * 1024,  # 10MB
-        backupCount=5
+        backupCount=5,
+        encoding='utf-8'
     )
     file_handler.setLevel(level)
     file_handler.setFormatter(formatter)

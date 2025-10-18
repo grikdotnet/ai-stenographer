@@ -20,6 +20,7 @@
     "silence_timeout": 0.5
   },
   "recognition": {
-    "model_name": "parakeet"
+    "model_name": "parakeet",
+    "inference": "auto"
   }
 }

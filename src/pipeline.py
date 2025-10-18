@@ -15,6 +15,7 @@ from .Recognizer import Recognizer
 from .TextMatcher import TextMatcher
 from .GuiWindow import GuiWindow, create_stt_window, run_gui_loop
 from .VoiceActivityDetector import VoiceActivityDetector
+from .ExecutionProviderManager import ExecutionProviderManager
 
 class STTPipeline:
     def __init__(self, model_path: str = "./models/parakeet", models_dir: Path = None, verbose: bool = False, window_duration: float = 2.0, step_duration: float = 1.0, config_path: str = "./config/stt_config.json") -> None:
@@ -28,11 +29,19 @@ class STTPipeline:
         self.chunk_queue: queue.Queue = queue.Queue(maxsize=100)
         self.text_queue: queue.Queue = queue.Queue(maxsize=50)
 
-        # Load recognition model with CPU provider only (avoid OpenVINO warnings)
+        # Create execution provider manager for hardware acceleration
+        self.execution_provider_manager: ExecutionProviderManager = ExecutionProviderManager(self.config)
+        providers = self.execution_provider_manager.build_provider_list()
+
+        # Log selected provider
+        device_info = self.execution_provider_manager.get_device_info()
+        logging.info(f"Using execution provider: {device_info['selected']} ({device_info['provider']})")
+
+        # Load recognition model with selected providers
         self.model: Any = onnx_asr.load_model(
             "nemo-parakeet-tdt-0.6b-v3",
             model_path,
-            providers=['CPUExecutionProvider']
+            providers=providers
         )
 
         # Create GUI window

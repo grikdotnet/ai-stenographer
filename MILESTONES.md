@@ -1,102 +1,8 @@
-
-## **Milestone 0: Distribution Optimization**
-
-**Goal:** Reduce distribution filesystem overhead by packaging .pyc files into .zip archives
-
-### Background
-
-Current distribution in `dist/AI-Stenographer/_internal/Lib/site-packages/` contains **2,997 individual .pyc files** across ~40 packages (167MB total). This creates:
-- Filesystem overhead (thousands of small files)
-- Slow directory traversal
-- Inefficient disk space usage
-
-**Solution:** Use Python's built-in `zipimport` to package each library's .pyc files into single .zip archives (e.g., `numpy.zip`, `requests.zip`).
-
-### Tasks
-
-#### 0.1 Design zip packaging strategy (TDD)
-
-- Research Python zipimport capabilities with .pyc files
-- Design per-library zip structure (preserve native binaries outside)
-- Define exclusion rules (native .pyd/.dll files must stay uncompressed)
-- Document import path requirements for python313._pth
-
-#### 0.2 Write tests for zip packaging (TDD - Tests First)
-
-- Test: `test_zip_site_packages_creates_archives()` - Verify .zip files created
-- Test: `test_zip_preserves_native_binaries()` - Native .pyd/.dll stay uncompressed
-- Test: `test_zip_removes_source_pyc()` - Original .pyc files removed after zipping
-- Test: `test_zip_import_compatibility()` - Python can import from .zip archives
-- Test: `test_zip_handles_single_file_modules()` - Single .pyc files → .zip
-- Test: `test_zip_preserves_data_folders()` - e.g., numpy.libs/, _sounddevice_data/
-
-#### 0.3 Implement zip_site_packages() function
-
-- Implement function in [build_distribution.py](build_distribution.py)
-- Scan site-packages for top-level packages and modules
-- Create .zip archives with ZIP_DEFLATED compression
-- Preserve native binaries in original locations
-- Handle single-file modules (e.g., `sounddevice.pyc` → `sounddevice.zip`)
-- Clean up original .pyc files after successful archiving
-
-#### 0.4 Integration and testing
-
-- Add `zip_site_packages()` to main build pipeline (after `compile_site_packages()`)
-- Run build and verify distribution structure
-- Test imports from embedded Python: `python.exe -c "import numpy; import requests"`
-- Measure reduction: file count before/after, disk space impact
-
-#### 0.5 Update build tests
-
-- Update `test_build_distribution.py` to expect .zip archives
-- Verify python313._pth includes correct paths for zipimport
-- Add regression test to prevent future .pyc proliferation
-
-### Details
-
-- **Dependencies:** None (build system improvement)
-- **Estimated effort:** 1-2 days
-- **Risk:** Low (Python zipimport is stable since 2.3)
-- **Success criteria:**
-  - ✅ .pyc file count reduced by >90% (2997 → ~300 native binaries)
-  - ✅ All critical imports work (`numpy`, `onnxruntime`, `sounddevice`, etc.)
-  - ✅ Distribution size unchanged or smaller (better compression)
-  - ✅ All existing tests pass
-
-### Expected Results
-
-**Before:**
-```
-_internal/Lib/site-packages/
-├── numpy/__init__.pyc
-├── numpy/core/multiarray.pyc
-├── numpy/core/_multiarray_umath.cp313-win_amd64.pyd  (native)
-├── numpy.libs/libopenblas.dll                         (native)
-└── ... (2997 files total)
-```
-
-**After:**
-```
-_internal/Lib/site-packages/
-├── numpy.zip                                          (all .pyc files)
-├── numpy/core/_multiarray_umath.cp313-win_amd64.pyd  (native, uncompressed)
-├── numpy.libs/                                        (native DLLs, uncompressed)
-└── ... (~40 .zip files + ~300 native binaries)
-```
-
----
-
 ## **Milestone 1: Performance & Hardware Acceleration (Critical - Q1)**
 
 **Goal:** Fix CPU overload on battery-powered devices using NPU/GPU acceleration
 
 ### Tasks
-
-#### 1.1 Investigate OpenVINO integration for NPU/GPU inference
-
-- Research OpenVINO compatibility with Parakeet ONNX model
-- Profile current CPU usage patterns on Intel Core 135U + NPU
-- Analyze buffer overflow logs and identify bottlenecks
 
 #### 1.2 Design execution provider abstraction layer
 
@@ -106,9 +12,9 @@ _internal/Lib/site-packages/
 
 #### 1.3 Implement OpenVINO execution provider
 
-- Integrate OpenVINO as alternative to onnxruntime
-- Add device detection (Intel NPU, iGPU)
-- Handle model conversion if needed (ONNX → OpenVINO IR)
+- Enable OpenVINOExecutionProvider in ONNX Runtime (not a replacement)
+- Add device detection (Intel NPU, iGPU) via openvino.Core()
+- No model conversion needed (ONNX Runtime handles it internally)
 
 #### 1.4 Test and optimize on target hardware
 
@@ -116,11 +22,6 @@ _internal/Lib/site-packages/
 - Measure CPU usage (target: <20% on battery)
 - Work around for buffer overflows
 - Validate recognition accuracy
-
-### Details
-
-- **Dependencies:** None (critical path blocking other work)
-- **Success criteria:** CPU usage < 20% on battery, no audio buffer overflows, accuracy maintained
 
 ---
 
