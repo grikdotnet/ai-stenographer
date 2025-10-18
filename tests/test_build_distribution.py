@@ -1064,3 +1064,141 @@ class TestCopyTkinter:
 
             # Should fail because zlib1.dll is critical
             assert result is False
+
+
+class TestCleanupTclUnnecessaryFiles:
+    """Test removing unnecessary Tcl/Tk files after tkinter copy."""
+
+    def test_cleanup_removes_tzdata(self, tmp_path):
+        """Should remove tzdata directory (timezone database not needed)."""
+        from build_distribution import cleanup_tcl_unnecessary_files
+
+        # Create runtime directory with fake Tcl structure
+        runtime_dir = tmp_path / "runtime"
+        tcl_dir = runtime_dir / "tcl" / "tcl8.6"
+        tzdata_dir = tcl_dir / "tzdata"
+        tzdata_dir.mkdir(parents=True)
+
+        # Create fake timezone files
+        (tzdata_dir / "UTC").write_text("# UTC timezone")
+        africa_dir = tzdata_dir / "Africa"
+        africa_dir.mkdir()
+        (africa_dir / "Cairo").write_text("# Cairo timezone")
+        (africa_dir / "Lagos").write_text("# Lagos timezone")
+
+        result = cleanup_tcl_unnecessary_files(runtime_dir)
+
+        assert result is True
+        # tzdata directory should be removed
+        assert not tzdata_dir.exists()
+        # Parent directories should remain
+        assert tcl_dir.exists()
+
+    def test_cleanup_removes_msgs(self, tmp_path):
+        """Should remove msgs directory (localization not needed for English-only app)."""
+        from build_distribution import cleanup_tcl_unnecessary_files
+
+        runtime_dir = tmp_path / "runtime"
+        tcl_dir = runtime_dir / "tcl" / "tcl8.6"
+        msgs_dir = tcl_dir / "msgs"
+        msgs_dir.mkdir(parents=True)
+
+        # Create fake message files
+        (msgs_dir / "en.msg").write_text("# English messages")
+        (msgs_dir / "fr.msg").write_text("# French messages")
+        (msgs_dir / "de.msg").write_text("# German messages")
+
+        result = cleanup_tcl_unnecessary_files(runtime_dir)
+
+        assert result is True
+        # msgs directory should be removed
+        assert not msgs_dir.exists()
+        # Parent directories should remain
+        assert tcl_dir.exists()
+
+    def test_cleanup_removes_both_tzdata_and_msgs(self, tmp_path):
+        """Should remove both tzdata and msgs in single operation."""
+        from build_distribution import cleanup_tcl_unnecessary_files
+
+        runtime_dir = tmp_path / "runtime"
+        tcl_dir = runtime_dir / "tcl" / "tcl8.6"
+
+        # Create tzdata with ~100 files
+        tzdata_dir = tcl_dir / "tzdata"
+        tzdata_dir.mkdir(parents=True)
+        for i in range(100):
+            (tzdata_dir / f"timezone_{i}.tz").write_text(f"# Timezone {i}")
+
+        # Create msgs with ~50 files
+        msgs_dir = tcl_dir / "msgs"
+        msgs_dir.mkdir(parents=True)
+        for i in range(50):
+            (msgs_dir / f"lang_{i}.msg").write_text(f"# Language {i}")
+
+        result = cleanup_tcl_unnecessary_files(runtime_dir)
+
+        assert result is True
+        assert not tzdata_dir.exists()
+        assert not msgs_dir.exists()
+
+    def test_cleanup_preserves_essential_tcl_files(self, tmp_path):
+        """Should only remove tzdata/msgs, not essential Tcl/Tk files."""
+        from build_distribution import cleanup_tcl_unnecessary_files
+
+        runtime_dir = tmp_path / "runtime"
+        tcl_dir = runtime_dir / "tcl"
+
+        # Create essential Tcl files that must NOT be removed
+        tcl8_6 = tcl_dir / "tcl8.6"
+        tcl8_6.mkdir(parents=True)
+        (tcl8_6 / "init.tcl").write_text("# Tcl init script")
+        (tcl8_6 / "package.tcl").write_text("# Tcl package system")
+
+        tk8_6 = tcl_dir / "tk8.6"
+        tk8_6.mkdir(parents=True)
+        (tk8_6 / "button.tcl").write_text("# Button widget")
+        (tk8_6 / "dialog.tcl").write_text("# Dialog widget")
+
+        # Create removable files
+        tzdata_dir = tcl8_6 / "tzdata"
+        tzdata_dir.mkdir()
+        (tzdata_dir / "UTC").write_text("# UTC")
+
+        result = cleanup_tcl_unnecessary_files(runtime_dir)
+
+        assert result is True
+        # Essential files preserved
+        assert (tcl8_6 / "init.tcl").exists()
+        assert (tcl8_6 / "package.tcl").exists()
+        assert (tk8_6 / "button.tcl").exists()
+        assert (tk8_6 / "dialog.tcl").exists()
+        # Removable files gone
+        assert not tzdata_dir.exists()
+
+    def test_cleanup_succeeds_with_no_tcl_directory(self, tmp_path):
+        """Should succeed gracefully if no tcl/ directory exists."""
+        from build_distribution import cleanup_tcl_unnecessary_files
+
+        runtime_dir = tmp_path / "runtime"
+        runtime_dir.mkdir()
+
+        result = cleanup_tcl_unnecessary_files(runtime_dir)
+
+        assert result is True
+
+    def test_cleanup_succeeds_with_already_clean_tcl(self, tmp_path):
+        """Should succeed if tzdata/msgs already removed."""
+        from build_distribution import cleanup_tcl_unnecessary_files
+
+        runtime_dir = tmp_path / "runtime"
+        tcl_dir = runtime_dir / "tcl" / "tcl8.6"
+        tcl_dir.mkdir(parents=True)
+
+        # Create only essential files, no tzdata or msgs
+        (tcl_dir / "init.tcl").write_text("# init")
+
+        result = cleanup_tcl_unnecessary_files(runtime_dir)
+
+        assert result is True
+        # Essential files still present
+        assert (tcl_dir / "init.tcl").exists()

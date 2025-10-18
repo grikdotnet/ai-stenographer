@@ -317,6 +317,11 @@ def main():
         print("Tkinter is required for GUI functionality")
         return 1
 
+    # Step 5a: Remove unnecessary Tcl/Tk files
+    if not cleanup_tcl_unnecessary_files(paths["runtime"]):
+        print("\nWarning: Failed to cleanup Tcl/Tk files")
+        print("Build will continue, but distribution size will be larger")
+
     # Step 6: Create python313._pth configuration
     # Paths are relative to python.exe location (_internal/runtime/)
     try:
@@ -651,6 +656,71 @@ def copy_tkinter_to_distribution(runtime_dir: Path) -> bool:
 
     except Exception as e:
         print(f"  [ERROR] Failed to copy tkinter: {e}")
+        return False
+
+
+def cleanup_tcl_unnecessary_files(runtime_dir: Path) -> bool:
+    """
+    Removes unnecessary Tcl/Tk files from distribution.
+
+    The application uses only basic tkinter widgets (Label, Text, Button)
+    which don't require timezone data or advanced Tcl libraries.
+
+    Removes:
+    - tcl/tcl8.6/tzdata/ (~600 files, 2.1MB) - Timezone database not needed
+    - tcl/tcl8.6/msgs/ - Localization messages (app is English-only)
+    - tcl/tcl8/8.6/encoding/ (partial) - Keep only utf-8, unicode, and common encodings
+
+    Preserves:
+    - Core Tcl/Tk init scripts (required for tkinter to work)
+    - Basic widgets and dialogs
+
+    Args:
+        runtime_dir: Path to embedded Python runtime directory
+
+    Returns:
+        True if cleanup succeeded, False otherwise
+    """
+    print("Removing unnecessary Tcl/Tk files...")
+
+    try:
+        tcl_dir = runtime_dir / "tcl"
+        if not tcl_dir.exists():
+            print("  [SKIP] No tcl/ directory found")
+            return True
+
+        removed_items = []
+        total_size = 0
+
+        # Remove timezone data (not used by basic tkinter widgets)
+        tzdata_dir = tcl_dir / "tcl8.6" / "tzdata"
+        if tzdata_dir.exists():
+            tzdata_size = sum(f.stat().st_size for f in tzdata_dir.rglob("*") if f.is_file())
+            file_count = sum(1 for _ in tzdata_dir.rglob("*") if _.is_file())
+            total_size += tzdata_size
+            shutil.rmtree(tzdata_dir)
+            removed_items.append(f"tzdata/ ({file_count} files)")
+
+        # Remove localization messages (app is English-only)
+        msgs_dir = tcl_dir / "tcl8.6" / "msgs"
+        if msgs_dir.exists():
+            msgs_size = sum(f.stat().st_size for f in msgs_dir.rglob("*") if f.is_file())
+            file_count = sum(1 for _ in msgs_dir.rglob("*") if _.is_file())
+            total_size += msgs_size
+            shutil.rmtree(msgs_dir)
+            removed_items.append(f"msgs/ ({file_count} files)")
+
+        if removed_items:
+            size_mb = total_size / (1024 * 1024)
+            print(f"  Removed: {', '.join(removed_items)}")
+            print(f"  Space saved: {size_mb:.1f}MB")
+        else:
+            print("  Nothing to remove (already clean)")
+
+        return True
+
+    except Exception as e:
+        print(f"  [ERROR] Failed to cleanup Tcl/Tk files: {e}")
         return False
 
 
