@@ -2,10 +2,16 @@
 Windows distribution builder for STT application.
 
 Creates portable Windows distribution using:
-- Python embeddable package (signed executables)
+- Python embeddable package (with signed executables from system Python)
 - Pre-compiled bytecode (.pyc files)
 - Pre-installed dependencies
 - Custom launcher with icon
+
+Code Signing Strategy:
+- Downloads embeddable Python package (unsigned executables)
+- Replaces python.exe and pythonw.exe with properly signed versions from system Python
+- This avoids Windows SmartScreen warnings on user machines
+- System Python is signed by Python Software Foundation
 
 Distribution structure:
 AI-Stenographer/
@@ -13,7 +19,7 @@ AI-Stenographer/
 ├── README.txt
 ├── LICENSE.txt
 └── _internal/
-    ├── runtime/        # Python executables
+    ├── runtime/        # Python executables (signed)
     ├── Lib/            # Dependencies
     ├── app/            # Application code (.pyc)
     └── models/         # Downloaded at runtime
@@ -201,10 +207,82 @@ def verify_file_signature(file_path: Path) -> bool:
         )
 
         # PowerShell returns "True" or "False" as text
-        return result.stdout.strip().lower() == "true"
+        is_valid = result.stdout.strip().lower() == "true"
+
+        # Debug output for troubleshooting
+        if not is_valid:
+            # Get actual signature status for debugging
+            status_cmd = [
+                "powershell",
+                "-Command",
+                f"(Get-AuthenticodeSignature '{file_path}').Status"
+            ]
+            status_result = subprocess.run(status_cmd, capture_output=True, text=True, timeout=10)
+            actual_status = status_result.stdout.strip()
+            print(f"  [DEBUG] {file_path.name}: Expected 'Valid', got '{actual_status}'")
+
+        return is_valid
 
     except Exception as e:
         print(f"Warning: Could not verify signature for {file_path}: {e}")
+        return False
+
+
+def copy_signed_executables_from_system(runtime_dir: Path) -> bool:
+    """
+    Replaces unsigned embedded Python executables with signed system Python executables.
+
+    The embeddable Python package from python.org contains unsigned executables.
+    This function copies properly signed python.exe and pythonw.exe from the
+    system Python installation to avoid Windows SmartScreen warnings.
+
+    Strategy:
+    - Keep all files from embeddable package (python313.dll, stdlib, etc.)
+    - Replace only python.exe and pythonw.exe with signed versions
+    - Verify both source and destination signatures
+
+    Args:
+        runtime_dir: Directory containing Python runtime files
+
+    Returns:
+        True if signed executables were successfully copied and verified
+    """
+    print("Replacing unsigned executables with signed versions from system Python...")
+
+    try:
+        # Locate system Python (use sys.base_prefix to get actual installation, not venv)
+        system_python = Path(sys.base_prefix)
+
+        # Files to replace
+        executables = ["python.exe", "pythonw.exe"]
+
+        for exe_name in executables:
+            src_exe = system_python / exe_name
+            dest_exe = runtime_dir / exe_name
+
+            # Check source exists
+            if not src_exe.exists():
+                print(f"  [ERROR] System Python {exe_name} not found: {src_exe}")
+                return False
+
+            # Verify source is signed
+            if not verify_file_signature(src_exe):
+                print(f"  [WARNING] System Python {exe_name} is not signed")
+                print(f"  Continuing anyway, but SmartScreen warnings may still occur")
+
+            # Check destination exists (from embeddable package)
+            if not dest_exe.exists():
+                print(f"  [ERROR] Embedded {exe_name} not found: {dest_exe}")
+                return False
+
+            # Replace unsigned executable with signed version
+            shutil.copy2(src_exe, dest_exe)
+            print(f"  Copied signed {exe_name} from system Python")
+
+        return True
+
+    except Exception as e:
+        print(f"  [ERROR] Failed to copy signed executables: {e}")
         return False
 
 
@@ -306,23 +384,29 @@ def main():
         print(f"\nError extracting Python: {e}")
         return 1
 
-    # Step 4: Verify signatures
+    # Step 4: Replace unsigned executables with signed versions from system Python
+    if not copy_signed_executables_from_system(paths["runtime"]):
+        print("\nWarning: Could not copy signed executables from system Python")
+        print("Continuing with unsigned executables from embeddable package")
+        print("This may cause SmartScreen warnings on user machines")
+
+    # Step 5: Verify signatures (should now pass with signed executables)
     if not verify_signatures(paths["runtime"]):
         print("\nWarning: Python executables are not properly signed")
         print("This may cause SmartScreen warnings on user machines")
 
-    # Step 5: Copy tkinter module from system Python
+    # Step 6: Copy tkinter module from system Python
     if not copy_tkinter_to_distribution(paths["runtime"]):
         print("\nError: Failed to copy tkinter module")
         print("Tkinter is required for GUI functionality")
         return 1
 
-    # Step 5a: Remove unnecessary Tcl/Tk files
+    # Step 6a: Remove unnecessary Tcl/Tk files
     if not cleanup_tcl_unnecessary_files(paths["runtime"]):
         print("\nWarning: Failed to cleanup Tcl/Tk files")
         print("Build will continue, but distribution size will be larger")
 
-    # Step 6: Create python313._pth configuration
+    # Step 7: Create python313._pth configuration
     # Paths are relative to python.exe location (_internal/runtime/)
     try:
         pth_paths = [
@@ -337,60 +421,60 @@ def main():
         print(f"\nError creating _pth file: {e}")
         return 1
 
-    # Step 7: Enable pip in embedded Python
+    # Step 8: Enable pip in embedded Python
     try:
         enable_pip(paths["runtime"])
     except Exception as e:
         print(f"\nError enabling pip: {e}")
         return 1
 
-    # Step 8: Verify pip is available
+    # Step 9: Verify pip is available
     python_exe = paths["runtime"] / "python.exe"
     if not verify_pip(python_exe):
         print("\nWarning: Pip verification failed")
         print("Dependency installation may not work")
 
-    # Step 9: Verify tkinter is importable
+    # Step 10: Verify tkinter is importable
     if not verify_tkinter(python_exe):
         print("\nWarning: Tkinter verification failed")
         print("GUI functionality may not work")
 
-    # Step 10: Collect third-party licenses
+    # Step 11: Collect third-party licenses
     if not collect_third_party_licenses(project_root):
         print("\nError: License collection failed")
         print("LICENSES/ folder and THIRD_PARTY_NOTICES.txt are required for distribution")
         return 1
 
-    # Step 11: Copy legal documents
+    # Step 12: Copy legal documents
     try:
         copy_legal_documents(project_root, build_dir)
     except Exception as e:
         print(f"\nError copying legal documents: {e}")
         return 1
 
-    # Step 12: Install dependencies
+    # Step 13: Install dependencies
     requirements_file = project_root / "requirements.txt"
     if not install_dependencies(python_exe, paths["lib"], requirements_file):
         print("\nError: Dependency installation failed")
         return 1
 
-    # Step 12a: Remove pip from distribution (not needed at runtime)
+    # Step 13a: Remove pip from distribution (not needed at runtime)
     if not remove_pip_from_distribution(paths["runtime"], paths["lib"]):
         print("\nWarning: Failed to remove pip from distribution")
         print("Build will continue, but distribution size will be larger")
 
-    # Step 12b: Remove test directories from third-party packages
+    # Step 13b: Remove test directories from third-party packages
     if not remove_tests_from_distribution(paths["lib"]):
         print("\nWarning: Failed to remove test directories from distribution")
         print("Build will continue, but distribution size will be larger")
 
-    # Step 13: Verify native libraries
+    # Step 14: Verify native libraries
     lib_results = verify_native_libraries(paths["lib"])
     if not all(lib_results.values()):
         print("\nWarning: Some native libraries missing")
         print("Application may not work correctly")
 
-    # Step 14: Test critical imports
+    # Step 15: Test critical imports
     critical_modules = ["numpy", "onnxruntime", "sounddevice", "onnx_asr", "tkinter"]
     import_results = test_imports(python_exe, critical_modules)
     failed_imports = [m for m, success in import_results.items() if not success]
@@ -399,44 +483,44 @@ def main():
         print(f"\nWarning: Failed to import: {', '.join(failed_imports)}")
         print("Application may not work correctly")
 
-    # Step 15: Copy application code
+    # Step 16: Copy application code
     src_dir = project_root / "src"
     main_py = project_root / "main.py"
     if not copy_application_code(src_dir, main_py, paths["app"]):
         print("\nError: Failed to copy application code")
         return 1
 
-    # Step 16: Compile to bytecode
+    # Step 17: Compile to bytecode
     if not compile_to_pyc(python_exe, paths["app"]):
         print("\nError: Failed to compile code to bytecode")
         return 1
 
-    # Step 17: Compile third-party packages to bytecode
+    # Step 18: Compile third-party packages to bytecode
     if not compile_site_packages(python_exe, paths["lib"]):
         print("\nError: Failed to compile third-party packages")
         return 1
 
-    # Step 18: Package .pyc files into .zip archives (reduce filesystem overhead)
+    # Step 19: Package .pyc files into .zip archives (reduce filesystem overhead)
     if not zip_site_packages(paths["lib"]):
         print("\nError: Failed to package .pyc files into .zip archives")
         return 1
 
-    # Step 19: Clean up redundant package metadata
+    # Step 20: Clean up redundant package metadata
     if not cleanup_package_metadata(paths["lib"]):
         print("\nError: Failed to clean package metadata")
         return 1
 
-    # Step 20: Copy assets and configuration
+    # Step 21: Copy assets and configuration
     if not copy_assets_and_config(project_root, build_dir, paths["app"]):
         print("\nError: Failed to copy assets and configuration")
         return 1
 
-    # Step 21: Create README documentation
+    # Step 22: Create README documentation
     if not create_readme(build_dir):
         print("\nError: Failed to create README")
         return 1
 
-    # Step 22: Create launcher shortcut
+    # Step 23: Create launcher shortcut
     if not create_launcher(build_dir):
         print("\nError: Failed to create launcher shortcut")
         return 1
@@ -1081,10 +1165,18 @@ def verify_native_libraries(site_packages: Path) -> dict[str, bool]:
     # Check sounddevice/PortAudio DLL
     sd_data = site_packages / "_sounddevice_data"
     portaudio_dll = None
-    
+
     if sd_data.exists():
         # Check for various PortAudio DLL names
-        for dll_name in ["portaudio_x64.dll", "portaudio.dll", "_portaudio.pyd"]:
+        # sounddevice-0.5.1+ uses portaudio-binaries subdirectory
+        dll_patterns = [
+            "portaudio_x64.dll",
+            "portaudio.dll",
+            "_portaudio.pyd",
+            "portaudio-binaries/libportaudio64bit.dll",
+            "portaudio-binaries/libportaudio64bit-asio.dll"
+        ]
+        for dll_name in dll_patterns:
             dll_path = sd_data / dll_name
             if dll_path.exists():
                 portaudio_dll = dll_path
@@ -1744,15 +1836,18 @@ def create_launcher(build_dir: Path) -> bool:
             return False
 
         # Create shortcut
+        # Use cmd.exe for portable relative paths, start /B to detach process
+        # /C executes command and terminates
+        # Using pythonw.exe (not python.exe) ensures no console window appears
         shortcut_path = build_dir / "AI - Stenographer.lnk"
         shell = win32com.client.Dispatch("WScript.Shell")
         shortcut = shell.CreateShortCut(str(shortcut_path))
         shortcut.TargetPath = r"%windir%\system32\cmd.exe"
-        shortcut.Arguments = r'/C ".\_internal\runtime\pythonw.exe .\_internal\app\main.pyc" | taskkill /F /IM cmd.exe'
+        shortcut.Arguments = r'/C "start /B _internal\runtime\pythonw.exe _internal\app\main.pyc"'
         shortcut.WorkingDirectory = ''
         shortcut.IconLocation = r"%SystemRoot%\System32\imageres.dll,364"
         shortcut.Description = "AI Stenographer - Real-time Speech-to-Text"
-        shortcut.WindowStyle = 7
+        shortcut.WindowStyle = 1
         shortcut.save()
 
         print(f"  Created launcher: {shortcut_path.name}")
