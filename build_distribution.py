@@ -1044,32 +1044,39 @@ def remove_pip_from_distribution(runtime_dir: Path, site_packages_dir: Path) -> 
 def verify_native_libraries(site_packages: Path) -> dict[str, bool]:
     """
     Verifies that native libraries (DLLs) are present.
-    
+
     Checks for critical DLLs:
-    - ONNX Runtime: onnxruntime.dll, onnxruntime_providers_shared.dll
+    - ONNX Runtime: onnxruntime.dll, onnxruntime_providers_shared.dll, DirectML.dll
     - Sounddevice: portaudio DLL
-    
+
     Args:
         site_packages: Path to site-packages directory
-    
+
     Returns:
         Dictionary mapping library name to presence boolean
     """
     print("Verifying native libraries...")
-    
+
     results = {}
-    
+
     # Check ONNX Runtime DLLs
     onnx_capi = site_packages / "onnxruntime" / "capi"
     onnx_dll = onnx_capi / "onnxruntime.dll"
     onnx_providers_dll = onnx_capi / "onnxruntime_providers_shared.dll"
-    
+    directml_dll = onnx_capi / "DirectML.dll"
+
     results["onnxruntime"] = onnx_dll.exists() and onnx_providers_dll.exists()
-    
+    results["directml"] = directml_dll.exists()
+
     if results["onnxruntime"]:
         print(f"  [OK] ONNX Runtime DLLs found")
     else:
         print(f"  [MISSING] ONNX Runtime DLLs not found")
+
+    if results["directml"]:
+        print(f"  [OK] DirectML.dll found (GPU acceleration available)")
+    else:
+        print(f"  [WARNING] DirectML.dll not found (GPU acceleration unavailable)")
     
     # Check sounddevice/PortAudio DLL
     sd_data = site_packages / "_sounddevice_data"
