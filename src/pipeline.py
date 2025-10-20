@@ -38,10 +38,13 @@ class STTPipeline:
         logging.info(f"Using execution provider: {device_info['selected']} ({device_info['provider']})")
 
         # Load recognition model with selected providers
+        # cpu_preprocessing=False offloads audio preprocessing (waveform→features) to GPU
+        # Default is True which forces preprocessing to CPU even with DirectML
         self.model: Any = onnx_asr.load_model(
             "nemo-parakeet-tdt-0.6b-v3",
             model_path,
-            providers=providers
+            providers=providers,
+            cpu_preprocessing=False
         )
 
         # Create GUI window
