@@ -38,7 +38,7 @@ It can work in the background on a modern notebook, consuming 0.5% of CPU, just 
 - Windows 10 or 11
 - Microphone
 - It Downloads a 2.5GB speech recognition model
-- Consumes 2.5GB RAM, low CPU load, no GPU required
+- Consumes 2.5GB RAM
 
 ## License
 
