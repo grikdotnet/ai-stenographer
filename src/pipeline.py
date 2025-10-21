@@ -3,6 +3,7 @@ import signal
 import sys
 import logging
 import onnx_asr
+import onnxruntime as rt
 import json
 from pathlib import Path
 from typing import List, Any, Dict
@@ -37,6 +38,14 @@ class STTPipeline:
         device_info = self.execution_provider_manager.get_device_info()
         logging.info(f"Using execution provider: {device_info['selected']} ({device_info['provider']})")
 
+        # Configure ONNX Runtime session options to limit CPU thread usage
+        # DirectML uses CPU threads to manage GPU operations, but too many threads
+        # causes overhead. Limit to 4 threads for optimal CPU/GPU balance.
+        sess_options = rt.SessionOptions()
+        sess_options.intra_op_num_threads = 4  # Limit parallelism within operations
+        sess_options.inter_op_num_threads = 2  # Limit parallelism between operations
+        sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
+
         # Load recognition model with selected providers
         # cpu_preprocessing=False offloads audio preprocessing (waveform→features) to GPU
         # Default is True which forces preprocessing to CPU even with DirectML
@@ -44,6 +53,7 @@ class STTPipeline:
             "nemo-parakeet-tdt-0.6b-v3",
             model_path,
             providers=providers,
+            sess_options=sess_options,
             cpu_preprocessing=False
         )
 
