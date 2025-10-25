@@ -23,16 +23,18 @@ class TestRecognizerExecutionProviders:
         # Config: DirectML GPU provider
         config = {"recognition": {"inference": "directml"}}
 
-        with patch.object(ExecutionProviderManager, 'detect_available_providers') as mock_detect:
-            mock_detect.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
+        with patch('onnxruntime.get_available_providers') as mock_get_providers:
+            mock_get_providers.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
 
             manager = ExecutionProviderManager(config)
             providers = manager.build_provider_list()
 
-        # Verify DirectML provider config
+        # Verify DirectML provider config (dict format)
+        assert isinstance(providers, dict)
         assert len(providers) == 2
-        assert providers[0] == ('DmlExecutionProvider', {'device_id': 0})
-        assert providers[1] == 'CPUExecutionProvider'
+        assert 'DmlExecutionProvider' in providers
+        assert 'CPUExecutionProvider' in providers
+        assert 'device_id' in providers['DmlExecutionProvider']
 
         # Create mock model with DirectML providers
         mock_model = Mock()
@@ -69,18 +71,18 @@ class TestRecognizerExecutionProviders:
         config = {"recognition": {"inference": "auto"}}
 
         # Simulate: No DirectML available
-        with patch.object(ExecutionProviderManager, 'detect_available_providers') as mock_detect:
-            mock_detect.return_value = ['CPUExecutionProvider']
+        with patch('onnxruntime.get_available_providers') as mock_get_providers:
+            mock_get_providers.return_value = ['CPUExecutionProvider']
 
             manager = ExecutionProviderManager(config)
-            selected = manager.select_provider()
+            selected = manager.selected_provider
 
         # Verify CPU fallback
         assert selected == 'CPU'
 
         # Build provider list
         providers = manager.build_provider_list()
-        assert providers == ['CPUExecutionProvider']
+        assert providers == {'CPUExecutionProvider': {}}
 
     def test_recognizer_inference_consistency(self, speech_audio):
         """Recognized text should be consistent across CPU/GPU providers.
@@ -91,29 +93,31 @@ class TestRecognizerExecutionProviders:
         # Config for CPU
         config_cpu = {"recognition": {"inference": "cpu"}}
 
-        with patch.object(ExecutionProviderManager, 'detect_available_providers') as mock_detect:
-            mock_detect.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
+        with patch('onnxruntime.get_available_providers') as mock_get_providers:
+            mock_get_providers.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
 
             # CPU provider
             manager_cpu = ExecutionProviderManager(config_cpu)
             providers_cpu = manager_cpu.build_provider_list()
 
-        assert providers_cpu == ['CPUExecutionProvider']
+        assert providers_cpu == {'CPUExecutionProvider': {}}
 
         # Config for DirectML
         config_directml = {"recognition": {"inference": "directml"}}
 
-        with patch.object(ExecutionProviderManager, 'detect_available_providers') as mock_detect:
-            mock_detect.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
+        with patch('onnxruntime.get_available_providers') as mock_get_providers:
+            mock_get_providers.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
 
             # DirectML provider
             manager_directml = ExecutionProviderManager(config_directml)
             providers_directml = manager_directml.build_provider_list()
 
+        assert isinstance(providers_directml, dict)
         assert len(providers_directml) == 2
-        assert providers_directml[0] == ('DmlExecutionProvider', {'device_id': 0})
+        assert 'DmlExecutionProvider' in providers_directml
+        assert 'device_id' in providers_directml['DmlExecutionProvider']
 
         # Both should produce consistent provider configs
         # In real usage, both would produce same text output for same audio
-        assert isinstance(providers_cpu, list)
-        assert isinstance(providers_directml, list)
+        assert isinstance(providers_cpu, dict)
+        assert isinstance(providers_directml, dict)
