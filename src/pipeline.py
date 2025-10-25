@@ -17,38 +17,32 @@ from .TextMatcher import TextMatcher
 from .GuiWindow import GuiWindow, create_stt_window, run_gui_loop
 from .VoiceActivityDetector import VoiceActivityDetector
 from .ExecutionProviderManager import ExecutionProviderManager
+from .SessionOptionsFactory import SessionOptionsFactory
 
 class STTPipeline:
     def __init__(self, model_path: str = "./models/parakeet", models_dir: Path = None, verbose: bool = False, window_duration: float = 2.0, step_duration: float = 1.0, config_path: str = "./config/stt_config.json") -> None:
-        # Load configuration
-        self.config: Dict = self._load_config(config_path)
+        """Initialize STT pipeline with hardware-accelerated recognition.
 
-        # Track if pipeline is stopped (for idempotent stop())
+        Strategy pattern: GPU type detection selects optimal session configuration
+        (integrated GPU, discrete GPU, or CPU) with hardware-specific optimizations.
+        """
+        self.config: Dict = self._load_config(config_path)
         self._is_stopped: bool = False
 
-        # Create queues - single chunk_queue for AudioSegments (preliminary and finalized)
         self.chunk_queue: queue.Queue = queue.Queue(maxsize=100)
         self.text_queue: queue.Queue = queue.Queue(maxsize=50)
 
-        # Create execution provider manager for hardware acceleration
         self.execution_provider_manager: ExecutionProviderManager = ExecutionProviderManager(self.config)
         providers = self.execution_provider_manager.build_provider_list()
 
-        # Log selected provider
-        device_info = self.execution_provider_manager.get_device_info()
-        logging.info(f"Using execution provider: {device_info['selected']} ({device_info['provider']})")
-
-        # Configure ONNX Runtime session options to limit CPU thread usage
-        # DirectML uses CPU threads to manage GPU operations, but too many threads
-        # causes overhead. Limit to 4 threads for optimal CPU/GPU balance.
         sess_options = rt.SessionOptions()
-        sess_options.intra_op_num_threads = 4  # Limit parallelism within operations
-        sess_options.inter_op_num_threads = 2  # Limit parallelism between operations
         sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-        # Load recognition model with selected providers
-        # cpu_preprocessing=False offloads audio preprocessing (waveform→features) to GPU
-        # Default is True which forces preprocessing to CPU even with DirectML
+        gpu_type = self.execution_provider_manager.detect_gpu_type()
+        factory = SessionOptionsFactory(self.config)
+        strategy = factory.get_strategy(gpu_type)
+        strategy.configure_session_options(sess_options)
+
         self.model: Any = onnx_asr.load_model(
             "nemo-parakeet-tdt-0.6b-v3",
             model_path,
@@ -57,35 +51,28 @@ class STTPipeline:
             cpu_preprocessing=False
         )
 
-        # Create GUI window
         self.root: tk.Tk
         self.text_widget: scrolledtext.ScrolledText
         self.root, self.text_widget = create_stt_window()
 
-        # Create GuiWindow instance for TextMatcher
         self.gui_window: GuiWindow = GuiWindow(self.text_widget, self.root)
 
-        # Determine absolute path for VAD model
         if models_dir is None:
             models_dir = Path("./models")
         vad_model_path = models_dir / "silero_vad" / "silero_vad.onnx"
 
-        # Create VAD instance
         self.vad: VoiceActivityDetector = VoiceActivityDetector(
             config=self.config,
             model_path=vad_model_path,
             verbose=verbose
         )
 
-        # Create components with unified architecture
-        # AdaptiveWindower aggregates preliminary segments into finalized windows
         self.adaptive_windower: AdaptiveWindower = AdaptiveWindower(
             chunk_queue=self.chunk_queue,
             config=self.config,
             verbose=verbose
         )
 
-        # AudioSource emits preliminary segments and sends to windower
         self.audio_source: AudioSource = AudioSource(
             chunk_queue=self.chunk_queue,
             vad=self.vad,
@@ -94,7 +81,6 @@ class STTPipeline:
             verbose=verbose
         )
 
-        # Recognizer processes both preliminary and finalized segments
         self.recognizer: Recognizer = Recognizer(
             chunk_queue=self.chunk_queue,
             text_queue=self.text_queue,
@@ -102,11 +88,8 @@ class STTPipeline:
             verbose=verbose
         )
 
-        # TextMatcher now handles display directly via gui_window
         self.text_matcher: TextMatcher = TextMatcher(self.text_queue, self.gui_window, verbose=verbose)
 
-        # All components (AdaptiveWindower has no thread - called directly by AudioSource)
-        # TwoStageDisplayHandler removed - functionality merged into TextMatcher + GuiWindow
         self.components: List[Any] = [
             self.audio_source, self.recognizer,
             self.text_matcher
@@ -128,8 +111,35 @@ class STTPipeline:
         with open(path, 'r') as f:
             return json.load(f)
 
+    def _warmup_model(self) -> None:
+        """Warm up model to trigger shader compilation (DirectML/CUDA).
+
+        DirectML compiles GPU shaders on first inference, causing ~500ms delay.
+        This method runs a dummy inference during startup to pre-compile shaders.
+        Skips warm-up for CPU providers (no shader compilation needed).
+        """
+        if self.execution_provider_manager.selected_provider == 'CPU':
+            return
+
+        import numpy as np
+        import time
+
+        dummy_audio = np.zeros(48000, dtype=np.float32)
+
+        logging.info("Warming up GPU model (shader compilation)...")
+        start = time.perf_counter()
+
+        try:
+            _ = self.model(dummy_audio)
+            elapsed = (time.perf_counter() - start) * 1000
+            logging.info(f"Warm-up complete: {elapsed:.0f}ms")
+        except Exception as e:
+            logging.warning(f"Warm-up failed: {e}")
+
     def start(self) -> None:
         logging.info("Starting STT Pipeline...")
+        self._warmup_model()
+
         for component in self.components:
             component.start()
         logging.info("Pipeline running. Press Ctrl+C to stop.")
@@ -145,7 +155,6 @@ class STTPipeline:
 
         This method is idempotent - safe to call multiple times.
         """
-        # Check if already stopped
         if self._is_stopped:
             return
 
@@ -153,15 +162,12 @@ class STTPipeline:
 
         logging.info("Stopping pipeline...")
 
-        # Stop audio capture and recognition
         self.audio_source.stop()
         self.recognizer.stop()
 
-        # Finalize any pending partial text before stopping TextMatcher
         logging.info("Finalizing pending text...")
         self.text_matcher.finalize_pending()
 
-        # Stop text processing
         self.text_matcher.stop()
 
         logging.info("Pipeline stopped.")
@@ -182,15 +188,11 @@ class STTPipeline:
                 pass
 
         signal.signal(signal.SIGINT, signal_handler)
-
-        # Register window close handler
         self.root.protocol("WM_DELETE_WINDOW", on_window_close)
 
         try:
-            # Run GUI main loop
             run_gui_loop(self.root)
         except KeyboardInterrupt:
             self.stop()
         finally:
-            # Ensure pipeline is stopped even if GUI exits unexpectedly
             self.stop()
