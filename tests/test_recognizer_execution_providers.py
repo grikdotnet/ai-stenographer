@@ -8,10 +8,10 @@ from pathlib import Path
 import sys
 
 # Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from Recognizer import Recognizer
-from ExecutionProviderManager import ExecutionProviderManager
+from src.Recognizer import Recognizer
+from src.ExecutionProviderManager import ExecutionProviderManager
 import src.types as stt_types
 
 
@@ -29,12 +29,13 @@ class TestRecognizerExecutionProviders:
             manager = ExecutionProviderManager(config)
             providers = manager.build_provider_list()
 
-        # Verify DirectML provider config (dict format)
-        assert isinstance(providers, dict)
+        # Verify DirectML provider config (list format)
+        assert isinstance(providers, list)
         assert len(providers) == 2
-        assert 'DmlExecutionProvider' in providers
-        assert 'CPUExecutionProvider' in providers
-        assert 'device_id' in providers['DmlExecutionProvider']
+        assert isinstance(providers[0], tuple)
+        assert providers[0][0] == 'DmlExecutionProvider'
+        assert 'device_id' in providers[0][1]
+        assert providers[1] == 'CPUExecutionProvider'
 
         # Create mock model with DirectML providers
         mock_model = Mock()
@@ -82,7 +83,7 @@ class TestRecognizerExecutionProviders:
 
         # Build provider list
         providers = manager.build_provider_list()
-        assert providers == {'CPUExecutionProvider': {}}
+        assert providers == ['CPUExecutionProvider']
 
     def test_recognizer_inference_consistency(self, speech_audio):
         """Recognized text should be consistent across CPU/GPU providers.
@@ -100,7 +101,7 @@ class TestRecognizerExecutionProviders:
             manager_cpu = ExecutionProviderManager(config_cpu)
             providers_cpu = manager_cpu.build_provider_list()
 
-        assert providers_cpu == {'CPUExecutionProvider': {}}
+        assert providers_cpu == ['CPUExecutionProvider']
 
         # Config for DirectML
         config_directml = {"recognition": {"inference": "directml"}}
@@ -112,12 +113,13 @@ class TestRecognizerExecutionProviders:
             manager_directml = ExecutionProviderManager(config_directml)
             providers_directml = manager_directml.build_provider_list()
 
-        assert isinstance(providers_directml, dict)
+        assert isinstance(providers_directml, list)
         assert len(providers_directml) == 2
-        assert 'DmlExecutionProvider' in providers_directml
-        assert 'device_id' in providers_directml['DmlExecutionProvider']
+        assert isinstance(providers_directml[0], tuple)
+        assert providers_directml[0][0] == 'DmlExecutionProvider'
+        assert 'device_id' in providers_directml[0][1]
 
         # Both should produce consistent provider configs
         # In real usage, both would produce same text output for same audio
-        assert isinstance(providers_cpu, dict)
-        assert isinstance(providers_directml, dict)
+        assert isinstance(providers_cpu, list)
+        assert isinstance(providers_directml, list)

@@ -130,7 +130,7 @@ class STTPipeline:
         start = time.perf_counter()
 
         try:
-            _ = self.model(dummy_audio)
+            _ = self.model.recognize(dummy_audio)
             elapsed = (time.perf_counter() - start) * 1000
             logging.info(f"Warm-up complete: {elapsed:.0f}ms")
         except Exception as e:

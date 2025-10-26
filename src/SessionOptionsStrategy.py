@@ -66,7 +66,7 @@ class IntegratedGPUStrategy(SessionOptionsStrategy):
 
         Threading: Minimal (1,1) - GPU handles parallelism internally
         Memory: Disable CPU arena - prevents double-buffering in shared memory
-        DirectML: Enable graph capture and metacommands for shader optimization
+        DirectML: Use default settings (graph capture auto-enabled when possible)
         """
         # No CPU threading
         sess_options.intra_op_num_threads = 1
@@ -75,10 +75,6 @@ class IntegratedGPUStrategy(SessionOptionsStrategy):
 
         # Disable CPU arena for zero-copy shared memory
         sess_options.enable_cpu_mem_arena = False
-
-        # DirectML optimizations for shader compilation and execution
-        sess_options.add_session_config_entry('ep.dml.enable_graph_capture', '1')
-        sess_options.add_session_config_entry('ep.dml.disable_metacommands', '0')
 
         self.logger.info("Integrated GPU: Zero-copy shared memory optimizations")
 
@@ -103,7 +99,7 @@ class DiscreteGPUStrategy(SessionOptionsStrategy):
 
         Threading: Minimal (1,1) - GPU handles parallelism internally
         Memory: Enable CPU arena - staging buffer for System RAM → PCIe → VRAM
-        DirectML: Enable graph capture and metacommands for shader optimization
+        DirectML: Use default settings (graph capture auto-enabled when possible)
         """
         # No CPU threading
         sess_options.intra_op_num_threads = 1
@@ -112,10 +108,6 @@ class DiscreteGPUStrategy(SessionOptionsStrategy):
 
         # Enable CPU arena for PCIe staging buffer
         sess_options.enable_cpu_mem_arena = True
-
-        # DirectML optimizations for shader compilation and execution
-        sess_options.add_session_config_entry('ep.dml.enable_graph_capture', '1')
-        sess_options.add_session_config_entry('ep.dml.disable_metacommands', '0')
 
         self.logger.info("Discrete GPU: PCIe memory transfer optimizations")
 

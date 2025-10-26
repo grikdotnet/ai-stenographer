@@ -1,10 +1,5 @@
-"""Tests for SessionOptionsStrategy classes.
-
-Test-Driven Development: These tests are written BEFORE implementation.
-Expected to FAIL until SessionOptionsStrategy.py and SessionOptionsFactory.py are created.
-"""
 import pytest
-import onnxruntime as rt
+from unittest.mock import Mock, MagicMock
 from src.SessionOptionsStrategy import (
     SessionOptionsStrategy,
     IntegratedGPUStrategy,
@@ -21,7 +16,7 @@ class TestIntegratedGPUStrategy:
         """Integrated GPU should disable CPU memory arena (zero-copy shared memory)."""
         config = {}
         strategy = IntegratedGPUStrategy(config)
-        sess_options = rt.SessionOptions()
+        sess_options = Mock()
 
         strategy.configure_session_options(sess_options)
 
@@ -32,7 +27,7 @@ class TestIntegratedGPUStrategy:
         """Integrated GPU should use minimal threading (GPU handles parallelism)."""
         config = {}
         strategy = IntegratedGPUStrategy(config)
-        sess_options = rt.SessionOptions()
+        sess_options = Mock()
 
         strategy.configure_session_options(sess_options)
 
@@ -40,18 +35,16 @@ class TestIntegratedGPUStrategy:
         assert sess_options.inter_op_num_threads == 1
         assert sess_options.enable_mem_pattern is True
 
-    def test_directml_config_graph_capture(self):
-        """Integrated GPU should enable DirectML graph capture."""
+    def test_no_directml_config_entries(self):
+        """Integrated GPU should not force DirectML config (auto-enabled when possible)."""
         config = {}
         strategy = IntegratedGPUStrategy(config)
-        sess_options = rt.SessionOptions()
+        sess_options = Mock()
 
         strategy.configure_session_options(sess_options)
 
-        # Check DirectML session config entries
-        # Note: ONNX Runtime doesn't expose session_configs for reading,
-        # so we verify by checking that the method doesn't raise exceptions
-        assert sess_options is not None
+        # Verify no DirectML config entries are forced (allows mixed CPU/GPU models)
+        sess_options.add_session_config_entry.assert_not_called()
 
     def test_hardware_type(self):
         """Integrated GPU strategy should return 'integrated' type."""
@@ -68,7 +61,7 @@ class TestDiscreteGPUStrategy:
         """Discrete GPU should enable CPU memory arena (staging buffer for PCIe)."""
         config = {}
         strategy = DiscreteGPUStrategy(config)
-        sess_options = rt.SessionOptions()
+        sess_options = Mock()
 
         strategy.configure_session_options(sess_options)
 
@@ -79,7 +72,7 @@ class TestDiscreteGPUStrategy:
         """Discrete GPU should use minimal threading (GPU handles parallelism)."""
         config = {}
         strategy = DiscreteGPUStrategy(config)
-        sess_options = rt.SessionOptions()
+        sess_options = Mock()
 
         strategy.configure_session_options(sess_options)
 
@@ -87,15 +80,16 @@ class TestDiscreteGPUStrategy:
         assert sess_options.inter_op_num_threads == 1
         assert sess_options.enable_mem_pattern is True
 
-    def test_directml_config_graph_capture(self):
-        """Discrete GPU should enable DirectML graph capture."""
+    def test_no_directml_config_entries(self):
+        """Discrete GPU should not force DirectML config (auto-enabled when possible)."""
         config = {}
         strategy = DiscreteGPUStrategy(config)
-        sess_options = rt.SessionOptions()
+        sess_options = Mock()
 
         strategy.configure_session_options(sess_options)
 
-        assert sess_options is not None
+        # Verify no DirectML config entries are forced (allows mixed CPU/GPU models)
+        sess_options.add_session_config_entry.assert_not_called()
 
     def test_hardware_type(self):
         """Discrete GPU strategy should return 'discrete' type."""
@@ -112,7 +106,7 @@ class TestCPUStrategy:
         """CPU should enable CPU memory arena."""
         config = {}
         strategy = CPUStrategy(config)
-        sess_options = rt.SessionOptions()
+        sess_options = Mock()
 
         strategy.configure_session_options(sess_options)
 
@@ -122,7 +116,7 @@ class TestCPUStrategy:
         """CPU should auto-detect thread counts with proper capping."""
         config = {}
         strategy = CPUStrategy(config)
-        sess_options = rt.SessionOptions()
+        sess_options = Mock()
 
         strategy.configure_session_options(sess_options)
 
@@ -140,7 +134,7 @@ class TestCPUStrategy:
 
         config = {}
         strategy = CPUStrategy(config)
-        sess_options = rt.SessionOptions()
+        sess_options = Mock()
 
         strategy.configure_session_options(sess_options)
 

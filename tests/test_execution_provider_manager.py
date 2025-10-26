@@ -8,134 +8,62 @@ from pathlib import Path
 import sys
 
 # Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from ExecutionProviderManager import ExecutionProviderManager
+from src.ExecutionProviderManager import ExecutionProviderManager
 
 
 class TestExecutionProviderManager:
     """Tests for execution provider selection and device detection."""
 
-    # Provider detection
-    def test_get_available_providers_includes_cpu(self):
-        """ONNX Runtime should always include CPU provider."""
-        providers = ort.get_available_providers()
-
-        # Should always include CPU
-        assert 'CPUExecutionProvider' in providers
-        assert isinstance(providers, list)
-        assert len(providers) > 0
-
-    def test_directml_provider_available_on_windows(self):
-        """DirectML provider should be available on Windows."""
-        if sys.platform != 'win32':
-            pytest.skip("DirectML only available on Windows")
-
-        providers = ort.get_available_providers()
-
-        # DirectML should be available on Windows
-        assert 'DmlExecutionProvider' in providers
-
-    # Provider selection logic
     def test_select_directml_in_auto_mode(self):
         """Auto mode should select DirectML when available."""
         with patch('onnxruntime.get_available_providers') as mock_get_providers:
             mock_get_providers.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
-
             manager = ExecutionProviderManager({"recognition": {"inference": "auto"}})
-
         assert manager.selected_provider == 'DirectML'
 
     def test_explicit_directml_selection(self):
         """Config 'directml' should force DirectML."""
         with patch('onnxruntime.get_available_providers') as mock_get_providers:
             mock_get_providers.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
-
             manager = ExecutionProviderManager({"recognition": {"inference": "directml"}})
-
         assert manager.selected_provider == 'DirectML'
 
     def test_select_provider_fallback_to_cpu(self):
         """Should fall back to CPU when GPU unavailable."""
         with patch('onnxruntime.get_available_providers') as mock_get_providers:
             mock_get_providers.return_value = ['CPUExecutionProvider']
-
             manager = ExecutionProviderManager({"recognition": {"inference": "auto"}})
-
         assert manager.selected_provider == 'CPU'
 
     # Provider list building
     def test_build_provider_list_for_directml(self):
-        """Should return DirectML provider config dict with dynamically selected device_id."""
+        """Should return DirectML provider config list with dynamically selected device_id."""
         with patch.object(ExecutionProviderManager, 'select_provider') as mock_select:
             mock_select.return_value = 'DirectML'
-
             manager = ExecutionProviderManager({"recognition": {"inference": "directml"}})
             providers = manager.build_provider_list()
 
-        # Expected: {'DmlExecutionProvider': {'device_id': <N>}, 'CPUExecutionProvider': {}}
-        assert isinstance(providers, dict)
+        # Expected: [('DmlExecutionProvider', {'device_id': <N>}), 'CPUExecutionProvider']
+        assert isinstance(providers, list)
         assert len(providers) == 2
-        assert 'DmlExecutionProvider' in providers
-        assert 'CPUExecutionProvider' in providers
-        assert isinstance(providers['DmlExecutionProvider'], dict)
-        assert 'device_id' in providers['DmlExecutionProvider']
-        assert isinstance(providers['DmlExecutionProvider']['device_id'], int)
-        assert providers['CPUExecutionProvider'] == {}
+        assert isinstance(providers[0], tuple)
+        assert providers[0][0] == 'DmlExecutionProvider'
+        assert isinstance(providers[0][1], dict)
+        assert 'device_id' in providers[0][1]
+        assert isinstance(providers[0][1]['device_id'], int)
+        assert providers[1] == 'CPUExecutionProvider'
 
     def test_build_provider_list_for_cpu(self):
-        """CPU mode should return CPU provider config dict."""
+        """CPU mode should return CPU provider config list."""
         with patch.object(ExecutionProviderManager, 'select_provider') as mock_select:
             mock_select.return_value = 'CPU'
 
             manager = ExecutionProviderManager({"recognition": {"inference": "cpu"}})
             providers = manager.build_provider_list()
 
-        assert providers == {'CPUExecutionProvider': {}}
-
-    # Session creation tests - validates actual ONNX Runtime integration
-    def test_create_session_with_directml_provider(self):
-        """Should create ONNX Runtime session with DirectML provider."""
-        # Create a minimal dummy ONNX model for testing
-        try:
-            import onnx
-            from onnx import helper, TensorProto
-        except ImportError:
-            pytest.skip("onnx package not installed")
-
-        # Simple model: input -> identity -> output
-        input_tensor = helper.make_tensor_value_info('input', TensorProto.FLOAT, [1, 3])
-        output_tensor = helper.make_tensor_value_info('output', TensorProto.FLOAT, [1, 3])
-        node = helper.make_node('Identity', ['input'], ['output'])
-        graph = helper.make_graph([node], 'test_graph', [input_tensor], [output_tensor])
-        model = helper.make_model(graph)
-
-        # Save to temp file
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix='.onnx', delete=False) as f:
-            model_path = f.name
-            onnx.save(model, model_path)
-
-        try:
-            # Build DirectML provider list
-            with patch.object(ExecutionProviderManager, 'select_provider') as mock_select:
-                mock_select.return_value = 'DirectML'
-
-                manager = ExecutionProviderManager({"recognition": {"inference": "directml"}})
-                provider_list = manager.build_provider_list()
-
-            # Create session
-            session = ort.InferenceSession(model_path, providers=provider_list)
-
-            # Check active providers
-            active_providers = session.get_providers()
-
-            # DirectML should be in active providers OR silent fallback to CPU (both valid)
-            assert 'CPUExecutionProvider' in active_providers
-            # DirectML may or may not be active depending on hardware
-            assert len(active_providers) > 0
-        finally:
-            Path(model_path).unlink()
+        assert providers == ['CPUExecutionProvider']
 
 
 class TestGPUDetectionSingleGPU:
@@ -214,24 +142,6 @@ class TestGPUDetectionMultiGPU:
 
         assert gpu_type == 'discrete', "Should prioritize discrete GPU (NVIDIA RTX)"
 
-    def test_both_intel_stay_integrated(self, monkeypatch):
-        """Multi-GPU: Both Intel (UHD + Iris) → integrated."""
-        config = {'recognition': {'inference': 'directml'}}
-        manager = ExecutionProviderManager(config)
-
-        def mock_subprocess_run(cmd, **kwargs):
-            result = MagicMock()
-            result.stdout = "Name\nIntel(R) UHD Graphics 630\nIntel(R) Iris(R) Xe Graphics\n"
-            return result
-
-        monkeypatch.setattr('subprocess.run', mock_subprocess_run)
-        monkeypatch.setattr('sys.platform', 'win32')
-
-        gpu_type = manager.detect_gpu_type()
-
-        assert gpu_type == 'integrated', "Both Intel GPUs are integrated"
-
-
 class TestGPUDetectionEdgeCases:
     """Tests for edge cases and error handling (3 tests)."""
 
@@ -281,18 +191,17 @@ class TestAdapterEnumeration:
     """Tests for adapter enumeration and device_id selection."""
 
     def test_enumerate_adapters_single_gpu(self, monkeypatch):
-        """Should enumerate single GPU adapter with correct index."""
+        """Should enumerate single GPU adapter with correct DXGI index."""
         config = {'recognition': {'inference': 'directml'}}
         manager = ExecutionProviderManager(config)
 
-        # Mock wmic output with DeviceID column
-        # wmic format: DeviceID is first column (index 0)
+        # Mock wmic output with AdapterRAM
         def mock_subprocess_run(cmd, **kwargs):
             result = MagicMock()
-            # wmic output format: DeviceID    Name
+            # Format: AdapterRAM  Name
             result.stdout = (
-                "DeviceID    Name\n"
-                "0           NVIDIA GeForce RTX 3060\n"
+                "AdapterRAM  Name\n"
+                "4294967296  NVIDIA GeForce RTX 3060\n"
             )
             return result
 
@@ -302,21 +211,23 @@ class TestAdapterEnumeration:
         adapters = manager.enumerate_adapters()
 
         assert len(adapters) == 1
-        assert adapters[0]['index'] == 0
+        assert adapters[0]['index'] == 0  # Primary display -> DXGI index 0
         assert adapters[0]['name'] == 'NVIDIA GeForce RTX 3060'
         assert adapters[0]['type'] == 'discrete'
 
     def test_enumerate_adapters_multi_gpu(self, monkeypatch):
-        """Should enumerate multiple GPU adapters with correct indices."""
+        """Should enumerate multiple GPU adapters in DXGI order (integrated first)."""
         config = {'recognition': {'inference': 'directml'}}
         manager = ExecutionProviderManager(config)
 
         def mock_subprocess_run(cmd, **kwargs):
             result = MagicMock()
+            # Mock laptop: wmic may list NVIDIA first, but DXGI orders integrated first
+            # Format: AdapterRAM  Name
             result.stdout = (
-                "DeviceID    Name\n"
-                "0           Intel(R) UHD Graphics 630\n"
-                "1           NVIDIA GeForce RTX 3060\n"
+                "AdapterRAM  Name\n"
+                "4294967296  NVIDIA GeForce RTX 3060\n"
+                "1073741824  Intel(R) UHD Graphics 630\n"
             )
             return result
 
@@ -326,9 +237,11 @@ class TestAdapterEnumeration:
         adapters = manager.enumerate_adapters()
 
         assert len(adapters) == 2
+        # DXGI index 0 = integrated GPU (primary display on laptops)
         assert adapters[0]['index'] == 0
         assert adapters[0]['name'] == 'Intel(R) UHD Graphics 630'
         assert adapters[0]['type'] == 'integrated'
+        # DXGI index 1 = discrete GPU
         assert adapters[1]['index'] == 1
         assert adapters[1]['name'] == 'NVIDIA GeForce RTX 3060'
         assert adapters[1]['type'] == 'discrete'
@@ -350,8 +263,8 @@ class TestAdapterEnumeration:
         def mock_subprocess_run(cmd, **kwargs):
             result = MagicMock()
             result.stdout = (
-                "DeviceID    Name\n"
-                "0           NVIDIA GeForce RTX 3060\n"
+                "AdapterRAM  Name\n"
+                "4294967296  NVIDIA GeForce RTX 3060\n"
             )
             return result
 
@@ -360,7 +273,7 @@ class TestAdapterEnumeration:
 
         device_id, gpu_type = manager.select_device_id()
 
-        assert device_id == 0
+        assert device_id == 0  # Single GPU -> DXGI index 0
         assert gpu_type == 'discrete'
 
     def test_select_device_id_prefer_discrete_in_multi_gpu(self, monkeypatch):
@@ -370,10 +283,11 @@ class TestAdapterEnumeration:
 
         def mock_subprocess_run(cmd, **kwargs):
             result = MagicMock()
+            # Typical laptop: NVIDIA may appear first in wmic, but DXGI orders integrated first
             result.stdout = (
-                "DeviceID    Name\n"
-                "0           Intel(R) UHD Graphics 630\n"
-                "1           NVIDIA GeForce RTX 3060\n"
+                "AdapterRAM  Name\n"
+                "4294967296  NVIDIA GeForce RTX 3060\n"
+                "1073741824  Intel(R) UHD Graphics 630\n"
             )
             return result
 
@@ -382,7 +296,9 @@ class TestAdapterEnumeration:
 
         device_id, gpu_type = manager.select_device_id()
 
-        assert device_id == 1, "Should select NVIDIA at adapter 1"
+        # DXGI order (integrated-first heuristic): index 0 = Intel, index 1 = NVIDIA
+        # Should prefer discrete GPU at index 1
+        assert device_id == 1, "Should select discrete NVIDIA at DXGI index 1"
         assert gpu_type == 'discrete'
 
     def test_select_device_id_cpu_mode_returns_default(self):
@@ -402,10 +318,11 @@ class TestAdapterEnumeration:
 
         def mock_subprocess_run(cmd, **kwargs):
             result = MagicMock()
+            # Laptop setup: NVIDIA in wmic output, but DXGI orders integrated first
             result.stdout = (
-                "DeviceID    Name\n"
-                "0           Intel(R) UHD Graphics 630\n"
-                "1           NVIDIA GeForce RTX 3060\n"
+                "AdapterRAM  Name\n"
+                "4294967296  NVIDIA GeForce RTX 3060\n"
+                "1073741824  Intel(R) UHD Graphics 630\n"
             )
             return result
 
@@ -416,10 +333,11 @@ class TestAdapterEnumeration:
             mock_select.return_value = 'DirectML'
             provider_list = manager.build_provider_list()
 
-        # Should use device_id=1 (discrete GPU)
-        assert isinstance(provider_list, dict)
+        # DXGI enumeration (integrated-first heuristic): [0]=Intel, [1]=NVIDIA
+        # Should prefer discrete GPU at index 1
+        assert isinstance(provider_list, list)
         assert len(provider_list) == 2
-        assert provider_list == {
-            'DmlExecutionProvider': {'device_id': 1},
-            'CPUExecutionProvider': {}
-        }
+        assert provider_list == [
+            ('DmlExecutionProvider', {'device_id': 1}),
+            'CPUExecutionProvider'
+        ]

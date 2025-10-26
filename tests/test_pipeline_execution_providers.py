@@ -27,11 +27,9 @@ class TestPipelineSessionOptionsStrategy:
         mock_text_widget = Mock()
         mock_gui.return_value = (mock_root, mock_text_widget)
 
-        # Mock model loading
         mock_model = Mock()
         mock_load_model.return_value = mock_model
 
-        # Mock subprocess to return Intel integrated GPU
         def mock_subprocess_run(cmd, **kwargs):
             result = MagicMock()
             result.stdout = "Name\nIntel(R) Iris(R) Xe Graphics\n"
@@ -44,10 +42,8 @@ class TestPipelineSessionOptionsStrategy:
 
             pipeline = STTPipeline(verbose=False)
 
-        # Verify ExecutionProviderManager detected integrated GPU
         assert pipeline.execution_provider_manager.detect_gpu_type() == 'integrated'
 
-        # Verify session options were configured (check that factory was used)
         # The strategy should have configured sess_options with enable_cpu_mem_arena=False
         call_args = mock_load_model.call_args
         sess_options = call_args[1].get('sess_options')
@@ -61,16 +57,13 @@ class TestPipelineSessionOptionsStrategy:
     @patch('src.pipeline.VoiceActivityDetector')
     def test_pipeline_uses_discrete_gpu_strategy(self, mock_vad, mock_audio, mock_gui, mock_load_model, monkeypatch):
         """Pipeline should use DiscreteGPUStrategy for discrete GPU."""
-        # Mock GUI window creation
         mock_root = Mock()
         mock_text_widget = Mock()
         mock_gui.return_value = (mock_root, mock_text_widget)
 
-        # Mock model loading
         mock_model = Mock()
         mock_load_model.return_value = mock_model
 
-        # Mock subprocess to return NVIDIA discrete GPU
         def mock_subprocess_run(cmd, **kwargs):
             result = MagicMock()
             result.stdout = "Name\nNVIDIA GeForce RTX 3060\n"
@@ -83,7 +76,6 @@ class TestPipelineSessionOptionsStrategy:
 
             pipeline = STTPipeline(verbose=False)
 
-        # Verify ExecutionProviderManager detected discrete GPU
         assert pipeline.execution_provider_manager.detect_gpu_type() == 'discrete'
 
         # Verify session options were configured for discrete GPU
@@ -99,16 +91,13 @@ class TestPipelineSessionOptionsStrategy:
     @patch('src.pipeline.VoiceActivityDetector')
     def test_pipeline_uses_cpu_strategy(self, mock_vad, mock_audio, mock_gui, mock_load_model):
         """Pipeline should use CPUStrategy for CPU mode."""
-        # Mock GUI window creation
         mock_root = Mock()
         mock_text_widget = Mock()
         mock_gui.return_value = (mock_root, mock_text_widget)
 
-        # Mock model loading
         mock_model = Mock()
         mock_load_model.return_value = mock_model
 
-        # Create config with CPU mode
         import tempfile
         import json
 
@@ -179,7 +168,12 @@ class TestPipelineSessionOptionsStrategy:
             "providers should be passed to load_model()"
 
         providers = call_args[1]['providers']
-        assert isinstance(providers, dict), \
-            "providers should be dict format"
-        assert 'DmlExecutionProvider' in providers or 'CPUExecutionProvider' in providers, \
+        assert isinstance(providers, list), \
+            "providers should be list format"
+        assert len(providers) > 0, \
             "providers should contain at least one execution provider"
+        # First provider should be DmlExecutionProvider tuple for discrete GPU
+        assert isinstance(providers[0], tuple), \
+            "DmlExecutionProvider should be tuple with options"
+        assert providers[0][0] == 'DmlExecutionProvider', \
+            "First provider should be DmlExecutionProvider"

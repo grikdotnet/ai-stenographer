@@ -87,35 +87,35 @@ class ExecutionProviderManager:
         self.logger.warning(f"Unknown inference mode: {self.inference_mode}, falling back to CPU")
         return 'CPU'
 
-    def build_provider_list(self) -> Dict[str, Dict]:
-        """Build ONNX Runtime provider configuration dict.
+    def build_provider_list(self) -> List[Union[str, Tuple[str, Dict]]]:
+        """Build ONNX Runtime provider configuration list.
 
         Constructs provider configuration for onnxruntime.InferenceSession(providers=...)
-        Returns a dict mapping provider names to their configuration options.
+        Returns a list of provider specifications (strings or tuples with options).
 
         Provider-specific configuration:
         - DirectML: Uses dynamically selected device_id (from select_device_id())
-        - CPU: No options needed (empty dict)
+        - CPU: No options needed (just provider name string)
 
         Returns:
-            Dict mapping provider names to config dicts
+            List of provider specifications
             Examples:
-            - CPU only: {'CPUExecutionProvider': {}}
-            - DirectML: {'DmlExecutionProvider': {'device_id': 1}, 'CPUExecutionProvider': {}}
+            - CPU only: ['CPUExecutionProvider']
+            - DirectML: [('DmlExecutionProvider', {'device_id': 1}), 'CPUExecutionProvider']
         """
         if self.selected_provider == 'CPU':
-            return {'CPUExecutionProvider': {}}
+            return ['CPUExecutionProvider']
 
         elif self.selected_provider == 'DirectML':
             device_id, _ = self.select_device_id()
-            return {
-                'DmlExecutionProvider': {'device_id': device_id},
-                'CPUExecutionProvider': {}
-            }
+            return [
+                ('DmlExecutionProvider', {'device_id': device_id}),
+                'CPUExecutionProvider'
+            ]
 
         else:
             self.logger.warning(f"Unknown provider {self.selected_provider}, falling back to CPU")
-            return {'CPUExecutionProvider': {}}
+            return ['CPUExecutionProvider']
 
     def detect_gpu_type(self) -> str:
         """Detect GPU type: 'integrated', 'discrete', or 'cpu'.
@@ -221,16 +221,21 @@ class ExecutionProviderManager:
             return 'discrete'
 
     def enumerate_adapters(self) -> List[Dict[str, Union[int, str]]]:
-        """Enumerate all GPU adapters with DeviceID and type classification.
+        """Enumerate all GPU adapters in DXGI order with type classification.
 
-        Queries Windows for all video controllers and classifies each as
-        'integrated' or 'discrete' based on device name.
+        DXGI Enumeration Order (IDXGIFactory::EnumAdapters):
+        - On laptops: Integrated GPU (primary display) is typically device_id=0
+        - Discrete GPU is typically device_id=1
+        - DXGI returns adapters in: primary display first, then other adapters
+
+        Heuristic: Integrated GPUs (Intel, AMD APU) are enumerated before discrete GPUs
+        This matches typical laptop configurations where Intel iGPU drives the display.
 
         Returns:
-            List of dicts with 'index', 'name', 'type' keys:
+            List of dicts with 'index', 'name', 'type' keys in DXGI order:
             [
-                {'index': 0, 'name': 'Intel UHD Graphics 630', 'type': 'integrated'},
-                {'index': 1, 'name': 'NVIDIA GeForce RTX 3060', 'type': 'discrete'}
+                {'index': 0, 'name': 'Intel Iris Graphics', 'type': 'integrated'},
+                {'index': 1, 'name': 'NVIDIA GeForce RTX', 'type': 'discrete'}
             ]
 
         Empty list for CPU-only mode.
@@ -244,36 +249,68 @@ class ExecutionProviderManager:
 
             import subprocess
 
-            # Query both DeviceID and Name columns
+            # Query Name and AdapterRAM to identify GPU type
             result = subprocess.run(
-                ['wmic', 'path', 'win32_VideoController', 'get', 'DeviceID,Name'],
+                ['wmic', 'path', 'win32_VideoController', 'get', 'Name,AdapterRAM'],
                 capture_output=True, text=True, timeout=2
             )
 
-            adapters = []
+            # Parse GPU entries
             lines = result.stdout.strip().split('\n')
+            if len(lines) < 2:
+                return []
 
-            # parse GPU entries
+            # Extract GPU info
+            gpus = []
             for line in lines[1:]:
-                parts = line.split(None, 1)
-                if len(parts) < 2:
+                line = line.strip()
+                if not line:
                     continue
 
                 try:
-                    device_id = int(parts[0])
+                    # Parse: "AdapterRAM  Name"
+                    parts = line.split(None, 1)
+                    if len(parts) < 2:
+                        continue
+
+                    adapter_ram = int(parts[0])
                     name = parts[1].strip()
 
                     if 'basic display adapter' in name.lower():
                         continue
 
                     gpu_type = self._classify_gpu_name(name)
-                    adapters.append({
-                        'index': device_id,
+                    gpus.append({
                         'name': name,
-                        'type': gpu_type
+                        'type': gpu_type,
+                        'ram': adapter_ram
                     })
                 except (ValueError, IndexError):
                     continue
+
+            if not gpus:
+                return []
+
+            # Sort by DXGI enumeration heuristic: integrated GPUs first, then discrete
+            # This matches laptop configurations where integrated GPU is primary display (device_id=0)
+            def dxgi_sort_key(gpu):
+                # Integrated GPUs (Intel, AMD APU) come first (priority 0)
+                # Discrete GPUs (NVIDIA, AMD discrete) come second (priority 1)
+                return 0 if gpu['type'] == 'integrated' else 1
+
+            gpus.sort(key=dxgi_sort_key)
+
+            # Build adapter list in DXGI enumeration order
+            adapters = []
+            for device_index, gpu_info in enumerate(gpus):
+                adapters.append({
+                    'index': device_index,
+                    'name': gpu_info['name'],
+                    'type': gpu_info['type']
+                })
+
+                # Log detected DXGI mapping for debugging
+                self.logger.debug(f"DXGI device_id {device_index}: {gpu_info['name']} ({gpu_info['type']}, {gpu_info['ram'] / (1024**3):.1f}GB)")
 
             return adapters
 
