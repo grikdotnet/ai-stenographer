@@ -4,3 +4,4 @@ onnxruntime-directml
 onnx-asr
 Pillow
 huggingface_hub[hf_xet]
+psutil

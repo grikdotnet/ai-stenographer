@@ -8,10 +8,10 @@ from pathlib import Path
 import sys
 
 # Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from Recognizer import Recognizer
-from ExecutionProviderManager import ExecutionProviderManager
+from src.Recognizer import Recognizer
+from src.ExecutionProviderManager import ExecutionProviderManager
 import src.types as stt_types
 
 
@@ -23,15 +23,18 @@ class TestRecognizerExecutionProviders:
         # Config: DirectML GPU provider
         config = {"recognition": {"inference": "directml"}}
 
-        with patch.object(ExecutionProviderManager, 'detect_available_providers') as mock_detect:
-            mock_detect.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
+        with patch('onnxruntime.get_available_providers') as mock_get_providers:
+            mock_get_providers.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
 
             manager = ExecutionProviderManager(config)
             providers = manager.build_provider_list()
 
-        # Verify DirectML provider config
+        # Verify DirectML provider config (list format)
+        assert isinstance(providers, list)
         assert len(providers) == 2
-        assert providers[0] == ('DmlExecutionProvider', {'device_id': 0})
+        assert isinstance(providers[0], tuple)
+        assert providers[0][0] == 'DmlExecutionProvider'
+        assert 'device_id' in providers[0][1]
         assert providers[1] == 'CPUExecutionProvider'
 
         # Create mock model with DirectML providers
@@ -69,11 +72,11 @@ class TestRecognizerExecutionProviders:
         config = {"recognition": {"inference": "auto"}}
 
         # Simulate: No DirectML available
-        with patch.object(ExecutionProviderManager, 'detect_available_providers') as mock_detect:
-            mock_detect.return_value = ['CPUExecutionProvider']
+        with patch('onnxruntime.get_available_providers') as mock_get_providers:
+            mock_get_providers.return_value = ['CPUExecutionProvider']
 
             manager = ExecutionProviderManager(config)
-            selected = manager.select_provider()
+            selected = manager.selected_provider
 
         # Verify CPU fallback
         assert selected == 'CPU'
@@ -91,8 +94,8 @@ class TestRecognizerExecutionProviders:
         # Config for CPU
         config_cpu = {"recognition": {"inference": "cpu"}}
 
-        with patch.object(ExecutionProviderManager, 'detect_available_providers') as mock_detect:
-            mock_detect.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
+        with patch('onnxruntime.get_available_providers') as mock_get_providers:
+            mock_get_providers.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
 
             # CPU provider
             manager_cpu = ExecutionProviderManager(config_cpu)
@@ -103,15 +106,18 @@ class TestRecognizerExecutionProviders:
         # Config for DirectML
         config_directml = {"recognition": {"inference": "directml"}}
 
-        with patch.object(ExecutionProviderManager, 'detect_available_providers') as mock_detect:
-            mock_detect.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
+        with patch('onnxruntime.get_available_providers') as mock_get_providers:
+            mock_get_providers.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
 
             # DirectML provider
             manager_directml = ExecutionProviderManager(config_directml)
             providers_directml = manager_directml.build_provider_list()
 
+        assert isinstance(providers_directml, list)
         assert len(providers_directml) == 2
-        assert providers_directml[0] == ('DmlExecutionProvider', {'device_id': 0})
+        assert isinstance(providers_directml[0], tuple)
+        assert providers_directml[0][0] == 'DmlExecutionProvider'
+        assert 'device_id' in providers_directml[0][1]
 
         # Both should produce consistent provider configs
         # In real usage, both would produce same text output for same audio
