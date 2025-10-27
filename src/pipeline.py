@@ -43,13 +43,16 @@ class STTPipeline:
         strategy = factory.get_strategy(gpu_type)
         strategy.configure_session_options(sess_options)
 
+        logging.info("Loading FP16 Parakeet models...")
         self.model: Any = onnx_asr.load_model(
             "nemo-parakeet-tdt-0.6b-v3",
             model_path,
+            quantization='fp16',
             providers=providers,
             sess_options=sess_options,
             cpu_preprocessing=False
         )
+        logging.info("FP16 models loaded successfully")
 
         self.root: tk.Tk
         self.text_widget: scrolledtext.ScrolledText

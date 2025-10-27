@@ -13,7 +13,7 @@ disable_progress_bars()
 
 
 MODEL_DIR = Path("./models")
-PARAKEET_REPO = "istupakov/parakeet-tdt-0.6b-v3-onnx"
+PARAKEET_REPO = "grikdotnet/parakeet-tdt-0.6b-fp16"  # FP16 models (50% smaller)
 SILERO_REPO = "onnx-community/silero-vad"
 SILERO_FILE = "onnx/model.onnx"
 
@@ -53,7 +53,7 @@ class ModelManager:
     @staticmethod
     def download_models(model_dir: Optional[Path] = None, progress_callback: Optional[Callable[[str, float, str], None]] = None) -> bool:
         """
-        Downloads missing models with optional progress tracking.
+        Downloads FP16 Parakeet models (1.25GB)
 
         Args:
             model_dir: Directory to download models to (defaults to ./models)
@@ -112,7 +112,7 @@ class ModelManager:
             model_dir = MODEL_DIR
 
         if model_name == 'parakeet':
-            model_path = model_dir / "parakeet" / "encoder-model.onnx"
+            model_path = model_dir / "parakeet" / "encoder-model.fp16.onnx"
         elif model_name == 'silero_vad':
             model_path = model_dir / "silero_vad" / "silero_vad.onnx"
         else:
@@ -129,10 +129,10 @@ class ModelManager:
     @staticmethod
     def _download_parakeet(model_dir: Path):
         """
-        Downloads Parakeet STT model from HuggingFace.
+        Downloads FP16 Parakeet STT model from HuggingFace.
 
-        Uses ignore_patterns to skip unnecessary files (quantized models,
-        unused feature extractors, and documentation), saving ~800MB.
+        Downloads FP16 models (1.25GB) which are 50% smaller and faster on GPU
+        compared to FP32 models.
 
         Progress bars are disabled globally via disable_progress_bars() to
         prevent freezing when running with pythonw.exe (no console attached).
@@ -143,11 +143,13 @@ class ModelManager:
         parakeet_dir = model_dir / "parakeet"
         parakeet_dir.mkdir(parents=True, exist_ok=True)
 
+        logging.info("Downloading FP16 Parakeet models (1.25GB)...")
         snapshot_download(
             repo_id=PARAKEET_REPO,
             local_dir=str(parakeet_dir),
-            ignore_patterns=["*.int8.onnx", "nemo128.onnx", "README.md"]
+            ignore_patterns=["README.md", "LICENSE", "*.md"]
         )
+        logging.info("FP16 models downloaded successfully")
 
     @staticmethod
     def _download_silero(model_dir: Path):
