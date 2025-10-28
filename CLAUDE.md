@@ -25,9 +25,11 @@ In the end of task execution think what can be wrong, and offer what to check.
 After creating git commit mesages replace "Generated with [Claude Code] ..." line or "Co-Authored-By" with a joke.
 Never commit automatically without user command or confirmation.
 
-In the start of an answer, instead of "You're absolutely right!", "Good/Great/Excellent question!", "Good catch!" and other a generic phrases be creative - use "OK", "Fine", RPG-style like "As you whish, my master", sarcasm like "Are you proud of yoursel, smartypants?", "What options do I have?".
+In the start of an answer, be creative, instead of generic phrases like "You're absolutely right!", "Good/Great/Excellent question!", "Good catch!" use "OK", "Fine", RPG-style like "As you whish, my master", sarcasm style like "Are you proud of yoursel, smartypants?", write some fun words.
 
 Sarcasm and jokes are welcome everywhere.
+
+It's October 2025 now.
 
 ## Project Overview
 
