@@ -113,28 +113,23 @@ class VoiceActivityDetector:
             else:
                 audio_frame = audio_frame[:self.frame_size]
 
-        # Prepare inputs for ONNX model
-        # Input shape: [batch_size, audio_length]
-        # Avoid unnecessary copy if already float32
+        # ONNX Input shape: [batch_size, audio_length]
         if audio_frame.dtype != np.float32:
             audio_frame = audio_frame.astype(np.float32)
         audio_input = audio_frame.reshape(1, -1)
 
-        # Run inference with cached sr_input
         ort_outputs = self.model.run(
             None,
             {
                 'input': audio_input,
                 'state': self.model_state,
-                'sr': self.sr_input
+                'sr': self.sr_input # ONNX requires it for a sample rate
             }
         )
 
-        # Extract outputs
         speech_prob = float(ort_outputs[0][0][0])  # Shape: [1, 1]
         self.model_state = ort_outputs[1]  # Update state for next frame
 
-        # Determine if speech based on threshold
         is_speech = speech_prob > self.threshold
 
         return {

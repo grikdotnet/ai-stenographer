@@ -100,9 +100,9 @@ class TestRecognizer:
         """Recognizer.process() should auto-detect preliminary vs finalized from segment type."""
         mock_model.recognize.side_effect = ["instant", "quality"]
 
-        chunk_queue = queue.Queue()
+        speech_queue = queue.Queue()
         text_queue = queue.Queue()
-        recognizer = Recognizer(chunk_queue, text_queue, mock_model)
+        recognizer = Recognizer(speech_queue, text_queue, mock_model)
 
         # Add preliminary and finalized segments
         preliminary = AudioSegment(
@@ -120,12 +120,12 @@ class TestRecognizer:
             chunk_ids=[0, 1, 2]
         )
 
-        chunk_queue.put(preliminary)
-        chunk_queue.put(finalized)
+        speech_queue.put(preliminary)
+        speech_queue.put(finalized)
 
         # Run process() with controlled execution
         recognizer.is_running = True
-        original_get = recognizer.chunk_queue.get
+        original_get = recognizer.speech_queue.get
         call_count = 0
 
         def mock_get(*args, **kwargs):
@@ -137,7 +137,7 @@ class TestRecognizer:
                 recognizer.is_running = False
                 raise queue.Empty()
 
-        recognizer.chunk_queue.get = mock_get
+        recognizer.speech_queue.get = mock_get
         recognizer.process()
 
         # Verify both results with correct status values

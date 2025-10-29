@@ -11,20 +11,18 @@ class AdaptiveWindower:
 
     Takes word-level speech segments from VAD and combines them into
     overlapping recognition windows optimized for speech recognition.
-    Uses 3-second windows with 1-second step for good context and responsiveness.
 
     Windowing Strategy:
-    - Window duration: 3 seconds (provides sufficient context for recognition)
-    - Step size: 1 second (33% overlap for continuity between windows)
-    - Preserves word-level timing metadata for downstream processing
+    - Window duration and step size are defined in config
+    - Preserves word-level timing metadata
 
     Args:
-        chunk_queue: Queue to output recognition windows (finalized AudioSegments)
+        speech_queue: Queue to output recognition windows (finalized AudioSegments)
         config: Configuration dictionary with audio and windowing parameters
     """
 
-    def __init__(self, chunk_queue: queue.Queue, config: Dict[str, Any], verbose: bool = False):
-        self.chunk_queue: queue.Queue = chunk_queue
+    def __init__(self, speech_queue: queue.Queue, config: Dict[str, Any], verbose: bool = False):
+        self.speech_queue: queue.Queue = speech_queue
         self.config: Dict[str, Any] = config
         self.verbose: bool = verbose
 
@@ -119,7 +117,7 @@ class AdaptiveWindower:
             duration_ms = len(window_audio) / self.sample_rate * 1000
             logging.debug(f"AdaptiveWindower: created window duration={duration_ms:.0f}ms, chunk_ids={unique_chunk_ids}, samples={len(window_audio)}")
 
-        self.chunk_queue.put(window)
+        self.speech_queue.put(window)
 
         if self.verbose:
             logging.debug(f"AdaptiveWindower: put finalized window to queue (chunk_ids={unique_chunk_ids})")
@@ -167,7 +165,7 @@ class AdaptiveWindower:
             chunk_ids=unique_chunk_ids
         )
 
-        self.chunk_queue.put(window)
+        self.speech_queue.put(window)
 
         if self.verbose:
             logging.debug(f"AdaptiveWindower.flush(): put to queue (chunk_ids={unique_chunk_ids})")

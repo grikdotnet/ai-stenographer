@@ -13,18 +13,18 @@ class Recognizer:
     Does not handle silence detection or text finalization logic.
 
     Args:
-        chunk_queue: Queue to read AudioSegment instances from (both preliminary and finalized)
+        speech_queue: Queue to read AudioSegment instances from (both preliminary and finalized)
         text_queue: Queue to write RecognitionResult instances to
         model: Pre-loaded speech recognition model with recognize() method
         verbose: Enable verbose logging
     """
 
-    def __init__(self, chunk_queue: queue.Queue,
+    def __init__(self, speech_queue: queue.Queue,
                  text_queue: queue.Queue,
                  model: Any,
                  verbose: bool = False
                  ) -> None:
-        self.chunk_queue: queue.Queue = chunk_queue
+        self.speech_queue: queue.Queue = speech_queue
         self.text_queue: queue.Queue = text_queue
         self.model: Any = model
         self.is_running: bool = False
@@ -85,7 +85,7 @@ class Recognizer:
         """
         while self.is_running:
             try:
-                window_data: ChunkQueueItem = self.chunk_queue.get(timeout=0.1)
+                window_data: ChunkQueueItem = self.speech_queue.get(timeout=0.1)
                 self.recognize_window(window_data)
             except queue.Empty:
                 continue
