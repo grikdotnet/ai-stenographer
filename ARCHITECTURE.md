@@ -20,28 +20,64 @@ Microphone Input (16kHz, mono)
         ├─ 32ms frames (512 samples)
         ↓
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  TIER 1: Audio Capture + Voice Activity Detection                        │
-│  Thread: AudioSource (daemon)                                            │
+│  TIER 1: Audio Capture                                                   │
+│  Thread: AudioSource (daemon, sounddevice callback)                      │
 ├──────────────────────────────────────────────────────────────────────────┤
-│  AudioSource.process_chunk_with_vad()                                    │
-│    ├─→ VoiceActivityDetector (Silero VAD ONNX)                          │
-│    │     └─→ Detects speech vs silence (threshold: 0.5)                 │
-│    │         └─→ Segments speech at word boundaries (32ms silence)      │
-│    │                                                                      │
-│    ├─→ Creates preliminary AudioSegment                                  │
-│    │     └─→ type='preliminary'                                          │
-│    │     └─→ chunk_ids=[unique_id]  (single ID)                         │
-│    │     └─→ data: np.ndarray (float32, -1.0 to 1.0)                   │
-│    │                                                                      │
-│    ├─→ chunk_queue.put(preliminary_segment)  [instant output]           │
-│    └─→ AdaptiveWindower.process_segment(preliminary_segment) [sync call]│
+│  AudioSource.audio_callback()                                            │
+│    ├─→ Captures raw audio (32ms frames, 512 samples)                    │
+│    ├─→ Assigns chunk_id (monotonic counter)                             │
+│    ├─→ chunk_queue.put_nowait({audio, timestamp, chunk_id})             │
+│    └─→ FAST RETURN (<1ms) - no blocking operations!                     │
 └──────────────────────────────────────────────────────────────────────────┘
         │
-        ├─ Preliminary AudioSegment (instant, low-quality)
-        │  Finalized AudioSegment (delayed, high-quality)
+        ├─ Raw audio dicts: {audio, timestamp, chunk_id}
         ↓
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  Queue: chunk_queue (maxsize=100)                                        │
+│  Queue: chunk_queue (maxsize=200)                                        │
+│  Data Type: dict                                                         │
+│    - audio: npt.NDArray[np.float32]  (512 samples)                      │
+│    - timestamp: float                                                    │
+│    - chunk_id: int                                                       │
+└──────────────────────────────────────────────────────────────────────────┘
+        │
+        ↓
+┌──────────────────────────────────────────────────────────────────────────┐
+│  TIER 2: Audio Processing                                                │
+│  Thread: SoundPreProcessor (daemon)                                      │
+├──────────────────────────────────────────────────────────────────────────┤
+│  SoundPreProcessor.process()                                             │
+│    ├─→ chunk_queue.get(timeout=0.1)  [raw audio dict]                   │
+│    ├─→ _normalize_rms(audio)  [RMS normalization for VAD]               │
+│    ├─→ VoiceActivityDetector.process_frame(normalized_audio)            │
+│    │     └─→ Detects speech vs silence (threshold: 0.5)                 │
+│    │         └─→ Segments speech at word boundaries                     │
+│    │                                                                      │
+│    ├─→ Speech buffering (_handle_speech_frame, _handle_silence_frame)   │
+│    │     └─→ Accumulates chunks until finalization                      │
+│    │                                                                      │
+│    ├─→ _finalize_segment() [on silence threshold or max duration]       │
+│    │     ├─→ Creates preliminary AudioSegment                           │
+│    │     │     └─→ type='preliminary'                                    │
+│    │     │     └─→ chunk_ids=[id1, id2, ...]                            │
+│    │     │     └─→ data: np.ndarray (float32, -1.0 to 1.0)             │
+│    │     │                                                                │
+│    │     ├─→ speech_queue.put(preliminary_segment)  [instant output]    │
+│    │     └─→ AdaptiveWindower.process_segment(segment) [sync call]      │
+│    │           └─→ Aggregates into finalized windows                    │
+│    │                                                                      │
+│    └─→ Silence timeout detection → windower.flush()                     │
+└──────────────────────────────────────────────────────────────────────────┘
+        │
+        │  AdaptiveWindower (NO THREAD - synchronous calls from SoundPreProcessor)
+        │  ├─→ Aggregates preliminary segments into 3s windows
+        │  ├─→ Creates finalized AudioSegment
+        │  │     └─→ type='finalized'
+        │  │     └─→ chunk_ids=[id1, id2, id3, ...]  (merged IDs)
+        │  └─→ speech_queue.put(finalized_window)
+        │
+        ↓
+┌──────────────────────────────────────────────────────────────────────────┐
+│  Queue: speech_queue (maxsize=200)                                       │
 │  Data Type: AudioSegment (dataclass)                                     │
 │    - type: 'preliminary' | 'finalized'                                   │
 │    - data: npt.NDArray[np.float32]                                       │
@@ -50,20 +86,15 @@ Microphone Input (16kHz, mono)
 │    - chunk_ids: list[int]                                                │
 └──────────────────────────────────────────────────────────────────────────┘
         │
-        │  AdaptiveWindower (NO THREAD - synchronous calls from AudioSource)
-        │  ├─→ Aggregates preliminary segments into 3s windows
-        │  ├─→ Creates finalized AudioSegment
-        │  │     └─→ type='finalized'
-        │  │     └─→ chunk_ids=[id1, id2, id3, ...]  (merged IDs)
-        │  └─→ chunk_queue.put(finalized_window)
-        │
+        ├─ Preliminary AudioSegment (instant, low-quality)
+        │  Finalized AudioSegment (delayed, high-quality)
         ↓
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  TIER 2: Speech Recognition                                              │
+│  TIER 3: Speech Recognition                                              │
 │  Thread: Recognizer (daemon)                                             │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  Recognizer.process()                                                    │
-│    ├─→ chunk_queue.get(timeout=0.1)                                     │
+│    ├─→ speech_queue.get(timeout=0.1)                                    │
 │    ├─→ is_preliminary = (segment.type == 'preliminary')                 │
 │    ├─→ Parakeet ONNX Model (nemo-parakeet-tdt-0.6b-v3)                 │
 │    │     └─→ audio → text recognition                                   │
@@ -86,7 +117,7 @@ Microphone Input (16kHz, mono)
         │
         ↓
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  TIER 3: Text Processing + Display                                       │
+│  TIER 4: Text Processing + Display                                       │
 │  Thread: TextMatcher (daemon)                                            │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  TextMatcher.process()                                                   │
@@ -130,9 +161,10 @@ Microphone Input (16kHz, mono)
 
 | Component | Thread Type | Purpose | Blocking Operations |
 |-----------|-------------|---------|---------------------|
-| **AudioSource** | Daemon | Captures microphone input, runs VAD | `chunk_queue.put()` (blocks if full) |
-| **AdaptiveWindower** | **NO THREAD** | Aggregates segments into windows | Called synchronously by AudioSource |
-| **Recognizer** | Daemon | Runs STT model on audio segments | `chunk_queue.get(timeout=0.1)`, model inference |
+| **AudioSource** | Daemon (sounddevice callback) | Captures microphone input only | `chunk_queue.put_nowait()` (non-blocking, drops if full) |
+| **SoundPreProcessor** | Daemon | VAD processing, RMS normalization, speech buffering | `chunk_queue.get(timeout=0.1)`, `speech_queue.put()` |
+| **AdaptiveWindower** | **NO THREAD** | Aggregates segments into windows | Called synchronously by SoundPreProcessor |
+| **Recognizer** | Daemon | Runs STT model on audio segments | `speech_queue.get(timeout=0.1)`, model inference |
 | **TextMatcher** | Daemon | Routes preliminary/finalized, overlap resolution, GUI calls | `text_queue.get(timeout=0.1)`, GUI updates via `root.after()` |
 | **GuiWindow** | **NO THREAD** | Helper for GUI updates (update_partial, finalize_text) | Called by TextMatcher |
 | **Main Thread** | Main | Runs Tkinter event loop | `root.mainloop()` |
@@ -144,47 +176,62 @@ Microphone Input (16kHz, mono)
 │  THREAD COMMUNICATION DIAGRAM                                            │
 └─────────────────────────────────────────────────────────────────────────┘
 
-Main Thread                AudioSource Thread         Recognizer Thread
-    │                            │                            │
-    │ start()                    │                            │
-    ├───────────────────────────→│                            │
-    │                            │ start()                    │
-    │                            ├───────────────────────────→│
-    │                            │                            │
-    │                            │ process_chunk_with_vad()   │
-    │                            │   ├─→ VAD                  │
-    │                            │   ├─→ create preliminary   │
-    │                            │   ├─→ chunk_queue.put()    │
-    │                            │   └─→ windower.process()   │
-    │                            │        (sync call)         │
-    │                            │                            │
-    │                            │         chunk_queue        │
-    │                            │   ──────────────────────→  │
-    │                            │                            │ process()
-    │                            │                            │  ├─→ get segment
-    │                            │                            │  ├─→ recognize
-    │                            │                            │  └─→ text_queue.put()
-    │                            │                            │
-    │                            │                            ↓
-    │                         TextMatcher Thread           GUI Main Thread
-    │                               │                          │
-    │                               │ process()                │ mainloop()
-    │                               │  ├─→ get result         │
-    │                               │  ├─→ route by type       │
-    │                               │  ├─→ preliminary:        │
-    │                               │  │   update_partial()────┼─→ root.after()
-    │                               │  └─→ finalized:          │
-    │                               │      ├─resolve_overlap   │
-    │                               │      ├─finalize_text()───┼─→ root.after()
-    │                               │      └─update_partial()──┼─→ root.after()
-    │                               │                          │
-    │ stop()                        │                          │
-    ├───────────────────────────────┤                          │
-    │  ├─→ audio_source.stop()     │                          │
-    │  ├─→ recognizer.stop()       │                          │
-    │  ├─→ text_matcher.finalize_pending()                    │
-    │  └─→ text_matcher.stop()     │                          │
-    │                               │                          │
+Main Thread        AudioSource Thread    SoundPreProcessor Thread    Recognizer Thread
+    │                     │                        │                         │
+    │ start()             │                        │                         │
+    ├────────────────────→│                        │                         │
+    │                     │ start()                │                         │
+    │                     ├───────────────────────→│                         │
+    │                     │                        │ start()                 │
+    │                     │                        ├────────────────────────→│
+    │                     │                        │                         │
+    │                     │ audio_callback()       │                         │
+    │                     │   └─→ chunk_queue      │                         │
+    │                     │       .put_nowait()    │                         │
+    │                     │       (raw dict)       │                         │
+    │                     │                        │                         │
+    │                     │      chunk_queue       │                         │
+    │                     │   ──────────────────→  │                         │
+    │                     │                        │ process()               │
+    │                     │                        │  ├─→ get raw chunk      │
+    │                     │                        │  ├─→ normalize_rms()    │
+    │                     │                        │  ├─→ VAD.process_frame()│
+    │                     │                        │  ├─→ buffering logic    │
+    │                     │                        │  ├─→ finalize_segment() │
+    │                     │                        │  │   └─→ speech_queue   │
+    │                     │                        │  │       .put(prelim)   │
+    │                     │                        │  └─→ windower.process() │
+    │                     │                        │      └─→ speech_queue   │
+    │                     │                        │          .put(finalized)│
+    │                     │                        │                         │
+    │                     │                        │      speech_queue       │
+    │                     │                        │   ──────────────────→   │
+    │                     │                        │                         │ process()
+    │                     │                        │                         │  ├─→ get segment
+    │                     │                        │                         │  ├─→ recognize
+    │                     │                        │                         │  └─→ text_queue.put()
+    │                     │                        │                         │
+    │                     │                        │                         ↓
+    │                   TextMatcher Thread                            GUI Main Thread
+    │                         │                                             │
+    │                         │ process()                                   │ mainloop()
+    │                         │  ├─→ get result                            │
+    │                         │  ├─→ route by type                          │
+    │                         │  ├─→ preliminary:                           │
+    │                         │  │   update_partial()─────────────────────→│ root.after()
+    │                         │  └─→ finalized:                             │
+    │                         │      ├─resolve_overlap                      │
+    │                         │      ├─finalize_text()─────────────────────→│ root.after()
+    │                         │      └─update_partial()────────────────────→│ root.after()
+    │                         │                                             │
+    │ stop()                  │                                             │
+    ├─────────────────────────┤                                             │
+    │  ├─→ audio_source.stop()│                                             │
+    │  ├─→ sound_preprocessor.stop()                                        │
+    │  ├─→ recognizer.stop()  │                                             │
+    │  ├─→ text_matcher.finalize_pending()                                  │
+    │  └─→ text_matcher.stop()│                                             │
+    │                         │                                             │
 ```
 
 ---
@@ -222,21 +269,29 @@ class RecognitionResult:
 │  DATA TRANSFORMATION PIPELINE                                            │
 └─────────────────────────────────────────────────────────────────────────┘
 
-Raw Audio Frame (32ms)
+Raw Audio Frame (32ms) - AudioSource
   └─→ np.ndarray: shape=(512,), dtype=float32, range=[-1.0, 1.0]
+  └─→ dict: {audio, timestamp, chunk_id}
         │
-        ↓ VAD Processing
+        ↓ chunk_queue (raw audio)
+        │
+SoundPreProcessor Processing
+  ├─→ RMS Normalization (for VAD input)
+  ├─→ VAD Processing (Silero)
+  └─→ Speech Buffering
+        │
+        ↓ Segment Finalization
         │
 AudioSegment (preliminary)
   └─→ type='preliminary'
   └─→ data: np.ndarray (variable length, 64ms-3000ms)
   └─→ start_time: 1.234
   └─→ end_time: 1.456
-  └─→ chunk_ids: [42]  ← single unique ID
+  └─→ chunk_ids: [42, 43, 44]  ← accumulated chunk IDs
         │
-        ├─→ chunk_queue (instant path)
+        ├─→ speech_queue (instant path)
         │
-        └─→ AdaptiveWindower.process_segment() (sync)
+        └─→ AdaptiveWindower.process_segment() (sync call)
               │
               ↓ Window Aggregation (3s windows, 1s step)
               │
@@ -245,9 +300,9 @@ AudioSegment (preliminary)
           └─→ data: np.ndarray (48000 samples = 3s @ 16kHz)
           └─→ start_time: 1.000
           └─→ end_time: 4.000
-          └─→ chunk_ids: [42, 43, 44, 45, 46, 47]  ← merged IDs
+          └─→ chunk_ids: [42, 43, 44, 45, 46, 47, ...]  ← merged IDs
                 │
-                ↓ chunk_queue (quality path)
+                ↓ speech_queue (quality path)
                 │
         RecognitionResult (preliminary OR finalized)
           └─→ text: "hello world"
@@ -272,9 +327,45 @@ AudioSegment (preliminary)
 
 ## Component Details
 
-### 1. AudioSource + VAD
+### Hardware Acceleration Architecture
 
-**Responsibility:** Capture audio and detect speech at word level
+The system uses a **Strategy Pattern** for hardware-specific optimizations:
+
+**Components:**
+- **ExecutionProviderManager**: Detects GPU type and builds ONNX Runtime provider list
+- **SessionOptionsFactory**: Creates appropriate strategy based on GPU type
+- **SessionOptionsStrategy**: Configures ONNX Runtime session options per hardware
+
+**GPU Detection (DXGI-based):**
+- Native DXGI API enumeration (IDXGIFactory::EnumAdapters) for ground-truth device_id mapping
+- Multi-GPU priority: discrete > integrated
+- Virtual GPU filtering (Microsoft Basic Render Driver, Remote Desktop adapters)
+- Cached results for performance
+
+**Hardware-Specific Configurations:**
+
+| Hardware Type | Memory Architecture | Session Options |
+|---------------|---------------------|-----------------|
+| **Integrated GPU** | Shared RAM (UMA) | `enable_cpu_mem_arena=False` (zero-copy), threads=(1,1) |
+| **Discrete GPU** | Dedicated VRAM (PCIe) | `enable_cpu_mem_arena=True` (staging buffer), threads=(1,1) |
+| **CPU** | System RAM | `enable_cpu_mem_arena=True`, threads=(≤8,≤4) auto-detect |
+
+**Configuration Options (`config/stt_config.json`):**
+```json
+{
+  "recognition": {
+    "inference": "auto"  // "auto" | "directml" | "cpu"
+  }
+}
+```
+
+**Fallback Chain:** DirectML GPU → CPU (guaranteed to run on all systems)
+
+---
+
+### 1. AudioSource (Simplified)
+
+**Responsibility:** Capture audio from microphone only
 
 **Configuration:**
 ```json
@@ -282,23 +373,63 @@ AudioSegment (preliminary)
   "audio": {
     "sample_rate": 16000,
     "chunk_duration": 0.032  // 32ms = 512 samples
-  },
-  "vad": {
-    "threshold": 0.5,                   // 50% speech probability
-    "max_speech_duration_ms": 3000,     // 3s maximum
-    "silence_energy_threshold": 1.5     // Cumulative silence probability
   }
 }
 ```
 
 **Key Methods:**
-- `process_chunk_with_vad(chunk, timestamp)` - Process 32ms frame
-- `flush_vad()` - Flush remaining VAD buffer
-- `stop()` - Stop capture, flush VAD, call windower.flush()
+- `audio_callback(indata, frames, time_info, status)` - Minimal callback (<1ms)
+- `start()` - Start audio stream
+- `stop()` - Stop audio stream
 
-**Output:** Preliminary AudioSegments with `chunk_ids=[single_id]`
+**Output:** Raw audio dicts to `chunk_queue`: `{audio, timestamp, chunk_id}`
 
-### 2. AdaptiveWindower (NO THREAD)
+**Design:** Non-blocking callback prevents buffer overflows
+
+### 2. SoundPreProcessor (NEW)
+
+**Responsibility:** VAD processing, RMS normalization, speech buffering, windower orchestration
+
+**Configuration:**
+```json
+{
+  "audio": {
+    "sample_rate": 16000,
+    "rms_normalization": {
+      "target_rms": 0.05,
+      "silence_threshold": 0.001,
+      "gain_smoothing": 0.1
+    }
+  },
+  "vad": {
+    "threshold": 0.5,                   // 50% speech probability
+    "max_speech_duration_ms": 3000,     // 3s maximum
+    "silence_energy_threshold": 1.5     // Cumulative silence probability
+  },
+  "windowing": {
+    "silence_timeout": 0.5              // Trigger windower.flush()
+  }
+}
+```
+
+**Key Methods:**
+- `process()` - Main loop reading from chunk_queue
+- `_process_chunk(chunk_data)` - Process single raw chunk
+- `_normalize_rms(audio)` - Apply RMS normalization
+- `_handle_speech_frame(audio, timestamp, chunk_id)` - Buffer speech
+- `_handle_silence_frame(audio, timestamp, chunk_id)` - Handle silence
+- `_finalize_segment()` - Emit preliminary AudioSegment and call windower
+- `flush()` - Emit pending segment and flush windower
+- `start()` - Start processing thread
+- `stop()` - Stop thread and flush
+
+**Input:** Raw audio dicts from `chunk_queue`
+**Output:** Preliminary AudioSegments to `speech_queue`
+**Side Effect:** Calls `windower.process_segment()` synchronously
+
+**Design:** Dedicated thread prevents blocking audio capture callback
+
+### 3. AdaptiveWindower (NO THREAD)
 
 **Responsibility:** Aggregate word-level segments into recognition windows
 
@@ -329,21 +460,41 @@ Overlap:  [0s-1s] [1s-2s] [2s-3s] [3s-4s] [4s-5s]
           └─w1──┘ └─w1,w2┘ └─w1,w2,w3┘ └─w2,w3┘ └─w3──┘
 ```
 
-**Output:** Finalized AudioSegments with `chunk_ids=[id1, id2, ...]`
+**Output:** Finalized AudioSegments with `chunk_ids=[id1, id2, ...]` to `speech_queue`
 
-### 3. Recognizer
+### 4. Recognizer
 
-**Responsibility:** Convert audio to text using STT model
+**Responsibility:** Convert audio to text using STT model with hardware-accelerated inference
 
-**Model:** Parakeet ONNX (nemo-parakeet-tdt-0.6b-v3)
+**Model:** Parakeet ONNX (nemo-parakeet-tdt-0.6b-v3, FP16 quantized)
+
+**Hardware Acceleration:**
+- **DirectML GPU** (default on Windows): Automatic GPU selection and optimization
+- **CPU fallback**: Multi-threaded execution for systems without GPU support
+- **Configuration**: `recognition.inference` = "auto" (default) | "directml" | "cpu"
+
+**GPU Selection Strategy:**
+- Prefers discrete GPUs (NVIDIA GeForce/RTX, AMD Radeon RX) over integrated
+- Uses DXGI native enumeration for accurate device_id mapping
+- Filters out virtual GPUs (Microsoft Basic Render Driver)
+- **Multi-GPU systems**: Automatically selects discrete GPU for best performance
+
+**Session Optimization (Strategy Pattern):**
+- **Integrated GPU** (Intel Iris/UHD, AMD Vega): Zero-copy shared memory (UMA), disable CPU arena
+- **Discrete GPU** (NVIDIA, AMD Radeon RX): PCIe staging buffer, enable CPU arena
+- **CPU**: Multi-threaded execution (auto-detect with caps: intra≤8, inter≤4)
+
+**Model Warm-up:**
+- Pre-compiles GPU shaders on startup (~500ms) to avoid first-inference delay
+- Skipped for CPU mode (no shader compilation needed)
 
 **Key Methods:**
 - `recognize_window(segment, is_preliminary)` - Run STT inference
-- `process()` - Main loop reading from chunk_queue
+- `process()` - Main loop reading from speech_queue
 
 **Processing:**
 ```python
-segment = chunk_queue.get(timeout=0.1)
+segment = speech_queue.get(timeout=0.1)
 is_preliminary = (segment.type == 'preliminary')
 text = model.recognize(segment.data)
 
@@ -356,9 +507,10 @@ result = RecognitionResult(
 text_queue.put(result)
 ```
 
-**Output:** RecognitionResults with `is_preliminary` flag
+**Input:** AudioSegments from `speech_queue`
+**Output:** RecognitionResults with `is_preliminary` flag to `text_queue`
 
-### 4. TextMatcher
+### 5. TextMatcher
 
 **Responsibility:** Handle overlapping text from sliding windows
 
@@ -384,9 +536,10 @@ Output:
 - Time threshold: 0.6s
 - Skips duplicates from overlapping windows
 
+**Input:** RecognitionResults from `text_queue`
 **Output:** Direct GUI calls via `gui_window.update_partial()` and `gui_window.finalize_text()`
 
-### 5. GuiWindow
+### 6. GuiWindow
 
 **Responsibility:** Manage two-stage text display in GUI
 
@@ -405,7 +558,8 @@ Output:
 
 | Queue | Producer | Consumer | Data Type | Maxsize | Purpose |
 |-------|----------|----------|-----------|---------|---------|
-| `chunk_queue` | AudioSource, AdaptiveWindower | Recognizer | `AudioSegment` | 100 | Audio segments (preliminary + finalized) |
+| `chunk_queue` | AudioSource | SoundPreProcessor | `dict` {audio, timestamp, chunk_id} | 200 | Raw audio chunks (32ms frames) |
+| `speech_queue` | SoundPreProcessor, AdaptiveWindower | Recognizer | `AudioSegment` | 200 | Audio segments (preliminary + finalized) |
 | `text_queue` | Recognizer | TextMatcher | `RecognitionResult` | 50 | Recognition results |
 
 ---
@@ -417,24 +571,32 @@ Output:
 ```
 1. Pipeline.__init__()
    ├─→ Load config from config/stt_config.json
-   ├─→ Load Parakeet model
+   ├─→ Create queues (chunk, speech, text)
+   ├─→ Hardware acceleration setup:
+   │     ├─→ ExecutionProviderManager.detect_gpu_type() [DXGI enumeration]
+   │     ├─→ SessionOptionsFactory.get_strategy(gpu_type)
+   │     └─→ Strategy.configure_session_options(sess_options)
+   ├─→ Load Parakeet model with hardware-optimized session
    ├─→ Create Tkinter GUI window
    ├─→ Create GuiWindow (helper for TextMatcher)
-   ├─→ Create queues (chunk, text)
+   ├─→ Create VAD (for SoundPreProcessor)
    ├─→ Create components:
-   │     ├─→ AdaptiveWindower (no thread)
-   │     ├─→ AudioSource (with windower reference)
-   │     ├─→ Recognizer
+   │     ├─→ AdaptiveWindower (no thread, writes to speech_queue)
+   │     ├─→ AudioSource (writes raw dicts to chunk_queue)
+   │     ├─→ SoundPreProcessor (reads chunk_queue, writes to speech_queue)
+   │     ├─→ Recognizer (reads speech_queue)
    │     └─→ TextMatcher (with gui_window reference)
    └─→ Setup signal handlers (Ctrl+C)
 
 2. Pipeline.start()
-   ├─→ audio_source.start()      → spawns daemon thread
-   ├─→ recognizer.start()         → spawns daemon thread
-   └─→ text_matcher.start()       → spawns daemon thread
+   ├─→ _warmup_model()                 → pre-compile GPU shaders (DirectML/CUDA only)
+   ├─→ audio_source.start()           → starts sounddevice stream
+   ├─→ sound_preprocessor.start()     → spawns daemon thread
+   ├─→ recognizer.start()              → spawns daemon thread
+   └─→ text_matcher.start()            → spawns daemon thread
 
 3. Pipeline.run()
-   └─→ root.mainloop()            → Tkinter event loop
+   └─→ root.mainloop()                 → Tkinter event loop
 ```
 
 ### Shutdown Sequence
@@ -444,8 +606,11 @@ Output:
 
 2. Pipeline.stop()
    ├─→ audio_source.stop()
-   │     ├─→ Stop microphone stream
-   │     ├─→ flush_vad() → emit remaining segments
+   │     └─→ Stop microphone stream (sounddevice)
+   │
+   ├─→ sound_preprocessor.stop()
+   │     ├─→ Set is_running=False → thread exits
+   │     ├─→ _finalize_segment() → emit pending segment
    │     └─→ windower.flush() → emit final window
    │
    ├─→ recognizer.stop()
@@ -469,8 +634,11 @@ Output:
 
 | Stage | Latency | Type |
 |-------|---------|------|
-| Audio capture (32ms frame) | 32ms | Fixed |
-| VAD processing | <5ms | Variable |
+| Audio capture (32ms frame) | <1ms | Fixed (non-blocking callback) |
+| Queue transfer (chunk_queue) | <1ms | Fixed |
+| SoundPreProcessor: RMS + VAD | <5ms | Variable |
+| SoundPreProcessor: buffering | <1ms | Fixed |
+| Queue transfer (speech_queue) | <1ms | Fixed |
 | Preliminary recognition | ~100-200ms | Variable (model) |
 | Finalized recognition (3s window) | ~300-500ms | Variable (model) |
 | Text processing | <10ms | Variable |
@@ -478,15 +646,21 @@ Output:
 | **Total (preliminary path)** | **~150-250ms** | End-to-end |
 | **Total (finalized path)** | **~350-550ms** | End-to-end |
 
+**Key Improvement:** Audio callback now completes in <1ms (was 5-10ms with VAD), preventing buffer overflows.
+
 ### Memory Usage
 
 | Component | Memory | Notes |
 |-----------|--------|-------|
-| Parakeet model | ~600MB | ONNX model in RAM |
-| Silero VAD model | ~5MB | Quantized f16 model |
+| Parakeet model (FP16) | ~600MB | ONNX model in RAM/VRAM |
+| Silero VAD model | ~5MB | Quantized FP16 model |
 | Audio buffers | ~50KB | Ring buffers, queues |
 | GUI | ~20MB | Tkinter overhead |
-| **Total** | **~700MB** | Approximate |
+| GPU memory (discrete) | Variable | Model loaded to VRAM (additional ~600MB) |
+| GPU memory (integrated) | 0 | Shared system RAM (no additional) |
+| **Total (integrated GPU)** | **~700MB** | System RAM only |
+| **Total (discrete GPU)** | **~700MB RAM + ~600MB VRAM** | Separate pools |
+| **Total (CPU)** | **~700MB** | System RAM only |
 
 ---
 
@@ -494,17 +668,23 @@ Output:
 
 ### Core Pipeline Flow
 
-1. **AudioSource + VAD** → captures 32ms frames, detects speech → preliminary `AudioSegment` → `chunk_queue`
-2. **AudioSource** → calls **AdaptiveWindower** directly (no thread) → aggregates into finalized `AudioSegment` → `chunk_queue`
-3. **Recognizer** → processes both preliminary and finalized AudioSegments → `RecognitionResult` → `text_queue`
-4. **TextMatcher** → filters/processes text, routes to GuiWindow for display
+1. **AudioSource** → captures 32ms frames (non-blocking) → raw audio dict → `chunk_queue`
+2. **SoundPreProcessor** → reads `chunk_queue` → RMS normalization + VAD + buffering → preliminary `AudioSegment` → `speech_queue`
+3. **SoundPreProcessor** → calls **AdaptiveWindower** synchronously → aggregates into finalized `AudioSegment` → `speech_queue`
+4. **Recognizer** → reads `speech_queue` → processes both preliminary and finalized AudioSegments → `RecognitionResult` → `text_queue`
+5. **TextMatcher** → filters/processes text, routes to GuiWindow for display
 
-**Key Architecture:** Single `chunk_queue` receives both preliminary (instant) and finalized (high-quality) `AudioSegment` instances. AdaptiveWindower is called synchronously by AudioSource rather than running in a separate thread.
+**Key Architecture:**
+- Two-queue design: `chunk_queue` (raw audio) → `speech_queue` (AudioSegments)
+- AudioSource callback is non-blocking (<1ms) to prevent buffer overflows
+- SoundPreProcessor runs in dedicated thread, handling all audio processing
+- AdaptiveWindower is called synchronously by SoundPreProcessor (not a separate thread)
 
 ### 1. Single Responsibility Principle (SRP)
 
 Each component has one clear responsibility:
-- **AudioSource:** Audio capture + VAD
+- **AudioSource:** Audio capture only (minimal callback)
+- **SoundPreProcessor:** VAD, RMS normalization, speech buffering
 - **AdaptiveWindower:** Window aggregation
 - **Recognizer:** Speech recognition
 - **TextMatcher:** Text processing and display routing
@@ -519,8 +699,9 @@ System is open for extension, closed for modification:
 ### 3. Dependency Inversion Principle (DIP)
 
 High-level modules don't depend on low-level details:
-- AudioSource receives windower interface, not concrete class
+- SoundPreProcessor receives windower interface, not concrete class
 - TextMatcher doesn't know about timeout implementation
+- AudioSource has no knowledge of VAD or windowing logic
 
 ### 4. Type Safety
 
@@ -528,6 +709,15 @@ Strong typing throughout:
 - Dataclasses replace dicts
 - Type discriminators (`type: 'preliminary' | 'finalized'`)
 - Type hints enable IDE/mypy checking
+
+### 5. Hardware Abstraction
+
+Strategy Pattern for hardware-specific optimizations:
+- **SessionOptionsStrategy**: Abstract interface for session configuration
+- **Concrete strategies**: IntegratedGPUStrategy, DiscreteGPUStrategy, CPUStrategy
+- **Factory**: SessionOptionsFactory creates appropriate strategy
+- **Manager**: ExecutionProviderManager handles detection and provider selection
+- **Separation**: Hardware logic isolated from main pipeline (OCP/DIP compliance)
 
 ---
 
@@ -560,7 +750,9 @@ class SilenceObserver:
             time.sleep(0.1)
 ```
 
-This can be added without modifying AudioSource, Recognizer, or TextMatcher (OCP compliance).
+This can be added without modifying AudioSource, SoundPreProcessor, Recognizer, or TextMatcher (OCP compliance).
+
+**Note:** With the new architecture, SilenceObserver would monitor `chunk_queue` activity instead, as speech activity is now processed in SoundPreProcessor thread.
 
 ---
 
@@ -613,10 +805,13 @@ This architecture provides:
 
 ✅ **Real-time performance** - Sub-250ms latency for preliminary results
 ✅ **High accuracy** - 3s windows for quality results
+✅ **Hardware acceleration** - Automatic GPU detection with CPU fallback
+✅ **Smart GPU selection** - Multi-GPU support with discrete GPU preference
+✅ **Memory optimization** - Hardware-specific session configurations (UMA vs PCIe)
 ✅ **Clean separation** - Each component has single responsibility
 ✅ **Type safety** - Strongly-typed dataclasses throughout
 ✅ **Extensibility** - Open for enhancement without modification
 ✅ **Testability** - 45 tests covering all major paths
 ✅ **Maintainability** - Clear architecture, well-documented
 
-The dual-path design (preliminary + finalized) balances responsiveness with accuracy, making the system suitable for real-time transcription use cases.
+The dual-path design (preliminary + finalized) balances responsiveness with accuracy, while the Strategy Pattern for hardware abstraction ensures optimal performance across different GPU architectures and CPU-only systems.
