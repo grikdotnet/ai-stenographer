@@ -15,7 +15,7 @@ class TestModelManager:
         # Create mock model directories
         parakeet_dir = tmp_path / "parakeet"
         parakeet_dir.mkdir()
-        (parakeet_dir / "encoder-model.onnx").write_text("mock")
+        (parakeet_dir / "encoder-model.fp16.onnx").write_text("mock")
 
         silero_dir = tmp_path / "silero_vad"
         silero_dir.mkdir()
@@ -202,9 +202,9 @@ class TestModelManager:
         def create_parakeet(*args, **kwargs):
             # Verify ignore_patterns is passed
             assert 'ignore_patterns' in kwargs
-            assert '*.int8.onnx' in kwargs['ignore_patterns']
-            assert 'nemo128.onnx' in kwargs['ignore_patterns']
             assert 'README.md' in kwargs['ignore_patterns']
+            assert 'LICENSE' in kwargs['ignore_patterns']
+            assert '*.md' in kwargs['ignore_patterns']
 
             local_dir = Path(kwargs.get('local_dir', ''))
             local_dir.mkdir(parents=True, exist_ok=True)

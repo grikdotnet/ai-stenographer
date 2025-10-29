@@ -20,7 +20,8 @@ class TestPipelineSessionOptionsStrategy:
     @patch('src.pipeline.create_stt_window')
     @patch('src.pipeline.AudioSource')
     @patch('src.pipeline.VoiceActivityDetector')
-    def test_pipeline_uses_integrated_gpu_strategy(self, mock_vad, mock_audio, mock_gui, mock_load_model, monkeypatch):
+    @patch('src.ExecutionProviderManager.ExecutionProviderManager._enumerate_adapters_dxgi')
+    def test_pipeline_uses_integrated_gpu_strategy(self, mock_dxgi, mock_vad, mock_audio, mock_gui, mock_load_model):
         """Pipeline should use IntegratedGPUStrategy for integrated GPU."""
         # Mock GUI window creation
         mock_root = Mock()
@@ -30,12 +31,10 @@ class TestPipelineSessionOptionsStrategy:
         mock_model = Mock()
         mock_load_model.return_value = mock_model
 
-        def mock_subprocess_run(cmd, **kwargs):
-            result = MagicMock()
-            result.stdout = "Name\nIntel(R) Iris(R) Xe Graphics\n"
-            return result
-
-        monkeypatch.setattr('subprocess.run', mock_subprocess_run)
+        # Mock DXGI to return Intel integrated GPU
+        mock_dxgi.return_value = [
+            {'index': 0, 'name': 'Intel(R) Iris(R) Xe Graphics', 'type': 'integrated', 'vram_gb': 1.0}
+        ]
 
         with patch('onnxruntime.get_available_providers') as mock_providers:
             mock_providers.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
@@ -55,7 +54,8 @@ class TestPipelineSessionOptionsStrategy:
     @patch('src.pipeline.create_stt_window')
     @patch('src.pipeline.AudioSource')
     @patch('src.pipeline.VoiceActivityDetector')
-    def test_pipeline_uses_discrete_gpu_strategy(self, mock_vad, mock_audio, mock_gui, mock_load_model, monkeypatch):
+    @patch('src.ExecutionProviderManager.ExecutionProviderManager._enumerate_adapters_dxgi')
+    def test_pipeline_uses_discrete_gpu_strategy(self, mock_dxgi, mock_vad, mock_audio, mock_gui, mock_load_model):
         """Pipeline should use DiscreteGPUStrategy for discrete GPU."""
         mock_root = Mock()
         mock_text_widget = Mock()
@@ -64,12 +64,10 @@ class TestPipelineSessionOptionsStrategy:
         mock_model = Mock()
         mock_load_model.return_value = mock_model
 
-        def mock_subprocess_run(cmd, **kwargs):
-            result = MagicMock()
-            result.stdout = "Name\nNVIDIA GeForce RTX 3060\n"
-            return result
-
-        monkeypatch.setattr('subprocess.run', mock_subprocess_run)
+        # Mock DXGI to return NVIDIA discrete GPU
+        mock_dxgi.return_value = [
+            {'index': 0, 'name': 'NVIDIA GeForce RTX 3060', 'type': 'discrete', 'vram_gb': 8.0}
+        ]
 
         with patch('onnxruntime.get_available_providers') as mock_providers:
             mock_providers.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
@@ -102,9 +100,18 @@ class TestPipelineSessionOptionsStrategy:
         import json
 
         config = {
-            "audio": {"sample_rate": 16000, "chunk_duration": 0.032},
+            "audio": {
+                "sample_rate": 16000,
+                "chunk_duration": 0.032,
+                "silence_energy_threshold": 1.2,
+                "rms_normalization": {
+                    "target_rms": 0.05,
+                    "silence_threshold": 0.0001,
+                    "gain_smoothing": 0.85
+                }
+            },
             "vad": {"frame_duration_ms": 32, "threshold": 0.5},
-            "windowing": {"window_duration": 3.0, "step_size": 1.0},
+            "windowing": {"window_duration": 3.0, "step_size": 1.0, "max_speech_duration_ms": 1500, "silence_timeout": 0.5},
             "recognition": {"model_name": "parakeet", "inference": "cpu"}
         }
 
@@ -134,7 +141,8 @@ class TestPipelineSessionOptionsStrategy:
     @patch('src.pipeline.create_stt_window')
     @patch('src.pipeline.AudioSource')
     @patch('src.pipeline.VoiceActivityDetector')
-    def test_session_options_correctly_applied_by_strategy(self, mock_vad, mock_audio, mock_gui, mock_load_model, monkeypatch):
+    @patch('src.ExecutionProviderManager.ExecutionProviderManager._enumerate_adapters_dxgi')
+    def test_session_options_correctly_applied_by_strategy(self, mock_dxgi, mock_vad, mock_audio, mock_gui, mock_load_model):
         """Session options from strategy should be passed to model loading."""
         # Mock GUI window creation
         mock_root = Mock()
@@ -145,13 +153,10 @@ class TestPipelineSessionOptionsStrategy:
         mock_model = Mock()
         mock_load_model.return_value = mock_model
 
-        # Mock subprocess to return NVIDIA discrete GPU
-        def mock_subprocess_run(cmd, **kwargs):
-            result = MagicMock()
-            result.stdout = "Name\nNVIDIA GeForce RTX 3060\n"
-            return result
-
-        monkeypatch.setattr('subprocess.run', mock_subprocess_run)
+        # Mock DXGI to return NVIDIA discrete GPU
+        mock_dxgi.return_value = [
+            {'index': 0, 'name': 'NVIDIA GeForce RTX 3060', 'type': 'discrete', 'vram_gb': 8.0}
+        ]
 
         with patch('onnxruntime.get_available_providers') as mock_providers:
             mock_providers.return_value = ['DmlExecutionProvider', 'CPUExecutionProvider']
