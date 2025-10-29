@@ -2,8 +2,9 @@
 import pytest
 import queue
 import numpy as np
+import time
 from unittest.mock import Mock
-from src.AudioSource import AudioSource
+from src.SoundPreProcessor import SoundPreProcessor
 from src.AdaptiveWindower import AdaptiveWindower
 from src.Recognizer import Recognizer
 from src.types import AudioSegment, RecognitionResult
@@ -12,7 +13,7 @@ from src.types import AudioSegment, RecognitionResult
 class TestPreliminaryFinalizedIntegration:
     """Integration tests for preliminary and finalized recognition flow.
 
-    Tests the complete pipeline: AudioSource → AdaptiveWindower → Recognizer,
+    Tests the complete pipeline: SoundPreProcessor → AdaptiveWindower → Recognizer,
     verifying that both preliminary (instant) and finalized (high-quality) results
     are produced correctly.
     """
@@ -24,7 +25,12 @@ class TestPreliminaryFinalizedIntegration:
             'audio': {
                 'sample_rate': 16000,
                 'chunk_duration': 0.032,
-                'silence_energy_threshold': 1.5
+                'silence_energy_threshold': 1.5,
+                'rms_normalization': {
+                    'target_rms': 0.05,
+                    'silence_threshold': 0.001,
+                    'gain_smoothing': 0.9
+                }
             },
             'vad': {
                 'model_path': './models/silero_vad/silero_vad.onnx',
@@ -39,31 +45,48 @@ class TestPreliminaryFinalizedIntegration:
             }
         }
 
-    def test_audiosource_windower_integration(self, config, real_vad, speech_audio):
-        """AudioSource should emit preliminary segments and call windower for finalized windows."""
+    def test_preprocessor_windower_integration(self, config):
+        """SoundPreProcessor should emit preliminary segments and call windower for finalized windows."""
         chunk_queue = queue.Queue()
+        speech_queue = queue.Queue()
         mock_windower = Mock()
 
-        audio_source = AudioSource(
+        # Mock VAD that returns speech for first 30 chunks, then silence
+        call_count = 0
+        def vad_side_effect(audio):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 30:
+                return {'is_speech': True, 'speech_probability': 0.9}
+            else:
+                return {'is_speech': False, 'speech_probability': 0.1}
+
+        mock_vad = Mock()
+        mock_vad.process_frame = Mock(side_effect=vad_side_effect)
+
+        preprocessor = SoundPreProcessor(
             chunk_queue=chunk_queue,
-            vad=real_vad,
+            speech_queue=speech_queue,
+            vad=mock_vad,
             windower=mock_windower,
             config=config
         )
 
-        # Feed audio chunks
-        chunk_size = int(config['audio']['sample_rate'] * config['audio']['chunk_duration'])
-        for i in range(0, len(speech_audio[:16000]), chunk_size):
-            chunk = speech_audio[i:i + chunk_size]
-            if len(chunk) < chunk_size:
-                break
-            audio_source.process_chunk_with_vad(chunk, i * config['audio']['chunk_duration'])
+        # Feed raw audio chunks (simulating AudioSource)
+        chunk_size = 512
+        for i in range(50):  # Feed 50 chunks (30 speech + 20 silence)
+            chunk_data = {
+                'audio': np.random.randn(chunk_size).astype(np.float32) * 0.1,
+                'timestamp': i * 0.032,
+                'chunk_id': i
+            }
+            preprocessor._process_chunk(chunk_data)
 
-        audio_source.flush()
+        preprocessor.flush()
 
-        # Verify preliminary segments in queue
-        assert not chunk_queue.empty()
-        preliminary_segment = chunk_queue.get()
+        # Verify preliminary segments in speech_queue
+        assert not speech_queue.empty()
+        preliminary_segment = speech_queue.get()
         assert isinstance(preliminary_segment, AudioSegment)
         assert preliminary_segment.type == 'preliminary'
 
@@ -77,8 +100,8 @@ class TestPreliminaryFinalizedIntegration:
 
     def test_windower_produces_finalized_windows(self, config):
         """AdaptiveWindower should aggregate preliminary segments into finalized windows."""
-        chunk_queue = queue.Queue()
-        windower = AdaptiveWindower(chunk_queue=chunk_queue, config=config)
+        speech_queue = queue.Queue()
+        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
 
         # Create preliminary word segments
         for i in range(15):  # 15 words across 3 seconds
@@ -96,8 +119,8 @@ class TestPreliminaryFinalizedIntegration:
         windower.flush()
 
         # Should produce flush windows (since we called flush())
-        assert not chunk_queue.empty()
-        window = chunk_queue.get()
+        assert not speech_queue.empty()
+        window = speech_queue.get()
         assert isinstance(window, AudioSegment)
         assert window.type == 'flush'
         assert len(window.chunk_ids) > 1  # Aggregated multiple chunks
@@ -140,18 +163,34 @@ class TestPreliminaryFinalizedIntegration:
         assert result2.status == 'final'
 
 
-    def test_full_pipeline_flow(self, config, real_vad, speech_audio):
-        """Test complete flow: AudioSource → AdaptiveWindower → Recognizer."""
+    def test_full_pipeline_flow(self, config):
+        """Test complete flow: SoundPreProcessor → AdaptiveWindower → Recognizer."""
         chunk_queue = queue.Queue()
+        speech_queue = queue.Queue()
         text_queue = queue.Queue()
 
-        # Set up windower
-        windower = AdaptiveWindower(chunk_queue=chunk_queue, config=config)
+        # Mock VAD that returns speech for most chunks
+        call_count = 0
+        def vad_side_effect(audio):
+            nonlocal call_count
+            call_count += 1
+            # Speech for chunks, then some silence
+            if call_count <= 100:
+                return {'is_speech': True, 'speech_probability': 0.9}
+            else:
+                return {'is_speech': False, 'speech_probability': 0.1}
 
-        # Set up audio source with windower
-        audio_source = AudioSource(
+        mock_vad = Mock()
+        mock_vad.process_frame = Mock(side_effect=vad_side_effect)
+
+        # Set up windower
+        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
+
+        # Set up preprocessor with windower
+        preprocessor = SoundPreProcessor(
             chunk_queue=chunk_queue,
-            vad=real_vad,
+            speech_queue=speech_queue,
+            vad=mock_vad,
             windower=windower,
             config=config
         )
@@ -159,23 +198,26 @@ class TestPreliminaryFinalizedIntegration:
         # Set up recognizer with mock model
         mock_model = Mock()
         mock_model.recognize.return_value = "recognized text"
-        recognizer = Recognizer(chunk_queue, text_queue, mock_model)
+        recognizer = Recognizer(speech_queue, text_queue, mock_model)
 
-        # Feed audio through source - use 4 seconds to ensure finalized window
-        chunk_size = int(config['audio']['sample_rate'] * config['audio']['chunk_duration'])
-        for i in range(0, len(speech_audio[:64000]), chunk_size):  # 4 seconds @ 16kHz
-            chunk = speech_audio[i:i + chunk_size]
-            if len(chunk) < chunk_size:
-                break
-            audio_source.process_chunk_with_vad(chunk, i * config['audio']['chunk_duration'])
+        # Feed raw audio chunks - use 4 seconds to ensure finalized window
+        chunk_size = 512
+        num_chunks = int((4.0 / 0.032))  # 4 seconds @ 32ms per chunk
+        for i in range(num_chunks):
+            chunk_data = {
+                'audio': np.random.randn(chunk_size).astype(np.float32) * 0.1,
+                'timestamp': i * 0.032,
+                'chunk_id': i
+            }
+            preprocessor._process_chunk(chunk_data)
 
         # Flush to complete pipeline
-        audio_source.stop()
+        preprocessor.flush()
 
         # Process recognition queue
         segments_to_process = []
-        while not chunk_queue.empty():
-            segments_to_process.append(chunk_queue.get())
+        while not speech_queue.empty():
+            segments_to_process.append(speech_queue.get())
 
         # Recognize each segment
         results = []

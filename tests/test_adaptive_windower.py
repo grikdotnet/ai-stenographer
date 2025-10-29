@@ -88,8 +88,8 @@ class TestAdaptiveWindower:
 
     def test_aggregates_words_into_windows(self, config, word_segments):
         """Windower should aggregate word segments into recognition windows."""
-        chunk_queue = queue.Queue()
-        windower = AdaptiveWindower(chunk_queue=chunk_queue, config=config)
+        speech_queue = queue.Queue()
+        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
 
         # Feed word segments
         for segment in word_segments:
@@ -99,9 +99,9 @@ class TestAdaptiveWindower:
         windower.flush()
 
         # Should create at least one window (flush type since we called flush())
-        assert not chunk_queue.empty()
+        assert not speech_queue.empty()
 
-        window = chunk_queue.get()
+        window = speech_queue.get()
         assert isinstance(window, AudioSegment)
         assert window.type == 'flush'
         assert isinstance(window.data, np.ndarray)
@@ -110,8 +110,8 @@ class TestAdaptiveWindower:
 
     def test_creates_3_second_windows(self, config, word_segments):
         """Windows should be approximately 3 seconds duration."""
-        chunk_queue = queue.Queue()
-        windower = AdaptiveWindower(chunk_queue=chunk_queue, config=config)
+        speech_queue = queue.Queue()
+        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
 
         # Create longer speech sequence (5 seconds of words)
         long_segments = []
@@ -134,8 +134,8 @@ class TestAdaptiveWindower:
 
         # Collect windows
         windows = []
-        while not chunk_queue.empty():
-            windows.append(chunk_queue.get())
+        while not speech_queue.empty():
+            windows.append(speech_queue.get())
 
         # Should have created multiple windows
         assert len(windows) >= 2
@@ -149,8 +149,8 @@ class TestAdaptiveWindower:
 
     def test_creates_overlapping_windows(self, config, word_segments):
         """Windows should overlap by step_size (1 second)."""
-        chunk_queue = queue.Queue()
-        windower = AdaptiveWindower(chunk_queue=chunk_queue, config=config)
+        speech_queue = queue.Queue()
+        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
 
         # Create 6 seconds of speech
         long_segments = []
@@ -171,8 +171,8 @@ class TestAdaptiveWindower:
         windower.flush()
 
         windows = []
-        while not chunk_queue.empty():
-            windows.append(chunk_queue.get())
+        while not speech_queue.empty():
+            windows.append(speech_queue.get())
 
         # Should have multiple overlapping windows
         assert len(windows) >= 3
@@ -186,15 +186,15 @@ class TestAdaptiveWindower:
 
     def test_preserves_chunk_ids(self, config, word_segments):
         """Windows should aggregate chunk_ids from all preliminary segments."""
-        chunk_queue = queue.Queue()
-        windower = AdaptiveWindower(chunk_queue=chunk_queue, config=config)
+        speech_queue = queue.Queue()
+        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
 
         for segment in word_segments:
             windower.process_segment(segment)
 
         windower.flush()
 
-        window = chunk_queue.get()
+        window = speech_queue.get()
 
         # Window should have aggregated chunk_ids
         assert isinstance(window, AudioSegment)
@@ -206,8 +206,8 @@ class TestAdaptiveWindower:
 
     def test_handles_single_word(self, config):
         """Windower should handle single word segments."""
-        chunk_queue = queue.Queue()
-        windower = AdaptiveWindower(chunk_queue=chunk_queue, config=config)
+        speech_queue = queue.Queue()
+        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
 
         segment = AudioSegment(
             type='preliminary',
@@ -221,8 +221,8 @@ class TestAdaptiveWindower:
         windower.flush()
 
         # Should emit window with single word
-        assert not chunk_queue.empty()
-        window = chunk_queue.get()
+        assert not speech_queue.empty()
+        window = speech_queue.get()
         assert isinstance(window, AudioSegment)
         assert window.type == 'flush'
         assert len(window.data) > 0
@@ -231,8 +231,8 @@ class TestAdaptiveWindower:
 
     def test_flush_emits_partial_window(self, config, word_segments):
         """Flush should emit window even if not full 3 seconds."""
-        chunk_queue = queue.Queue()
-        windower = AdaptiveWindower(chunk_queue=chunk_queue, config=config)
+        speech_queue = queue.Queue()
+        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
 
         # Feed only 2 words (~0.5 seconds)
         for segment in word_segments[:2]:
@@ -244,8 +244,8 @@ class TestAdaptiveWindower:
         # Flush should emit partial window
         windower.flush()
 
-        assert not chunk_queue.empty()
-        window = chunk_queue.get()
+        assert not speech_queue.empty()
+        window = speech_queue.get()
         assert isinstance(window, AudioSegment)
         assert window.type == 'flush'  # UPDATE: was 'finalized'
         duration = window.end_time - window.start_time
@@ -255,8 +255,8 @@ class TestAdaptiveWindower:
 
     def test_flush_idempotent_with_empty_buffer(self, config):
         """flush() should be safe to call multiple times with empty buffer."""
-        chunk_queue = queue.Queue()
-        windower = AdaptiveWindower(chunk_queue, config)
+        speech_queue = queue.Queue()
+        windower = AdaptiveWindower(speech_queue, config)
 
         # Call flush multiple times on empty windower
         windower.flush()
@@ -264,4 +264,4 @@ class TestAdaptiveWindower:
         windower.flush()
 
         # Should not crash or emit anything
-        assert chunk_queue.empty()
+        assert speech_queue.empty()

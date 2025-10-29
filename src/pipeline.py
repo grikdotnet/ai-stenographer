@@ -11,6 +11,7 @@ import tkinter as tk
 from tkinter import scrolledtext
 
 from .AudioSource import AudioSource
+from .SoundPreProcessor import SoundPreProcessor
 from .AdaptiveWindower import AdaptiveWindower
 from .Recognizer import Recognizer
 from .TextMatcher import TextMatcher
@@ -29,8 +30,10 @@ class STTPipeline:
         self.config: Dict = self._load_config(config_path)
         self._is_stopped: bool = False
 
-        self.chunk_queue: queue.Queue = queue.Queue(maxsize=100)
-        self.text_queue: queue.Queue = queue.Queue(maxsize=50)
+        # Create queues
+        self.chunk_queue: queue.Queue = queue.Queue(maxsize=200)      # Raw audio chunks
+        self.speech_queue: queue.Queue = queue.Queue(maxsize=200)     # AudioSegments (prelim + final)
+        self.text_queue: queue.Queue = queue.Queue(maxsize=50)        # RecognitionResults
 
         self.execution_provider_manager: ExecutionProviderManager = ExecutionProviderManager(self.config)
         providers = self.execution_provider_manager.build_provider_list()
@@ -64,28 +67,40 @@ class STTPipeline:
             models_dir = Path("./models")
         vad_model_path = models_dir / "silero_vad" / "silero_vad.onnx"
 
+        # Create VAD (unchanged)
         self.vad: VoiceActivityDetector = VoiceActivityDetector(
             config=self.config,
             model_path=vad_model_path,
             verbose=verbose
         )
 
+        # Create AdaptiveWindower (renamed queue)
         self.adaptive_windower: AdaptiveWindower = AdaptiveWindower(
-            chunk_queue=self.chunk_queue,
+            speech_queue=self.speech_queue,
             config=self.config,
             verbose=verbose
         )
 
-        self.audio_source: AudioSource = AudioSource(
+        # Create SoundPreProcessor (NEW)
+        self.sound_preprocessor: SoundPreProcessor = SoundPreProcessor(
             chunk_queue=self.chunk_queue,
+            speech_queue=self.speech_queue,
             vad=self.vad,
             windower=self.adaptive_windower,
             config=self.config,
             verbose=verbose
         )
 
-        self.recognizer: Recognizer = Recognizer(
+        # Create simplified AudioSource
+        self.audio_source: AudioSource = AudioSource(
             chunk_queue=self.chunk_queue,
+            config=self.config,
+            verbose=verbose
+        )
+
+        # Create Recognizer (renamed queue)
+        self.recognizer: Recognizer = Recognizer(
+            speech_queue=self.speech_queue,
             text_queue=self.text_queue,
             model=self.model,
             verbose=verbose
@@ -93,8 +108,11 @@ class STTPipeline:
 
         self.text_matcher: TextMatcher = TextMatcher(self.text_queue, self.gui_window, verbose=verbose)
 
+        # Update components list
         self.components: List[Any] = [
-            self.audio_source, self.recognizer,
+            self.audio_source,
+            self.sound_preprocessor,  # NEW
+            self.recognizer,
             self.text_matcher
         ]
 
@@ -152,9 +170,10 @@ class STTPipeline:
 
         Stops components in proper order:
         1. AudioSource (stop capturing audio)
-        2. Recognizer (stop processing audio)
-        3. TextMatcher finalization (flush pending text)
-        4. TextMatcher (stop processing)
+        2. SoundPreProcessor (stop processing, flushes pending segments)
+        3. Recognizer (stop processing audio)
+        4. TextMatcher finalization (flush pending text)
+        5. TextMatcher (stop processing)
 
         This method is idempotent - safe to call multiple times.
         """
@@ -165,12 +184,20 @@ class STTPipeline:
 
         logging.info("Stopping pipeline...")
 
+        # 1. Stop audio capture
         self.audio_source.stop()
+
+        # 2. Stop preprocessing (flushes pending segments)
+        self.sound_preprocessor.stop()
+
+        # 3. Stop recognition
         self.recognizer.stop()
 
+        # 4. Finalize text
         logging.info("Finalizing pending text...")
         self.text_matcher.finalize_pending()
 
+        # 5. Stop text processing
         self.text_matcher.stop()
 
         logging.info("Pipeline stopped.")
