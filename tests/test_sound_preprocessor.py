@@ -199,6 +199,8 @@ class TestSoundPreProcessor:
         """Silence after speech should emit preliminary AudioSegment.
 
         Logic: 3 speech chunks → silence chunk → preliminary segment in queue.
+
+        Segment audio will include trailing silence chunks.
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
@@ -250,7 +252,9 @@ class TestSoundPreProcessor:
 
         assert isinstance(segment, AudioSegment)
         assert segment.type == 'preliminary'
-        assert len(segment.chunk_ids) == 3
+        # Audio data should include trailing chunks
+        # 3 speech + 2 trailing silence = 5 chunks = 2560 samples
+        assert len(segment.data) == 512 * 5
 
 
     def test_silence_energy_accumulation(self, preprocessor_config, mock_windower):
@@ -304,7 +308,9 @@ class TestSoundPreProcessor:
         speech_queue = queue.Queue()
 
         # VAD: speech, then silence chunks
-        probabilities = [0.9, 0.9, 0.3, 0.3]  # (1-0.3) + (1-0.3) = 1.4
+        # Need to accumulate to >= 1.5
+        # Using prob=0.25: (1-0.25) + (1-0.25) = 0.75 + 0.75 = 1.5
+        probabilities = [0.9, 0.9, 0.25, 0.25]
         call_count = 0
         def vad_side_effect(audio):
             nonlocal call_count
@@ -325,7 +331,7 @@ class TestSoundPreProcessor:
         )
 
         # Feed chunks until threshold reached
-        for i in range(5):
+        for i in range(4):
             chunk = {
                 'audio': np.random.randn(512).astype(np.float32) * 0.1,
                 'timestamp': 1.0 + i * 0.032,
@@ -506,17 +512,22 @@ class TestSoundPreProcessor:
     def test_timestamp_accuracy(self, preprocessor_config, mock_windower):
         """AudioSegment timestamps should accurately reflect chunk timestamps.
 
-        Logic: Chunks at [1.0, 1.032, 1.064] → start_time=1.0, end_time≈1.096.
+        Logic: Chunks at [1.0, 1.032, 1.064] → start_time=1.0, end_time includes trailing silence.
+
+        With prepended and trailing silence chunks, end_time must include
+        total audio duration (prepended + speech + trailing).
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
 
-        # VAD: speech, then silence
+        # VAD: silence (1 chunk), speech (3 chunks), then silence
         call_count = 0
         def vad_side_effect(audio):
             nonlocal call_count
             call_count += 1
-            if call_count <= 3:
+            if call_count == 1:
+                return {'is_speech': False, 'speech_probability': 0.2}
+            elif call_count <= 4:
                 return {'is_speech': True, 'speech_probability': 0.9}
             else:
                 return {'is_speech': False, 'speech_probability': 0.1}
@@ -533,8 +544,15 @@ class TestSoundPreProcessor:
             verbose=False
         )
 
-        # Feed 3 chunks with precise timestamps
-        timestamps = [1.0, 1.032, 1.064]
+        # Feed 1 silence chunk to be prepended
+        chunk = {
+            'audio': np.random.randn(512).astype(np.float32) * 0.01,
+            'timestamp': 1.0,
+        }
+        preprocessor._process_chunk(chunk)
+
+        # Feed 3 speech chunks with precise timestamps
+        timestamps = [1.032, 1.064, 1.096]
         for i, ts in enumerate(timestamps):
             chunk = {
                 'audio': np.random.randn(512).astype(np.float32) * 0.1,
@@ -542,11 +560,13 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        # Feed silence
+        # Feed silence chunks until threshold
+        # Each silence chunk with prob=0.1 adds (1-0.1) = 0.9
+        # Need 2 chunks: 0.9 + 0.9 = 1.8 >= 1.5
         for i in range(2):
             chunk = {
                 'audio': np.random.randn(512).astype(np.float32) * 0.01,
-                'timestamp': 1.096 + i * 0.032,
+                'timestamp': 1.128 + i * 0.032,
             }
             preprocessor._process_chunk(chunk)
 
@@ -554,10 +574,13 @@ class TestSoundPreProcessor:
         assert not speech_queue.empty()
         segment = speech_queue.get()
 
-        assert segment.start_time == 1.0
-        # end_time = last_timestamp + chunk_duration
-        # 3 chunks of 512 samples @ 16kHz = 3 * 0.032 = 0.096s
-        expected_end = 1.0 + 0.096
+        # start_time should be the first speech chunk (not the prepended silence)
+        assert segment.start_time == 1.032
+
+        # end_time = start_time + (total_audio_length / sample_rate)
+        # Total audio = 1 prepended + 3 speech + 2 trailing = 6 chunks = 192ms
+        # Expected: start_time=1.032, end_time=1.032 + 0.192 = 1.224
+        expected_end = 1.032 + (len(segment.data) / 16000)
         assert abs(segment.end_time - expected_end) < 0.001
 
 
@@ -594,3 +617,294 @@ class TestSoundPreProcessor:
         # Thread should terminate
         time.sleep(0.2)
         assert not preprocessor.thread.is_alive()
+
+
+    def test_last_silence_chunk_stored(self, preprocessor_config, mock_windower):
+        """Verify that silence chunks are stored in last_silence_chunk variable.
+
+        Logic: Feed 2 silence chunks → last_silence_chunk should contain the second chunk.
+        """
+        chunk_queue = queue.Queue()
+        speech_queue = queue.Queue()
+
+        # Mock VAD to return silence for first 2 chunks
+        mock_vad = Mock()
+        mock_vad.process_frame = Mock(return_value={'is_speech': False, 'speech_probability': 0.2})
+
+        preprocessor = SoundPreProcessor(
+            chunk_queue=chunk_queue,
+            speech_queue=speech_queue,
+            vad=mock_vad,
+            windower=mock_windower,
+            config=preprocessor_config,
+            verbose=False
+        )
+
+        # Feed 2 silence chunks
+        chunks = []
+        for i in range(2):
+            audio = np.random.randn(512).astype(np.float32) * 0.01
+            chunk = {
+                'audio': audio,
+                'timestamp': 1.0 + i * 0.032,
+            }
+            chunks.append(chunk)
+            preprocessor._process_chunk(chunk)
+
+        # Verify last_silence_chunk is stored
+        assert preprocessor.last_silence_chunk is not None
+        assert 'audio' in preprocessor.last_silence_chunk
+        assert 'timestamp' in preprocessor.last_silence_chunk
+        # Should contain the second chunk's timestamp
+        assert preprocessor.last_silence_chunk['timestamp'] == chunks[1]['timestamp']
+
+
+    def test_last_silence_chunk_prepended_on_speech_start(self, preprocessor_config, mock_windower):
+        """Verify that the last silence chunk is prepended when speech starts.
+
+        Logic: silence, silence, speech, speech → speech_buffer has 3 items (1 prepended + 2 speech).
+        First item in buffer matches last_silence_chunk.
+        """
+        chunk_queue = queue.Queue()
+        speech_queue = queue.Queue()
+
+        # Mock VAD: silence, silence, speech, speech
+        call_count = 0
+        def vad_side_effect(audio):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return {'is_speech': False, 'speech_probability': 0.2}
+            else:
+                return {'is_speech': True, 'speech_probability': 0.9}
+
+        mock_vad = Mock()
+        mock_vad.process_frame = Mock(side_effect=vad_side_effect)
+
+        preprocessor = SoundPreProcessor(
+            chunk_queue=chunk_queue,
+            speech_queue=speech_queue,
+            vad=mock_vad,
+            windower=mock_windower,
+            config=preprocessor_config,
+            verbose=False
+        )
+
+        # Feed 4 chunks (2 silence + 2 speech)
+        silence_chunks = []
+        for i in range(2):
+            audio = np.random.randn(512).astype(np.float32) * 0.01
+            chunk = {
+                'audio': audio,
+                'timestamp': 1.0 + i * 0.032,
+            }
+            silence_chunks.append(chunk)
+            preprocessor._process_chunk(chunk)
+
+        for i in range(2):
+            audio = np.random.randn(512).astype(np.float32) * 0.1
+            chunk = {
+                'audio': audio,
+                'timestamp': 1.0 + (2 + i) * 0.032,
+            }
+            preprocessor._process_chunk(chunk)
+
+        assert len(preprocessor.speech_buffer) == 3
+
+        # First item should match last silence chunk
+        assert preprocessor.speech_buffer[0]['timestamp'] == silence_chunks[1]['timestamp']
+        assert np.array_equal(preprocessor.speech_buffer[0]['audio'], silence_chunks[1]['audio'])
+
+        # 2 speech chunks should have chunk_ids (0, 1)
+        chunk_ids = [item['chunk_id'] for item in preprocessor.speech_buffer if 'chunk_id' in item]
+        assert chunk_ids == [0, 1]
+
+
+    def test_silence_chunks_buffered_during_energy_accumulation(self, preprocessor_config, mock_windower):
+        """Verify that silence chunks are buffered while counting energy.
+
+        Logic: speech (3 chunks), then silence with prob=0.25
+        silence_energy_threshold = 1.5
+        Each silence adds (1.0 - 0.25) = 0.75
+        Need 2 silence chunks: 0.75 + 0.75 = 1.5 >= 1.5
+        speech_buffer should contain 3 speech chunks + 2 trailing silence chunks.
+        AudioSegment's audio data includes trailing silence.
+        """
+        chunk_queue = queue.Queue()
+        speech_queue = queue.Queue()
+
+        # Mock VAD: speech (3 chunks), then silence with prob=0.25
+        call_count = 0
+        def vad_side_effect(audio):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 3:
+                return {'is_speech': True, 'speech_probability': 0.9}
+            else:
+                return {'is_speech': False, 'speech_probability': 0.25}
+
+        mock_vad = Mock()
+        mock_vad.process_frame = Mock(side_effect=vad_side_effect)
+
+        preprocessor = SoundPreProcessor(
+            chunk_queue=chunk_queue,
+            speech_queue=speech_queue,
+            vad=mock_vad,
+            windower=mock_windower,
+            config=preprocessor_config,
+            verbose=False
+        )
+
+        # Feed 3 speech chunks
+        for i in range(3):
+            audio = np.random.randn(512).astype(np.float32) * 0.1
+            chunk = {
+                'audio': audio,
+                'timestamp': 1.0 + i * 0.032,
+            }
+            preprocessor._process_chunk(chunk)
+
+        # Feed silence chunks until energy reaches threshold
+        # (1.0 - 0.25) = 0.75 per chunk, need 2: 0.75 + 0.75 = 1.5
+        for i in range(2):
+            audio = np.random.randn(512).astype(np.float32) * 0.01
+            chunk = {
+                'audio': audio,
+                'timestamp': 1.0 + (3 + i) * 0.032,
+            }
+            preprocessor._process_chunk(chunk)
+
+        assert not speech_queue.empty()
+        segment = speech_queue.get()
+
+        assert isinstance(segment, AudioSegment)
+        assert segment.type == 'preliminary'
+
+        assert len(segment.chunk_ids) == 3
+        assert segment.chunk_ids == [0, 1, 2]
+
+        # Audio data should include trailing silence chunks
+        # 3 speech chunks (512 * 3) + 2 silence chunks (512 * 2) = 2560 samples
+        expected_length = 512 * 5
+        assert len(segment.data) == expected_length
+
+
+    def test_no_prepend_if_no_previous_silence(self, preprocessor_config, mock_windower):
+        """Verify no prepending if speech starts immediately (no prior silence chunk).
+
+        Logic: speech, speech, speech (from start) → speech_buffer has exactly 3 items.
+        """
+        chunk_queue = queue.Queue()
+        speech_queue = queue.Queue()
+
+        mock_vad = Mock()
+        mock_vad.process_frame = Mock(return_value={'is_speech': True, 'speech_probability': 0.9})
+
+        preprocessor = SoundPreProcessor(
+            chunk_queue=chunk_queue,
+            speech_queue=speech_queue,
+            vad=mock_vad,
+            windower=mock_windower,
+            config=preprocessor_config,
+            verbose=False
+        )
+
+        # Feed 3 speech chunks from start
+        for i in range(3):
+            audio = np.random.randn(512).astype(np.float32) * 0.1
+            chunk = {
+                'audio': audio,
+                'timestamp': 1.0 + i * 0.032,
+            }
+            preprocessor._process_chunk(chunk)
+
+        assert len(preprocessor.speech_buffer) == 3
+
+
+    def test_last_silence_chunk_cleared_after_prepend(self, preprocessor_config, mock_windower):
+        """Verify last_silence_chunk is cleared after prepending to avoid reuse.
+
+        Logic: silence, speech, silence (finalize), silence, speech (two speech segments)
+        After first speech start: last_silence_chunk is None.
+        After finalization and new silence: last_silence_chunk stores new chunk.
+        Second speech segment prepends the NEW silence chunk.
+        """
+        chunk_queue = queue.Queue()
+        speech_queue = queue.Queue()
+
+        # Mock VAD: silence, speech, silence (prob=0.1 to trigger finalization), silence, speech
+        sequence = [
+            ('silence', 0.2),
+            ('speech', 0.9),
+            ('silence', 0.1),  # (1-0.1) = 0.9, not enough yet
+            ('silence', 0.1),  # (1-0.1) = 0.9, total 1.8 >= 1.5, triggers finalization
+            ('silence', 0.2),  # New silence after finalization
+            ('speech', 0.9)    # Second speech segment
+        ]
+        call_count = 0
+        def vad_side_effect(audio):
+            nonlocal call_count
+            is_speech, prob = sequence[call_count]
+            is_speech = (is_speech == 'speech')
+            call_count += 1
+            return {'is_speech': is_speech, 'speech_probability': prob}
+
+        mock_vad = Mock()
+        mock_vad.process_frame = Mock(side_effect=vad_side_effect)
+
+        preprocessor = SoundPreProcessor(
+            chunk_queue=chunk_queue,
+            speech_queue=speech_queue,
+            vad=mock_vad,
+            windower=mock_windower,
+            config=preprocessor_config,
+            verbose=False
+        )
+
+        chunk1 = {
+            'audio': np.random.randn(512).astype(np.float32) * 0.01,
+            'timestamp': 1.0,
+        }
+        preprocessor._process_chunk(chunk1)
+        assert preprocessor.last_silence_chunk is not None
+        first_silence_timestamp = preprocessor.last_silence_chunk['timestamp']
+
+        chunk2 = {
+            'audio': np.random.randn(512).astype(np.float32) * 0.1,
+            'timestamp': 1.032,
+        }
+        preprocessor._process_chunk(chunk2)
+
+        assert preprocessor.last_silence_chunk is None
+
+        # Feed silence chunks to finalize first segment
+        for i in range(2):
+            chunk = {
+                'audio': np.random.randn(512).astype(np.float32) * 0.01,
+                'timestamp': 1.064 + i * 0.032,
+            }
+            preprocessor._process_chunk(chunk)
+
+        # First segment should be finalized
+        assert not speech_queue.empty()
+
+        # Feed new silence (after finalization)
+        chunk5 = {
+            'audio': np.random.randn(512).astype(np.float32) * 0.01,
+            'timestamp': 1.128,
+        }
+        preprocessor._process_chunk(chunk5)
+        assert preprocessor.last_silence_chunk is not None
+        second_silence_timestamp = preprocessor.last_silence_chunk['timestamp']
+        assert second_silence_timestamp != first_silence_timestamp
+
+        # Feed second speech
+        chunk6 = {
+            'audio': np.random.randn(512).astype(np.float32) * 0.1,
+            'timestamp': 1.160,
+        }
+        preprocessor._process_chunk(chunk6)
+
+        # Second speech segment should prepend the NEW silence chunk
+        assert len(preprocessor.speech_buffer) == 2
+        assert preprocessor.speech_buffer[0]['timestamp'] == second_silence_timestamp

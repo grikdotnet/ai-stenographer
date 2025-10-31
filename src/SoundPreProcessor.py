@@ -86,6 +86,10 @@ class SoundPreProcessor:
         self.last_speech_timestamp: float = 0.0
         self.speech_before_silence: bool = False
 
+        # TASK 1: Store last silence chunk for prepending on speech start
+        # Dict with 'audio' and 'timestamp' (no chunk_id - silence chunks don't get IDs)
+        self.last_silence_chunk: Dict[str, Any] | None = None
+
         self.voice_chunk_id_counter: int = 0
 
         self.is_running: bool = False
@@ -126,6 +130,8 @@ class SoundPreProcessor:
         2. Call VAD with normalized audio → get speech probability
         3. Buffer raw audio for STT → preserves original quality
 
+        TASK 1: Store silence chunks for prepending on speech start.
+
         Args:
             chunk_data: Dict with 'audio', 'timestamp' (no chunk_id yet - assigned after VAD)
         """
@@ -144,6 +150,8 @@ class SoundPreProcessor:
             self.speech_before_silence = True
             self._handle_speech_frame(audio, timestamp)
         else:
+            # TASK 1: Store silence chunk for potential prepending
+            self.last_silence_chunk = {'audio': audio, 'timestamp': timestamp}
             self.silence_energy += (1.0 - speech_prob)
             self._handle_silence_frame(audio, timestamp)
 
@@ -202,6 +210,8 @@ class SoundPreProcessor:
         and enforces maximum duration limit by splitting long segments.
         Assigns voice chunk IDs only to speech frames.
 
+        TASK 1: Prepend last silence chunk when speech starts to capture attack transients.
+
         Args:
             audio_chunk: Audio frame data (raw, not normalized)
             timestamp: Timestamp of this frame
@@ -212,7 +222,21 @@ class SoundPreProcessor:
         if not self.is_speech_active:
             self.is_speech_active = True
             self.speech_start_time = timestamp
-            self.speech_buffer = [{'audio': audio_chunk, 'timestamp': timestamp, 'chunk_id': chunk_id}]
+            self.speech_buffer = []
+
+            # TASK 1: Prepend last silence chunk if available
+            if self.last_silence_chunk is not None:
+                # Add silence chunk WITHOUT chunk_id (not counted in chunk_ids list)
+                self.speech_buffer.append({
+                    'audio': self.last_silence_chunk['audio'],
+                    'timestamp': self.last_silence_chunk['timestamp']
+                })
+                # Clear to prevent reuse
+                self.last_silence_chunk = None
+
+            # Add current speech chunk WITH chunk_id
+            self.speech_buffer.append({'audio': audio_chunk, 'timestamp': timestamp, 'chunk_id': chunk_id})
+
             if self.verbose:
                 logging.debug(f"SoundPreProcessor: Starting segment at {self.speech_start_time:.2f}")
         else:
@@ -232,13 +256,19 @@ class SoundPreProcessor:
 
 
     def _handle_silence_frame(self, audio_chunk: np.ndarray, timestamp: float) -> None:
-        """Handle silence, finalize segment if threshold reached.
+        """Handle silence, buffer silence chunks during energy accumulation, finalize when threshold reached.
+
+        TASK 1: Buffer silence chunks to capture release transients (trailing silence).
+        Silence chunks are buffered WITHOUT chunk_id (not counted in chunk_ids list).
 
         Args:
-            audio_chunk: Audio frame data (not used, silence not buffered)
+            audio_chunk: Audio frame data (buffered to capture release transients)
             timestamp: Timestamp of this frame
         """
         if self.is_speech_active:
+            # TASK 1: Buffer silence chunk (no chunk_id, just audio and timestamp)
+            self.speech_buffer.append({'audio': audio_chunk, 'timestamp': timestamp})
+
             if self.verbose:
                 logging.debug(f"SoundPreProcessor: silence_energy={self.silence_energy:.2f}")
 
@@ -256,12 +286,18 @@ class SoundPreProcessor:
         1. Emits to speech_queue (preliminary segment)
         2. Calls windower.process_segment() synchronously
         3. Resets buffering state
+
+        TASK 1: Audio data includes prepended and trailing silence chunks,
+        but chunk_ids only includes speech chunks (those with 'chunk_id' key).
         """
         if not self.speech_buffer:
             return
 
+        # Include ALL chunks in audio data (prepended silence + speech + trailing silence)
         audio_data = np.concatenate([chunk['audio'] for chunk in self.speech_buffer])
-        chunk_ids = [chunk['chunk_id'] for chunk in self.speech_buffer]
+
+        # Only include chunks with chunk_id (speech chunks only, not silence)
+        chunk_ids = [chunk['chunk_id'] for chunk in self.speech_buffer if 'chunk_id' in chunk]
 
         end_time = self.speech_start_time + (len(audio_data) / self.sample_rate)
 
