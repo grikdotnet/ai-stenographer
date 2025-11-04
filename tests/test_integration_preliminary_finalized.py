@@ -110,6 +110,8 @@ class TestPreliminaryFinalizedIntegration:
             segment = AudioSegment(
                 type='preliminary',
                 data=np.random.randn(int(0.15 * 16000)).astype(np.float32) * 0.1,
+                left_context=np.array([], dtype=np.float32),
+                right_context=np.array([], dtype=np.float32),
                 start_time=start,
                 end_time=end,
                 chunk_ids=[i]
@@ -137,6 +139,8 @@ class TestPreliminaryFinalizedIntegration:
         preliminary = AudioSegment(
             type='preliminary',
             data=np.random.randn(3200).astype(np.float32) * 0.1,
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=0.0,
             end_time=0.2,
             chunk_ids=[0]
@@ -144,6 +148,8 @@ class TestPreliminaryFinalizedIntegration:
         finalized = AudioSegment(
             type='finalized',
             data=np.random.randn(48000).astype(np.float32) * 0.1,
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=0.0,
             end_time=3.0,
             chunk_ids=[0, 1, 2, 3, 4]
@@ -259,6 +265,8 @@ class TestPreliminaryFinalizedIntegration:
         segment = AudioSegment(
             type='finalized',
             data=np.random.randn(48000).astype(np.float32) * 0.1,
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=1.234,
             end_time=4.567,
             chunk_ids=[0, 1, 2]

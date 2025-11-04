@@ -1,567 +1,479 @@
-# Speech Recognition Quality Improvement Plan
+# Implementation Plan: Context-Aware Speech Recognition with Token Filtering
 
-## Problem Statement
-
-Short words (<100ms) are poorly recognized.
-1. **No pre-speech padding**: Attack transients are lost due to RMS gain ramp-up (�=0.85, takes 3-4 chunks to stabilize)
-2. **No post-speech padding**: Release transients are cut off when silence energy threshold is reached
-3. **Segments can be very short**: Below NeMo's 100ms training minimum
-4. **Aggressive detection parameters**: Low threshold (0.3) and quick finalization (1.2 energy) lead to premature segmentation
-
-## Solution Overview
-
-Split into two tasks:
-- **Task 1**: Prepend/append real sound chunks (no artificial silence padding)
-- **Task 2**: Add silence padding in Recognizer for fixed-duration inference with shader reuse
-
-## Config Changes (User-Tunable Parameters)
-
-```json
-{
-  "audio": {
-    "silence_energy_threshold": 1.5,  // Was 1.2 � requires 3 chunks instead of 2
-    "rms_normalization": {
-      "target_rms": 0.07,              // Was 0.05 � better VAD response
-      "silence_threshold": 0.0001,     // Unchanged
-      "gain_smoothing": 0.7            // Was 0.85 � faster gain ramp-up
-    }
-  },
-  "vad": {
-    "threshold": 0.4                   // Was 0.3 � more conservative
-  }
-}
-```
+## Overview
+Implement a three-phase refactoring to add left/right audio context for better STT quality while filtering hallucinated tokens based on timestamps.
 
 ---
 
-# Task 1: Prepend/Append Real Sound Chunks
+## Task 1: AudioSegment Refactoring for Context Support
 
-## Objective
-Capture attack and release transients by prepending the last silence chunk and appending silence chunks during energy accumulation.
+### 1.1 Update AudioSegment Dataclass
+**File:** `src/types.py`
 
-## Design Changes
-
-### 1. Add `last_silence_chunk` Variable
-Store the most recent silence chunk for prepending when speech starts.
-
-### 2. Prepend Last Silence Chunk on Speech Start
-When `is_speech=True` and `is_speech_active=False`, prepend the stored silence chunk to recover lost speech onset.
-
-### 3. Buffer Silence Chunks During Energy Accumulation
-Modify existing `_handle_silence_frame()` to append silence chunks to `self.speech_buffer` (same as speech chunks) while accumulating energy, until threshold is reached.
-
-### 4. Update Config Parameters
-- `silence_energy_threshold`: 1.2 � 1.5 (ensures ~2-3 trailing chunks)
-- `target_rms`: 0.05 � 0.07
-- `gain_smoothing`: 0.85 � 0.7
-- `vad.threshold`: 0.3 � 0.4
-
----
-
-## TDD Implementation Plan for Task 1
-
-### Phase 1: Design New Tests
-
-#### Test 1.1: `test_last_silence_chunk_stored`
-**Purpose**: Verify that silence chunks are stored in `last_silence_chunk` variable.
-
-**Setup**:
-- Mock VAD to return `is_speech=False` for first 2 chunks
-- Feed 2 silence chunks
-
-**Assertion**:
-- `preprocessor.last_silence_chunk` is not None
-- Contains the second chunk's audio and timestamp
-
-**Location**: `tests/test_sound_preprocessor.py`
-
----
-
-#### Test 1.2: `test_last_silence_chunk_prepended_on_speech_start`
-**Purpose**: Verify that the last silence chunk is prepended when speech starts.
-
-**Setup**:
-- Mock VAD: silence, silence, speech, speech
-- Feed 4 chunks
-
-**Assertion**:
-- `speech_buffer` has 3 items (1 prepended + 2 speech chunks)
-- First item in buffer matches `last_silence_chunk`
-- AudioSegment's `chunk_ids` contains only the 2 speech chunk IDs (prepended silence not included)
-
-**Location**: `tests/test_sound_preprocessor.py`
-
----
-
-#### Test 1.3: `test_silence_chunks_buffered_during_energy_accumulation`
-**Purpose**: Verify that silence chunks are buffered while counting energy.
-
-**Setup**:
-- Mock VAD: speech (3 chunks), then silence with prob=0.25
-- silence_energy_threshold = 1.5
-- Feed chunks until energy reaches threshold
-
-**Assertion**:
-- `speech_buffer` contains speech chunks + trailing silence chunks
-- AudioSegment's audio data includes trailing silence
-- AudioSegment's `chunk_ids` contains only speech chunk IDs (trailing silence not included)
-
-**Location**: `tests/test_sound_preprocessor.py`
-
----
-
-#### Test 1.4: skip
-
----
-
-#### Test 1.5: `test_no_prepend_if_no_previous_silence`
-**Purpose**: Verify no prepending if speech starts immediately (no prior silence chunk).
-
-**Setup**:
-- Mock VAD: speech, speech, speech (from start)
-- Feed 3 speech chunks
-
-**Assertion**:
-- `speech_buffer` has exactly 3 items
-
-**Location**: `tests/test_sound_preprocessor.py`
-
----
-
-#### Test 1.6: `test_last_silence_chunk_cleared_after_prepend`
-**Purpose**: Verify `last_silence_chunk` is cleared after prepending to avoid reuse.
-
-**Setup**:
-- Mock VAD: silence, speech, silence, speech (two speech segments)
-- Feed chunks
-
-**Assertion**:
-- After first speech start: `last_silence_chunk` is None
-- After second silence: `last_silence_chunk` stores new chunk
-- Second speech segment prepends the NEW silence chunk
-
-**Location**: `tests/test_sound_preprocessor.py`
-
----
-
-### Phase 2: Update Existing Tests
-
-#### Test 2.1: Update `test_preliminary_segment_emission_on_silence`
-**Current behavior**: Emits segment with 3 speech chunks only.
-
-**Change needed**: With trailing buffering, segment audio will include trailing silence chunks.
-
-**Update**:
-- Keep existing assertion: `len(segment.chunk_ids) == 3` (only speech chunks)
-- Add assertion: Verify audio data length is longer than 3 chunks (includes trailing silence)
-- Expected audio length: ~5 chunks worth (3 speech + 2 trailing silence)
-
-**Location**: `tests/test_sound_preprocessor.py:198`
-
----
-
-#### Test 2.2: skip
-
----
-
-#### Test 2.3: Update `test_segment_finalization_at_energy_threshold`
-**Current behavior**: Tests finalization when threshold is reached.
-
-**Change needed**: Adjust VAD probabilities for new threshold value (1.5 instead of 1.2).
-
-**Update**:
-- Update VAD probabilities to reach new threshold (1.5)
-
-**Location**: `tests/test_sound_preprocessor.py:298`
-
----
-
-#### Test 2.4: Update `test_timestamp_accuracy`
-**Current behavior**: Expects end_time based only on speech chunks.
-
-**Change needed**: With prepended and trailing silence chunks, end_time must include total audio duration.
-
-**Update**:
-- Calculate expected end_time = start_time + (total_audio_length / sample_rate)
-- Total audio = prepended chunk + speech chunks + trailing chunks
-- Example: 1 prepended + 3 speech + 2 trailing = 6 chunks = 192ms
-- Expected: start_time=1.0, end_time=1.192 (not 1.096)
-
-**Location**: `tests/test_sound_preprocessor.py:506`
-
----
-
-### Phase 3: Implementation Steps (TDD)
-
-1. **Write new tests (1.1-1.6)** - All tests should FAIL initially
-2. **Run pytest** - Confirm all new tests fail with expected errors
-3. **Add `last_silence_chunk` variable** to `SoundPreProcessor.__init__()`
-4. **Implement storing logic** in `_process_chunk()` when `is_speech=False`
-5. **Run Test 1.1** - Should PASS
-6. **Implement prepending logic** in `_handle_speech_frame()` for `not self.is_speech_active`
-7. **Run Test 1.2, 1.5, 1.6** - Should PASS
-8. **Implement buffering silence chunks** in `_handle_silence_frame()` (change line 234-249)
-9. **Run Test 1.3** - Should PASS
-10. **Update config file** with new parameters
-12. **Update existing tests (2.1, 2.3, 2.4)** to match new behavior
-13. **Run all tests** - All should PASS
-14. **Manual testing** with `python main.py -v` - Verify short words recognized better
-
----
-
-### Code Changes Summary for Task 1
-
-**File**: `src/SoundPreProcessor.py`
-
-**Changes**:
-1. Add `self.last_silence_chunk = None` to `__init__()`
-2. In `_process_chunk()`:
-   - When `is_speech=False`: Store chunk in `last_silence_chunk`
-3. In `_handle_speech_frame()`:
-   - When `not self.is_speech_active` and `last_silence_chunk is not None`:
-     - Prepend it to `speech_buffer`
-     - Set `last_silence_chunk = None`
-4. **Modify** existing `_handle_silence_frame()`:
-   - When `self.is_speech_active`:
-     - Append silence chunks to buffer: `self.speech_buffer.append({'audio': audio_chunk, 'timestamp': timestamp})`
-     - Continue with existing energy accumulation and finalization logic
-5. In `_finalize_segment()`:
-   - Extract audio data from all buffered chunks (speech + silence)
-   - This way prepended/trailing silence is in audio data
-
-**File**: `config/stt_config.json`
-
-**Changes**:
-```json
-{
-  "audio": {
-    "silence_energy_threshold": 1.5,
-    "rms_normalization": {
-      "target_rms": 0.07,
-      "gain_smoothing": 0.7
-    }
-  },
-  "vad": {
-    "threshold": 0.4
-  }
-}
-```
-
----
-
-# Task 2: Add Silence Padding in Recognizer
-
-## Objective
-Add silence padding to audio segments before STT inference to:
-1. Meet NeMo's 100ms minimum duration requirement
-2. Create fixed-duration batches for shader reuse (performance optimization)
-
-## Design Approach
-
-### Strategy
-- **No changes to SoundPreProcessor**: It emits raw segments as-is
-- **Padding in Recognizer**: Add silence before/after audio in `recognize_window()` method
-- **No metadata needed**: Recognizer applies padding logic directly based on audio length
-
-### Padding Logic
-
+**Changes:**
 ```python
-def _pad_audio_for_recognition(self, audio: np.ndarray, sample_rate: int) -> np.ndarray:
-    """Pad audio to optimal duration for STT model inference.
+@dataclass
+class AudioSegment:
+    type: Literal['preliminary', 'finalized', 'flush']
+    data: npt.NDArray[np.float32]           # Speech audio (concatenated)
+    left_context: npt.NDArray[np.float32]   # NEW: Pre-speech context
+    right_context: npt.NDArray[np.float32]  # NEW: Post-speech context
+    start_time: float                        # Start of data (not context)
+    end_time: float                          # End of data (not context)
+    chunk_ids: list[int] = field(default_factory=list)
+```
 
-    Logic:
-    - Pre-padding: Always add 96ms (3 chunks) silence before audio
-    - Post-padding: Pad to minimum 100ms total duration
-    - Batch-size optimization: Round up to nearest 500ms for shader reuse
+**Decision:** Keep as concatenated numpy arrays (NOT list of chunks) because:
+- Simpler implementation
+- Model needs concatenated array anyway
+- Memory savings from chunk reuse are minimal (~50KB max)
+- No need for complex deque indexing logic
+
+### 1.2 Update SoundPreProcessor
+**File:** `src/SoundPreProcessor.py`
+
+**Changes:**
+1. **Remove `last_silence_chunk`** property and all related logic
+2. **Add circular buffer** (48 chunks = 1.536s @ 32ms/chunk):
+   ```python
+   CONTEXT_BUFFER_SIZE = 48  # Class constant
+   self.context_buffer: deque = deque(maxlen=48)
+   ```
+3. **Update `_process_chunk()`**: Always append to context_buffer (speech or silence)
+4. **Update `_finalize_segment()`**:
+   ```python
+   # Extract left context from buffer (everything before speech_start_index)
+   left_context_chunks = [buffer items before speech start]
+   left_context = np.concatenate(left_context_chunks) if left_context_chunks else np.array([], dtype=np.float32)
+
+   # Extract right context (accumulated silence chunks after speech)
+   right_context_chunks = [silence chunks at end of speech_buffer]
+   right_context = np.concatenate(right_context_chunks) if right_context_chunks else np.array([], dtype=np.float32)
+
+   # Extract data (only speech chunks)
+   data_chunks = [speech chunks only]
+   data = np.concatenate(data_chunks)
+
+   segment = AudioSegment(
+       type='preliminary',
+       data=data,
+       left_context=left_context,
+       right_context=right_context,
+       start_time=speech_start_time,
+       end_time=end_time,
+       chunk_ids=chunk_ids
+   )
+   ```
+
+### 1.3 Update AdaptiveWindower
+**File:** `src/AdaptiveWindower.py`
+
+**Changes:**
+- Update `_emit_window()` and `flush()` to pass empty contexts:
+  ```python
+  window = AudioSegment(
+      type='finalized',  # or 'flush'
+      data=window_audio,
+      left_context=np.array([], dtype=np.float32),   # No context for windows
+      right_context=np.array([], dtype=np.float32),  # No context for windows
+      start_time=start_time,
+      end_time=end_time,
+      chunk_ids=chunk_ids
+  )
+  ```
+
+**Rationale:** Finalized windows already have proper context from preliminary segments - no additional context needed.
+
+---
+
+## Task 2: Timestamped Recognition
+
+### 2.1 Update Model Loading
+**File:** `src/pipeline.py`
+
+**Change line 52:**
+```python
+# Before:
+self.model: TextResultsAsrAdapter = onnx_asr.load_model(...)
+
+# After:
+base_model = onnx_asr.load_model(...)
+self.model: TimestampedResultsAsrAdapter = base_model.with_timestamps()
+```
+
+**Add import:**
+```python
+from onnx_asr.adapters import TimestampedResultsAsrAdapter
+from onnx_asr.asr import TimestampedResult
+```
+
+### 2.2 Update Recognizer
+**File:** `src/Recognizer.py`
+
+**Changes to `__init__()`:**
+```python
+def __init__(self,
+             speech_queue: queue.Queue,
+             text_queue: queue.Queue,
+             model: TimestampedResultsAsrAdapter,  # Type changed
+             sample_rate: int = 16000,  # NEW parameter
+             verbose: bool = False) -> None:
+    # ... existing fields ...
+    self.sample_rate = sample_rate
+```
+
+**Changes to `recognize_window()`:**
+```python
+def recognize_window(self, window_data: ChunkQueueItem) -> Optional[RecognitionResult]:
+    # Concatenate context + data + context for recognition
+    audio_parts = []
+    if window_data.left_context.size > 0:
+        audio_parts.append(window_data.left_context)
+    audio_parts.append(window_data.data)
+    if window_data.right_context.size > 0:
+        audio_parts.append(window_data.right_context)
+
+    full_audio = np.concatenate(audio_parts) if len(audio_parts) > 1 else window_data.data
+
+    # Recognize with timestamps
+    result: TimestampedResult = self.model.recognize(full_audio)
+
+    if not result.text or not result.text.strip():
+        return None
+
+    # Calculate context boundaries in seconds
+    left_context_duration = len(window_data.left_context) / self.sample_rate
+    data_duration = len(window_data.data) / self.sample_rate
+    data_start = left_context_duration
+    data_end = left_context_duration + data_duration
+
+    # Filter tokens within data region
+    filtered_text = self._filter_tokens_by_timestamp(
+        result.text,
+        result.tokens,
+        result.timestamps,
+        data_start,
+        data_end
+    )
+
+    if not filtered_text or not filtered_text.strip():
+        return None
+
+    # Create result with filtered text, original timing
+    status = {'preliminary': 'preliminary', 'finalized': 'final', 'flush': 'flush'}[window_data.type]
+
+    return RecognitionResult(
+        text=filtered_text,
+        start_time=window_data.start_time,
+        end_time=window_data.end_time,
+        status=status,
+        chunk_ids=window_data.chunk_ids
+    )
+```
+
+**New private method:**
+```python
+def _filter_tokens_by_timestamp(self,
+                                 text: str,
+                                 tokens: list[str] | None,
+                                 timestamps: list[float] | None,
+                                 data_start: float,
+                                 data_end: float) -> str:
+    """Filter tokens to only those within data region (exclude context).
 
     Args:
-        audio: Raw audio data from AudioSegment
-        sample_rate: Audio sample rate (16000 Hz)
+        text: Full recognized text
+        tokens: Token list from TimestampedResult (subword units with � prefix)
+        timestamps: Timestamp list (in seconds, relative to audio start)
+        data_start: Start of data region in seconds
+        data_end: End of data region in seconds
 
     Returns:
-        Padded audio ready for STT inference
+        Filtered text containing only tokens from data region
     """
-    # Pre-padding: 96ms silence (3 chunks � 32ms)
-    pre_padding_samples = int(0.096 * sample_rate)  # 1536 samples
-    pre_silence = np.zeros(pre_padding_samples, dtype=np.float32)
+    if not tokens or not timestamps:
+        # No timestamps available - return full text (fallback)
+        return text
 
-    # Combine
-    padded_audio = np.concatenate([pre_silence, audio])
+    # Filter tokens within data boundaries
+    filtered_tokens = []
+    for token, ts in zip(tokens, timestamps):
+        if data_start <= ts <= data_end:
+            filtered_tokens.append(token)
 
-    # Minimum duration: 100ms (NeMo requirement)
-    min_samples = int(0.1 * sample_rate)  # 1600 samples
-    if len(padded_audio) < min_samples:
-        post_padding_samples = min_samples - len(padded_audio)
-        post_silence = np.zeros(post_padding_samples, dtype=np.float32)
-        padded_audio = np.concatenate([padded_audio, post_silence])
+    if not filtered_tokens:
+        return ""
 
-    # Optional: Round to nearest 500ms for batch optimization
-    # (This can be enabled later for performance tuning)
+    # Reconstruct text from filtered tokens
+    # Tokens use � (U+2581) for word boundaries
+    reconstructed = ''.join(filtered_tokens)
+    reconstructed = reconstructed.replace('�', ' ')
+    reconstructed = reconstructed.strip()
 
-    return padded_audio
+    return reconstructed
 ```
 
 ---
 
-## TDD Implementation Plan for Task 2
+## Task 3: Context Buffer Implementation
 
-### Phase 1: Design New Tests
+### 3.1 SoundPreProcessor Circular Buffer
+**File:** `src/SoundPreProcessor.py`
 
-#### Test 2.1: `test_recognizer_pads_short_audio`
-**Purpose**: Verify Recognizer pads audio shorter than 100ms.
+**Implementation details:**
 
-**Setup**:
-- Mock model that captures audio length
-- Create AudioSegment with 50ms audio (800 samples)
+```python
+class SoundPreProcessor:
+    CONTEXT_BUFFER_SIZE = 48  # 1.536s @ 32ms/chunk
 
-**Assertion**:
-- Model receives audio >= 1600 samples (100ms minimum)
-- Pre-padding of ~1536 samples (96ms) is present
-- Audio starts with near-zero values (silence padding)
+    def __init__(self, ...):
+        # Remove: self.last_silence_chunk
+        self.context_buffer: deque = deque(maxlen=self.CONTEXT_BUFFER_SIZE)
+        self.speech_start_index: int | None = None  # Index in buffer when speech started
 
-**Location**: `tests/test_recognizer.py`
+    def _handle_speech_frame(self, audio_chunk, timestamp, chunk_id):
+        # Add to circular buffer
+        self.context_buffer.append({
+            'audio': audio_chunk,
+            'timestamp': timestamp,
+            'chunk_id': chunk_id,
+            'is_speech': True
+        })
 
----
+        if not self.is_speech_active:
+            # Mark where speech started in buffer
+            self.speech_start_index = len(self.context_buffer) - 1
+            self.is_speech_active = True
+            self.speech_start_time = timestamp
 
-#### Test 2.2: `test_recognizer_adds_pre_padding_to_all_segments`
-**Purpose**: Verify all segments receive 96ms pre-padding, regardless of length.
+        # Add to speech buffer (for data extraction)
+        self.speech_buffer.append({
+            'audio': audio_chunk,
+            'timestamp': timestamp,
+            'chunk_id': chunk_id
+        })
 
-**Setup**:
-- Mock model that captures audio
-- Create segments: 50ms, 100ms, 200ms, 1000ms
+        # Max duration check (unchanged)
+        if (timestamp - self.speech_start_time) * 1000 >= self.max_speech_duration_ms:
+            self._finalize_segment()
 
-**Assertion**:
-- All segments receive 96ms (1536 samples) pre-padding
-- First 1536 samples are near-zero (silence)
+    def _handle_silence_frame(self, audio_chunk, timestamp, chunk_id):
+        # Always add to circular buffer
+        self.context_buffer.append({
+            'audio': audio_chunk,
+            'timestamp': timestamp,
+            'chunk_id': chunk_id,
+            'is_speech': False
+        })
 
-**Location**: `tests/test_recognizer.py`
+        if self.is_speech_active:
+            # Accumulate trailing silence in speech_buffer
+            self.speech_buffer.append({
+                'audio': audio_chunk,
+                'timestamp': timestamp
+                # No chunk_id for silence
+            })
 
----
+            # Check silence energy threshold (unchanged)
+            speech_prob = self.vad.process_frame(normalized_audio)
+            self.silence_energy += (1.0 - speech_prob)
 
-#### Test 2.3: `test_recognizer_preserves_original_audio_data`
-**Purpose**: Verify padding doesn't modify original audio, only prepends/appends.
+            if self.silence_energy >= self.silence_energy_threshold:
+                self._finalize_segment()
 
-**Setup**:
-- Create AudioSegment with distinct audio pattern (sine wave)
-- Mock model captures audio
+    def _finalize_segment(self):
+        if not self.speech_buffer:
+            return
 
-**Assertion**:
-- After skipping pre-padding samples, original audio is intact
-- No amplitude changes or modifications to speech content
+        # Extract left context from circular buffer
+        left_context_chunks = []
+        if self.speech_start_index is not None:
+            # Get all chunks before speech start (available in buffer)
+            buffer_list = list(self.context_buffer)
+            for i in range(self.speech_start_index):
+                if i < len(buffer_list):
+                    left_context_chunks.append(buffer_list[i]['audio'])
 
-**Location**: `tests/test_recognizer.py`
+        left_context = (np.concatenate(left_context_chunks)
+                       if left_context_chunks
+                       else np.array([], dtype=np.float32))
 
----
+        # Extract data (speech chunks only from speech_buffer)
+        data_chunks = [chunk['audio'] for chunk in self.speech_buffer
+                      if 'chunk_id' in chunk]
+        data = np.concatenate(data_chunks)
 
-#### Test 2.4: `test_recognizer_no_padding_affects_timing`
-**Purpose**: Verify RecognitionResult timestamps reflect ORIGINAL segment times, not padded audio.
+        # Extract right context (trailing silence from speech_buffer)
+        right_context_chunks = [chunk['audio'] for chunk in self.speech_buffer
+                               if 'chunk_id' not in chunk]
+        right_context = (np.concatenate(right_context_chunks)
+                        if right_context_chunks
+                        else np.array([], dtype=np.float32))
 
-**Setup**:
-- Create AudioSegment with start_time=1.0, end_time=1.2
-- Recognizer pads audio
+        # Extract chunk_ids (speech only)
+        chunk_ids = [chunk['chunk_id'] for chunk in self.speech_buffer
+                    if 'chunk_id' in chunk]
 
-**Assertion**:
-- RecognitionResult.start_time == 1.0 (unchanged)
-- RecognitionResult.end_time == 1.2 (unchanged)
-- Timing metadata preserved despite audio padding
+        # Create segment with contexts
+        segment = AudioSegment(
+            type='preliminary',
+            data=data,
+            left_context=left_context,
+            right_context=right_context,
+            start_time=self.speech_start_time,
+            end_time=end_time,
+            chunk_ids=chunk_ids
+        )
 
-**Location**: `tests/test_recognizer.py`
+        self.speech_queue.put(segment)
 
----
+        # Reset state
+        self.speech_buffer.clear()
+        self.is_speech_active = False
+        self.speech_start_index = None
+        self.silence_energy = 0.0
 
-#### Test 2.5: `test_recognizer_padding_with_preliminary_segments`
-**Purpose**: Verify preliminary segments (short, single-word) get proper padding.
-
-**Setup**:
-- Create preliminary AudioSegment with 60ms audio
-- Mock model
-
-**Assertion**:
-- Padded to >= 100ms
-- Pre-padding included
-- RecognitionResult.status == 'preliminary' (unchanged)
-
-**Location**: `tests/test_recognizer.py`
-
----
-
-#### Test 2.6: `test_recognizer_padding_with_finalized_segments`
-**Purpose**: Verify finalized segments (3s windows) also receive pre-padding.
-
-**Setup**:
-- Create finalized AudioSegment with 3s audio (48000 samples)
-- Mock model
-
-**Assertion**:
-- Pre-padding of 96ms added
-- Total length ~3.096s
-- RecognitionResult.status == 'final' (unchanged)
-
-**Location**: `tests/test_recognizer.py`
-
----
-
-#### Test 2.7: `test_padding_does_not_create_hallucination`
-**Purpose**: Verify silence padding doesn't cause model to hallucinate text.
-
-**Setup**:
-- Real Parakeet model (not mock)
-- Create AudioSegment with ONLY silence (no speech)
-- Add padding
-
-**Assertion**:
-- Model returns empty string or None
-- Recognizer filters it out (returns None)
-- No phantom text generated from padding
-
-**Location**: `tests/test_recognizer.py` (integration test, may be slow)
-
----
-
-### Phase 2: Update Existing Tests
-
-#### Test 2.8: Update existing Recognizer tests
-**Current behavior**: Tests assume model receives original audio unchanged.
-
-**Change needed**: Tests must account for padding.
-
-**Tests to update**:
-- `test_recognizes_preliminary_segments`
-- `test_recognizes_finalized_segments`
-- `test_preserves_timing_information`
-
-**Update**:
-- Mock model should expect padded audio length
-- Or mock the padding method to return original audio (isolate padding logic)
-
-**Location**: `tests/test_recognizer.py`
+        # Call windower (unchanged)
+        self.windower.process_segment(segment)
+```
 
 ---
 
-### Phase 3: Implementation Steps (TDD)
+## Test Strategy
 
-1. **Write new tests (2.1-2.7)** - All tests should FAIL initially
-2. **Run pytest** - Confirm failures
-3. **Implement `_pad_audio_for_recognition()` method** in `src/Recognizer.py`
-4. **Update `recognize_window()` method** to call padding before `model.recognize()`
-5. **Run Test 2.1, 2.2** - Should PASS
-6. **Verify pre-padding logic**
-7. **Run Test 2.3, 2.4** - Should PASS (timing preserved)
-8. **Run Test 2.5, 2.6** - Should PASS (works for both segment types)
-9. **Run Test 2.7** - May need real model, should PASS (no hallucination)
-10. **Update existing tests (2.8)** to work with padding
-11. **Run all Recognizer tests** - All should PASS
-12. **Integration testing** - Run full pipeline, verify quality improvement
+### Phase 1: Task 1 Tests (AudioSegment + Context Buffer)
 
----
+**New Tests:**
+1. `tests/test_sound_preprocessor.py`:
+   - `test_circular_buffer_initialization()` - Verify buffer created with size 48
+   - `test_context_buffer_fills_before_speech()` - Verify buffer accumulates silence before speech
+   - `test_left_context_extraction()` - Verify left context extracted from buffer
+   - `test_right_context_extraction()` - Verify right context from trailing silence
+   - `test_early_speech_small_left_context()` - Verify handling when speech starts within first 18 chunks
+   - `test_no_left_context_at_startup()` - Verify empty left context when speech starts immediately
 
-### Code Changes Summary for Task 2
+**Tests to Remove:**
+2. `tests/test_sound_preprocessor.py`:
+   - `test_last_silence_chunk_prepended()` (lines 622-721) - Feature removed
+   - `test_last_silence_chunk_cleared()` - Feature removed
+   - Any other tests checking `last_silence_chunk` property
 
-**File**: `src/Recognizer.py`
+**Tests to Update:**
+3. `tests/test_sound_preprocessor.py`:
+   - All tests creating AudioSegment must add `left_context` and `right_context` fields
+   - Update assertions to check context fields
 
-**Changes**:
-1. Add `_pad_audio_for_recognition()` method (see logic above)
-2. In `recognize_window()` method:
-   - Call `audio = self._pad_audio_for_recognition(window_data.data, sample_rate=16000)`
-   - Pass padded audio to `model.recognize(audio)`
-3. Timing metadata (start_time, end_time) remains unchanged
-4. No changes to AudioSegment or RecognitionResult data structures
+4. `tests/test_adaptive_windower.py`:
+   - Update all AudioSegment creations to include empty contexts
+   - Verify finalized windows have empty contexts
 
----
+5. `tests/test_recognizer.py`:
+   - Update all AudioSegment creations to include context fields
 
-## Testing Strategy
+### Phase 2: Task 2 Tests (Timestamped Recognition)
 
-### Unit Tests
-- **SoundPreProcessor**: 8 new tests + 4 updated tests
-- **Recognizer**: 7 new tests + update existing tests
+**New Tests:**
+6. `tests/test_recognizer.py`:
+   - `test_recognize_with_timestamps()` - Verify model returns TimestampedResult
+   - `test_filter_tokens_by_timestamp()` - Unit test for token filtering
+   - `test_filter_tokens_all_in_range()` - All tokens within data region
+   - `test_filter_tokens_partial_overlap()` - Some tokens in context, some in data
+   - `test_filter_tokens_none_in_range()` - All tokens in context (return empty)
+   - `test_filter_tokens_no_timestamps()` - Fallback when timestamps unavailable
+   - `test_context_concatenation()` - Verify left+data+right concatenated correctly
 
-### Integration Tests
-- Run `python main.py -v` with short word utterances:
-  - "go"
-  - "yes"
-  - "no"
-  - "I"
-  - "a cat"
-- Verify:
-  - Preliminary text appears correctly (no missing letters)
-  - Final text matches ground truth
-  - No hallucinated text from padding
+**Tests to Update:**
+7. `tests/test_recognizer.py`:
+   - Update mock model to return TimestampedResult instead of str
+   - Update 3 existing tests for new signature
 
-### Performance Tests (Optional)
-- Measure recognition latency before/after changes
-- Expected: Minimal impact (<10ms increase due to padding)
-- If shader reuse is implemented: Measure throughput improvement
+### Phase 3: Integration Tests
 
----
-
-## Expected Outcomes
-
-### Task 1 Results
-- Last silence chunk (32ms) prepended to segments � recovers attack transients
-- Trailing silence chunks (64-96ms) appended � captures release transients
-- Faster gain ramp-up (�=0.7) � fewer lost chunks at speech onset
-- Higher VAD threshold (0.4) � fewer false positives from noise
-- Higher silence energy (1.5) � more natural segmentation
-
-### Task 2 Results
-- All segments meet NeMo's 100ms minimum � better model accuracy
-- Pre-padding (96ms silence) � consistent acoustic context
-- No hallucination from artificial silence � clean recognition
-- Timing metadata preserved � GUI displays correct timestamps
-
-### Combined Impact
-- **Short words**: "go", "no", "yes" recognized with complete phonemes
-- **Preliminary quality**: Faster, more accurate instant feedback
-- **Final quality**: High-quality recognition maintained
-- **User experience**: Smoother real-time transcription, fewer corrections needed
+**New Tests:**
+8. `tests/test_integration_context_filtering.py`:
+   - `test_end_to_end_with_context()` - Full pipeline with real audio
+   - `test_hallucination_filtering()` - Verify context prevents "yeah"/"mm-hmm" hallucinations
+   - `test_short_word_with_context()` - Verify 50-128ms words recognized correctly
 
 ---
 
-## Implementation Order
+## Implementation Order (TDD: Tests First!)
 
-1.  Generate and review this plan
-2. **Task 1 - Phase 1**: Write new tests (1.1-1.6)
-3. **Task 1 - Phase 2**: Update existing tests (2.1-2.4)
-4. **Task 1 - Phase 3**: Implement SoundPreProcessor changes (TDD cycle)
-5. **Task 1 - Testing**: Manual verification with short words
-6. **Task 2 - Phase 1**: Write new tests (2.1-2.7)
-7. **Task 2 - Phase 2**: Update existing tests (2.8)
-8. **Task 2 - Phase 3**: Implement Recognizer padding (TDD cycle)
-9. **Integration Testing**: Full pipeline validation
-10. **Documentation**: Update CLAUDE.md with new parameters and logic
+### Phase 1: AudioSegment + Context Buffer
+
+1. **Phase 1a:** Update AudioSegment dataclass (add context fields) - *minimal change to enable tests*
+2. **Phase 1b:** Update AdaptiveWindower (pass empty contexts) - *minimal change to enable tests*
+3. **Phase 1c:** Update all existing tests to use new AudioSegment fields (left_context, right_context)
+4. **Phase 1d:** Remove obsolete tests (last_silence_chunk related)
+5. **Phase 1e:** Write NEW Phase 1 tests (context buffer) - *tests will FAIL*
+6. **Phase 1f:** Implement circular buffer in SoundPreProcessor - *make tests PASS*
+7. **Phase 1g:** Run Phase 1 tests, verify all GREEN
+
+### Phase 2: Timestamped Recognition
+
+8. **Phase 2a:** Write Phase 2 tests (token filtering) - *tests will FAIL*
+9. **Phase 2b:** Update pipeline.py model loading (with_timestamps())
+10. **Phase 2c:** Implement token filtering in Recognizer - *make tests PASS*
+11. **Phase 2d:** Run Phase 2 tests, verify all GREEN
+
+### Phase 3: Integration & Validation
+
+12. **Phase 3a:** Write integration tests - *tests will FAIL*
+13. **Phase 3b:** Fix any integration issues - *make tests PASS*
+14. **Phase 3c:** Run FULL test suite, verify all GREEN
+15. **Phase 3d:** Manual testing with real audio
+
+---
+
+## Design Constants (No Config Changes)
+
+```python
+# In SoundPreProcessor
+CONTEXT_BUFFER_SIZE = 48  # chunks (1.536s @ 32ms/chunk)
+
+# In Recognizer
+# sample_rate passed from Pipeline (16000)
+```
 
 ---
 
 ## Risks and Mitigations
 
-### Risk 1: Prepended silence chunk contains previous speech
-**Mitigation**: Test with rapid speech scenarios (pause <300ms). If issues occur, add conditional logic based on RMS level.
+### Risk 1: Token filtering too aggressive
+- **Mitigation:** Log filtered vs original text in verbose mode
+- **Fallback:** Return full text if no tokens in range
 
-### Risk 2: Silence padding causes hallucination
-**Mitigation**: Test with real Parakeet model (Test 2.7). If hallucination occurs, reduce padding amount or adjust padding pattern.
+### Risk 2: 80ms timestamp resolution insufficient
+- **Mitigation:** Use timestamp boundaries with tolerance (�40ms)
+- **Monitor:** Track filtering accuracy in tests
 
-### Risk 3: Trailing silence chunks add latency
-**Mitigation**: With threshold=1.5, only ~64-96ms added. Acceptable trade-off for quality. Monitor in integration tests.
+### Risk 3: Circular buffer index tracking complex
+- **Mitigation:** Thorough unit tests for edge cases
+- **Simplification:** Convert deque to list for indexing when needed
 
-### Risk 4: Config changes break existing behavior
-**Mitigation**: All config changes are backward-compatible (no removed parameters). Run full test suite before deployment.
+### Risk 4: Memory increase from context storage
+- **Impact:** ~50KB per segment (1.5s @ 16kHz = 24KB per context)
+- **Acceptable:** Small compared to model memory (600MB+)
 
 ---
 
 ## Success Criteria
 
--  All unit tests pass (both new and updated)
--  Integration tests show improved short word recognition
--  No regression in long utterance recognition quality
--  Latency increase < 100ms
--  No hallucinated text from padding
--  Code follows SOLID principles and TDD approach
--  Documentation updated with new parameters and behavior
+1.  All existing tests pass with updated AudioSegment
+2.  Context buffer correctly extracts left/right contexts
+3.  Token filtering removes context-related tokens
+4.  No regression in recognition quality for normal speech
+5.  Improved quality for short words (50-128ms) - measured manually
+6.  No hallucinations ("yeah", "mm-hmm") on silence - verified in tests
 
 ---
 
-## Notes
+## Validation Plan
 
-- This plan follows TDD strictly: tests written before implementation
-- Each phase builds on the previous phase
-- Tests are designed to verify behavior, not implementation details
+After implementation:
+1. Run full test suite: `python -m pytest tests/ -v`
+2. Manual test with verbose mode: `python main.py -v`
+3. Speak short words ("yes", "no", "hi") and verify recognition
+4. Test with silence periods - verify no hallucinations
+5. Check logs for context sizes and filtered tokens
+

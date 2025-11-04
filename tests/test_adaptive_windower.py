@@ -42,6 +42,8 @@ class TestAdaptiveWindower:
         segments.append(AudioSegment(
             type='preliminary',
             data=np.random.randn(int(0.2 * sample_rate)).astype(np.float32) * 0.1,
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=0.0,
             end_time=0.2,
             chunk_ids=[0]
@@ -51,6 +53,8 @@ class TestAdaptiveWindower:
         segments.append(AudioSegment(
             type='preliminary',
             data=np.random.randn(int(0.2 * sample_rate)).astype(np.float32) * 0.1,
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=0.25,
             end_time=0.45,
             chunk_ids=[1]
@@ -60,6 +64,8 @@ class TestAdaptiveWindower:
         segments.append(AudioSegment(
             type='preliminary',
             data=np.random.randn(int(0.15 * sample_rate)).astype(np.float32) * 0.1,
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=0.5,
             end_time=0.65,
             chunk_ids=[2]
@@ -69,6 +75,8 @@ class TestAdaptiveWindower:
         segments.append(AudioSegment(
             type='preliminary',
             data=np.random.randn(int(0.15 * sample_rate)).astype(np.float32) * 0.1,
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=0.7,
             end_time=0.85,
             chunk_ids=[3]
@@ -78,6 +86,8 @@ class TestAdaptiveWindower:
         segments.append(AudioSegment(
             type='preliminary',
             data=np.random.randn(int(0.15 * sample_rate)).astype(np.float32) * 0.1,
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=0.9,
             end_time=1.05,
             chunk_ids=[4]
@@ -121,6 +131,8 @@ class TestAdaptiveWindower:
             long_segments.append(AudioSegment(
                 type='preliminary',
                 data=np.random.randn(int(0.15 * 16000)).astype(np.float32) * 0.1,
+                left_context=np.array([], dtype=np.float32),
+                right_context=np.array([], dtype=np.float32),
                 start_time=start,
                 end_time=end,
                 chunk_ids=[i]
@@ -160,6 +172,8 @@ class TestAdaptiveWindower:
             long_segments.append(AudioSegment(
                 type='preliminary',
                 data=np.random.randn(int(0.15 * 16000)).astype(np.float32) * 0.1,
+                left_context=np.array([], dtype=np.float32),
+                right_context=np.array([], dtype=np.float32),
                 start_time=start,
                 end_time=end,
                 chunk_ids=[i]
@@ -212,6 +226,8 @@ class TestAdaptiveWindower:
         segment = AudioSegment(
             type='preliminary',
             data=np.random.randn(3200).astype(np.float32) * 0.1,
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=0.0,
             end_time=0.2,
             chunk_ids=[0]

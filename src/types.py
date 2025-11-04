@@ -16,13 +16,17 @@ class AudioSegment:
 
     Attributes:
         type: Discriminator - 'preliminary' for instant words, 'finalized' for overlapping windows, 'flush' for end-of-segment signal
-        data: Audio data as float32 numpy array
-        start_time: Segment start time in seconds
-        end_time: Segment end time in seconds
+        data: Speech audio data as float32 numpy array (concatenated speech chunks only)
+        left_context: Pre-speech context audio (silence before speech starts)
+        right_context: Post-speech context audio (trailing silence after speech ends)
+        start_time: Segment start time in seconds (refers to data, not context)
+        end_time: Segment end time in seconds (refers to data, not context)
         chunk_ids: List of chunk IDs - [single_id] for preliminary, [id1, id2, ...] for finalized/flush
     """
     type: Literal['preliminary', 'finalized', 'flush']
     data: npt.NDArray[np.float32]
+    left_context: npt.NDArray[np.float32]
+    right_context: npt.NDArray[np.float32]
     start_time: float
     end_time: float
     chunk_ids: list[int] = field(default_factory=list)

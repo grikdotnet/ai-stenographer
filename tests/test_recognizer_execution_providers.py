@@ -51,6 +51,8 @@ class TestRecognizerExecutionProviders:
         # Create AudioSegment with speech audio
         segment = stt_types.AudioSegment(
             data=speech_audio,
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=0.0,
             end_time=1.0,
             type='finalized',

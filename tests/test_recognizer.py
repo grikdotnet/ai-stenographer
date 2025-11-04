@@ -30,6 +30,8 @@ class TestRecognizer:
         segment = AudioSegment(
             type='preliminary',
             data=np.full(3200, 0.1, dtype=np.float32),
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=1.0,
             end_time=1.2,
             chunk_ids=[0]
@@ -55,6 +57,8 @@ class TestRecognizer:
         segment = AudioSegment(
             type='finalized',
             data=np.full(48000, 0.1, dtype=np.float32),
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=0.0,
             end_time=3.0,
             chunk_ids=[0, 1, 2, 3, 4]
@@ -82,6 +86,8 @@ class TestRecognizer:
             segment = AudioSegment(
                 type='preliminary',
                 data=np.full(3200, 0.1, dtype=np.float32),
+                left_context=np.array([], dtype=np.float32),
+                right_context=np.array([], dtype=np.float32),
                 start_time=float(i),
                 end_time=float(i + 0.2),
                 chunk_ids=[i]
@@ -108,6 +114,8 @@ class TestRecognizer:
         preliminary = AudioSegment(
             type='preliminary',
             data=np.full(3200, 0.1, dtype=np.float32),
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=1.0,
             end_time=1.2,
             chunk_ids=[0]
@@ -115,6 +123,8 @@ class TestRecognizer:
         finalized = AudioSegment(
             type='finalized',
             data=np.full(48000, 0.1, dtype=np.float32),
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=0.0,
             end_time=3.0,
             chunk_ids=[0, 1, 2]
@@ -160,6 +170,8 @@ class TestRecognizer:
         segment = AudioSegment(
             type='finalized',
             data=np.full(48000, 0.1, dtype=np.float32),
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=5.123,
             end_time=8.456,
             chunk_ids=[10, 11, 12]
@@ -187,6 +199,8 @@ class TestRecognizer:
             segment = AudioSegment(
                 type='finalized',
                 data=np.full(48000, 0.1, dtype=np.float32),
+                left_context=np.array([], dtype=np.float32),
+                right_context=np.array([], dtype=np.float32),
                 start_time=0.0,
                 end_time=3.0,
                 chunk_ids=chunk_ids
@@ -208,6 +222,8 @@ class TestRecognizer:
         preliminary_segment = AudioSegment(
             type='preliminary',
             data=np.full(3200, 0.1, dtype=np.float32),
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=1.0,
             end_time=1.2,
             chunk_ids=[0]
@@ -219,6 +235,8 @@ class TestRecognizer:
         finalized_segment = AudioSegment(
             type='finalized',
             data=np.full(48000, 0.1, dtype=np.float32),
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=0.0,
             end_time=3.0,
             chunk_ids=[0, 1, 2]
@@ -230,6 +248,8 @@ class TestRecognizer:
         flush_segment = AudioSegment(
             type='flush',
             data=np.full(16000, 0.1, dtype=np.float32),
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=2.0,
             end_time=3.0,
             chunk_ids=[5]

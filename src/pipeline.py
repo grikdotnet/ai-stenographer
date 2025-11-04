@@ -6,7 +6,7 @@ import onnx_asr
 import onnxruntime as rt
 import json
 from pathlib import Path
-from typing import List, Any, Dict
+from typing import List, Any, Dict, TYPE_CHECKING
 import tkinter as tk
 from tkinter import scrolledtext
 
@@ -19,6 +19,9 @@ from .GuiWindow import GuiWindow, create_stt_window, run_gui_loop
 from .VoiceActivityDetector import VoiceActivityDetector
 from .ExecutionProviderManager import ExecutionProviderManager
 from .SessionOptionsFactory import SessionOptionsFactory
+
+if TYPE_CHECKING:
+    from onnx_asr.adapters import TextResultsAsrAdapter
 
 class STTPipeline:
     def __init__(self, model_path: str = "./models/parakeet", models_dir: Path = None, verbose: bool = False, window_duration: float = 2.0, step_duration: float = 1.0, config_path: str = "./config/stt_config.json") -> None:
@@ -47,7 +50,7 @@ class STTPipeline:
         strategy.configure_session_options(sess_options)
 
         logging.info("Loading FP16 Parakeet models...")
-        self.model: Any = onnx_asr.load_model(
+        self.model: TextResultsAsrAdapter = onnx_asr.load_model(
             "nemo-parakeet-tdt-0.6b-v3",
             model_path,
             quantization='fp16',

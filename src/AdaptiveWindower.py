@@ -108,6 +108,8 @@ class AdaptiveWindower:
         window = AudioSegment(
             type='finalized',
             data=window_audio,
+            left_context=np.array([], dtype=np.float32),   # No context for windows
+            right_context=np.array([], dtype=np.float32),  # No context for windows
             start_time=actual_start,
             end_time=actual_end,
             chunk_ids=unique_chunk_ids
@@ -160,6 +162,8 @@ class AdaptiveWindower:
         window = AudioSegment(
             type='flush',
             data=window_audio,
+            left_context=np.array([], dtype=np.float32),   # No context for flush
+            right_context=np.array([], dtype=np.float32),  # No context for flush
             start_time=actual_start,
             end_time=actual_end,
             chunk_ids=unique_chunk_ids

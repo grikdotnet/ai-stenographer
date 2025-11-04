@@ -3,8 +3,12 @@ import queue
 import threading
 import logging
 import numpy as np
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
 from src.types import ChunkQueueItem, RecognitionResult
+
+if TYPE_CHECKING:
+    from onnx_asr.adapters import TextResultsAsrAdapter
+
 
 class Recognizer:
     """Pure speech recognition: AudioSegment → RecognitionResult
@@ -21,12 +25,12 @@ class Recognizer:
 
     def __init__(self, speech_queue: queue.Queue,
                  text_queue: queue.Queue,
-                 model: Any,
+                 model: "TextResultsAsrAdapter",
                  verbose: bool = False
                  ) -> None:
         self.speech_queue: queue.Queue = speech_queue
         self.text_queue: queue.Queue = text_queue
-        self.model: Any = model
+        self.model: "TextResultsAsrAdapter" = model
         self.is_running: bool = False
         self.thread: Optional[threading.Thread] = None
         self.verbose: bool = verbose

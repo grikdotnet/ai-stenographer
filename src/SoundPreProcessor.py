@@ -4,6 +4,7 @@ import queue
 import threading
 import numpy as np
 import logging
+from collections import deque
 from typing import Dict, Any, List, TYPE_CHECKING
 from src.types import AudioSegment
 
@@ -17,6 +18,13 @@ class SoundPreProcessor:
 
     Runs in dedicated thread to avoid blocking audio capture.
     Orchestrates VAD, speech buffering, and AdaptiveWindower.
+
+    Context Buffer Strategy:
+    - Maintains circular buffer of last 48 chunks (1.536s @ 32ms/chunk)
+    - Accumulates both speech and silence chunks for context extraction
+    - left_context: chunks before speech
+    - right_context: trailing silence after speech ends
+    - Enables better STT quality for short words and prevents hallucinations
 
     Dual-Path Audio Processing:
     - Normalized audio → VAD (Silero is volume-dependent, needs consistent levels)
@@ -49,6 +57,8 @@ class SoundPreProcessor:
         config: Configuration dictionary
         verbose: Enable verbose logging
     """
+
+    CONTEXT_BUFFER_SIZE = 48  # 1.536s @ 32ms/chunk
 
     def __init__(self,
                  chunk_queue: queue.Queue,
@@ -86,9 +96,11 @@ class SoundPreProcessor:
         self.last_speech_timestamp: float = 0.0
         self.speech_before_silence: bool = False
 
-        # TASK 1: Store last silence chunk for prepending on speech start
-        # Dict with 'audio' and 'timestamp' (no chunk_id - silence chunks don't get IDs)
-        self.last_silence_chunk: Dict[str, Any] | None = None
+        # Context buffer: circular buffer for gathering sound context
+        # Each item: {'audio': np.ndarray, 'timestamp': float, 'chunk_id': int|None, 'is_speech': bool}
+        self.context_buffer: deque = deque(maxlen=self.CONTEXT_BUFFER_SIZE)
+        # Captured left context when speech starts
+        self.left_context_snapshot: List[np.ndarray] | None = None  
 
         self.voice_chunk_id_counter: int = 0
 
@@ -148,10 +160,8 @@ class SoundPreProcessor:
             self.silence_energy = 0.0
             self.last_speech_timestamp = timestamp
             self.speech_before_silence = True
-            self._handle_speech_frame(audio, timestamp)
+            self._handle_speech_frame(audio, timestamp, chunk_id=self.voice_chunk_id_counter)
         else:
-            # TASK 1: Store silence chunk for potential prepending
-            self.last_silence_chunk = {'audio': audio, 'timestamp': timestamp}
             self.silence_energy += (1.0 - speech_prob)
             self._handle_silence_frame(audio, timestamp)
 
@@ -203,70 +213,77 @@ class SoundPreProcessor:
         return audio_chunk * self.current_gain
 
 
-    def _handle_speech_frame(self, audio_chunk: np.ndarray, timestamp: float) -> None:
+    def _handle_speech_frame(self, audio_chunk: np.ndarray, timestamp: float, chunk_id: int) -> None:
         """Buffer a speech frame into the current segment.
 
         Accumulates speech frames into buffer, starts new segment if needed,
         and enforces maximum duration limit by splitting long segments.
         Assigns voice chunk IDs only to speech frames.
 
-        TASK 1: Prepend last silence chunk when speech starts to capture attack transients.
-
         Args:
             audio_chunk: Audio frame data (raw, not normalized)
             timestamp: Timestamp of this frame
+            chunk_id: Voice chunk ID for this speech frame
         """
-        chunk_id = self.voice_chunk_id_counter
-        self.voice_chunk_id_counter += 1
-
         if not self.is_speech_active:
+            self.left_context_snapshot = [chunk['audio'] for chunk in self.context_buffer]
+
             self.is_speech_active = True
             self.speech_start_time = timestamp
             self.speech_buffer = []
 
-            # TASK 1: Prepend last silence chunk if available
-            if self.last_silence_chunk is not None:
-                # Add silence chunk WITHOUT chunk_id (not counted in chunk_ids list)
-                self.speech_buffer.append({
-                    'audio': self.last_silence_chunk['audio'],
-                    'timestamp': self.last_silence_chunk['timestamp']
-                })
-                # Clear to prevent reuse
-                self.last_silence_chunk = None
-
-            # Add current speech chunk WITH chunk_id
-            self.speech_buffer.append({'audio': audio_chunk, 'timestamp': timestamp, 'chunk_id': chunk_id})
-
             if self.verbose:
-                logging.debug(f"SoundPreProcessor: Starting segment at {self.speech_start_time:.2f}")
-        else:
-            if self.verbose:
-                logging.debug(f"SoundPreProcessor: adding chunk to segment, chunk_id={chunk_id}")
-            self.speech_buffer.append({'audio': audio_chunk, 'timestamp': timestamp, 'chunk_id': chunk_id})
+                logging.debug(f"SoundPreProcessor: Starting segment at {self.speech_start_time:.2f}, "
+                             f"captured {len(self.left_context_snapshot)} left context chunks")
 
-            current_duration_ms = len(self.speech_buffer) * self.frame_duration_ms
-            if current_duration_ms >= self.max_speech_duration_ms:
-                if self.verbose:
-                    logging.debug(f"SoundPreProcessor: max_speech_duration reached ({current_duration_ms}ms)")
-                self._finalize_segment()
-                # Start new segment
-                self.is_speech_active = True
-                self.speech_start_time = timestamp
-                self.speech_buffer = []
+        # Add chunks to circular context buffer
+        self.context_buffer.append({
+            'audio': audio_chunk,
+            'timestamp': timestamp,
+            'chunk_id': chunk_id,
+            'is_speech': True
+        })
+
+        self.voice_chunk_id_counter += 1
+
+        # Add to speech_buffer for data extraction
+        if self.verbose and self.is_speech_active:
+            logging.debug(f"SoundPreProcessor: adding chunk to segment, chunk_id={chunk_id}")
+        self.speech_buffer.append({'audio': audio_chunk, 'timestamp': timestamp, 'chunk_id': chunk_id})
+
+        current_duration_ms = len(self.speech_buffer) * self.frame_duration_ms
+        if current_duration_ms >= self.max_speech_duration_ms:
+            if self.verbose:
+                logging.debug(f"SoundPreProcessor: max_speech_duration reached ({current_duration_ms}ms)")
+            self._finalize_segment()
+            # Start new segment
+            self.is_speech_active = True
+            self.speech_start_time = timestamp
+            self.speech_buffer = []
 
 
     def _handle_silence_frame(self, audio_chunk: np.ndarray, timestamp: float) -> None:
         """Handle silence, buffer silence chunks during energy accumulation, finalize when threshold reached.
 
-        TASK 1: Buffer silence chunks to capture release transients (trailing silence).
-        Silence chunks are buffered WITHOUT chunk_id (not counted in chunk_ids list).
+        Context Buffer Logic:
+        - Always append to context_buffer with is_speech=False
+        - During active speech: accumulate in speech_buffer as trailing silence (right_context)
+        - Trailing silence chunks have no chunk_id (not counted in chunk_ids list)
 
         Args:
             audio_chunk: Audio frame data (buffered to capture release transients)
             timestamp: Timestamp of this frame
         """
+        # Always add to circular context buffer
+        self.context_buffer.append({
+            'audio': audio_chunk,
+            'timestamp': timestamp,
+            'chunk_id': None,
+            'is_speech': False
+        })
+
         if self.is_speech_active:
-            # TASK 1: Buffer silence chunk (no chunk_id, just audio and timestamp)
+            # Buffer silence chunk (no chunk_id, just audio and timestamp) for right_context
             self.speech_buffer.append({'audio': audio_chunk, 'timestamp': timestamp})
 
             if self.verbose:
@@ -283,34 +300,49 @@ class SoundPreProcessor:
         """Emit preliminary AudioSegment and call windower.
 
         Creates AudioSegment from buffered chunks and:
-        1. Emits to speech_queue (preliminary segment)
-        2. Calls windower.process_segment() synchronously
-        3. Resets buffering state
+        1. Uses left_context_snapshot
+        2. Extracts data from speech_buffer (speech chunks only)
+        3. Assigns trailing silence to right_context
+        4. Emits to speech_queue (preliminary segment)
+        5. Calls windower.process_segment() synchronously
+        6. Resets buffering state
 
-        TASK 1: Audio data includes prepended and trailing silence chunks,
-        but chunk_ids only includes speech chunks (those with 'chunk_id' key).
         """
         if not self.speech_buffer:
             return
 
-        # Include ALL chunks in audio data (prepended silence + speech + trailing silence)
-        audio_data = np.concatenate([chunk['audio'] for chunk in self.speech_buffer])
+        left_context = (np.concatenate(self.left_context_snapshot)
+                       if self.left_context_snapshot
+                       else np.array([], dtype=np.float32))
 
-        # Only include chunks with chunk_id (speech chunks only, not silence)
-        chunk_ids = [chunk['chunk_id'] for chunk in self.speech_buffer if 'chunk_id' in chunk]
+        data_chunks = [chunk['audio'] for chunk in self.speech_buffer
+                      if 'chunk_id' in chunk]
+        data = np.concatenate(data_chunks) if data_chunks else np.array([], dtype=np.float32)
 
-        end_time = self.speech_start_time + (len(audio_data) / self.sample_rate)
+        right_context_chunks = [chunk['audio'] for chunk in self.speech_buffer
+                               if 'chunk_id' not in chunk]
+        right_context = (np.concatenate(right_context_chunks)
+                        if right_context_chunks
+                        else np.array([], dtype=np.float32))
+
+        chunk_ids = [chunk['chunk_id'] for chunk in self.speech_buffer
+                    if 'chunk_id' in chunk]
+
+        end_time = self.speech_start_time + (len(data) / self.sample_rate)
 
         segment = AudioSegment(
             type='preliminary',
-            data=audio_data,
+            data=data,
+            left_context=left_context,
+            right_context=right_context,
             start_time=self.speech_start_time,
             end_time=end_time,
             chunk_ids=chunk_ids
         )
 
         if self.verbose:
-            logging.debug(f"SoundPreProcessor: emitting preliminary segment, chunk_ids={chunk_ids}")
+            logging.debug(f"SoundPreProcessor: emitting preliminary segment, chunk_ids={chunk_ids}, "
+                         f"left_context={len(left_context)} samples, right_context={len(right_context)} samples")
 
         self.speech_queue.put(segment)
 
@@ -320,8 +352,11 @@ class SoundPreProcessor:
 
 
     def _reset_segment_state(self) -> None:
+        """Reset state after segment finalization.
+        """
         self.speech_buffer = []
         self.silence_energy = 0.0
+        self.left_context_snapshot = None
 
 
     def flush(self) -> None:
