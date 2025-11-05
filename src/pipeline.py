@@ -21,7 +21,7 @@ from .ExecutionProviderManager import ExecutionProviderManager
 from .SessionOptionsFactory import SessionOptionsFactory
 
 if TYPE_CHECKING:
-    from onnx_asr.adapters import TextResultsAsrAdapter
+    from onnx_asr.adapters import TimestampedResultsAsrAdapter
 
 class STTPipeline:
     def __init__(self, model_path: str = "./models/parakeet", models_dir: Path = None, verbose: bool = False, window_duration: float = 2.0, step_duration: float = 1.0, config_path: str = "./config/stt_config.json") -> None:
@@ -50,7 +50,7 @@ class STTPipeline:
         strategy.configure_session_options(sess_options)
 
         logging.info("Loading FP16 Parakeet models...")
-        self.model: TextResultsAsrAdapter = onnx_asr.load_model(
+        base_model = onnx_asr.load_model(
             "nemo-parakeet-tdt-0.6b-v3",
             model_path,
             quantization='fp16',
@@ -58,7 +58,8 @@ class STTPipeline:
             sess_options=sess_options,
             cpu_preprocessing=False
         )
-        logging.info("FP16 models loaded successfully")
+        self.model: TimestampedResultsAsrAdapter = base_model.with_timestamps()
+        logging.info("FP16 models loaded successfully (timestamped mode)")
 
         self.root: tk.Tk
         self.text_widget: scrolledtext.ScrolledText
@@ -102,10 +103,12 @@ class STTPipeline:
         )
 
         # Create Recognizer (renamed queue)
+        sample_rate = self.config['audio']['sample_rate']
         self.recognizer: Recognizer = Recognizer(
             speech_queue=self.speech_queue,
             text_queue=self.text_queue,
             model=self.model,
+            sample_rate=sample_rate,
             verbose=verbose
         )
 

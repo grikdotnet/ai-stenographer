@@ -35,8 +35,7 @@ class SoundPreProcessor:
     - Normalizes to target RMS level (default: 0.05)
     - Skips normalization for silence (RMS < silence_threshold)
     - Prevents boosting background noise
-    - Uses temporal smoothing (α=0.9) to prevent sudden gain changes
-    - Gain state maintained in self.current_gain
+    - Uses temporal smoothing to prevent sudden gain changes
 
     Silence Energy Logic:
     - High speech prob (over vad threshold): reset energy to 0.0
@@ -246,9 +245,6 @@ class SoundPreProcessor:
 
         self.voice_chunk_id_counter += 1
 
-        # Add to speech_buffer for data extraction
-        if self.verbose and self.is_speech_active:
-            logging.debug(f"SoundPreProcessor: adding chunk to segment, chunk_id={chunk_id}")
         self.speech_buffer.append({'audio': audio_chunk, 'timestamp': timestamp, 'chunk_id': chunk_id})
 
         current_duration_ms = len(self.speech_buffer) * self.frame_duration_ms

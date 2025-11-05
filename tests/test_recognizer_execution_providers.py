@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.Recognizer import Recognizer
 from src.ExecutionProviderManager import ExecutionProviderManager
 import src.types as stt_types
+from onnx_asr.asr import TimestampedResult
 
 
 class TestRecognizerExecutionProviders:
@@ -39,14 +40,18 @@ class TestRecognizerExecutionProviders:
 
         # Create mock model with DirectML providers
         mock_model = Mock()
-        mock_model.recognize.return_value = "test speech"
+        mock_model.recognize.return_value = TimestampedResult(
+            text="test speech",
+            tokens=None,
+            timestamps=None
+        )
 
         # Create queues
         chunk_queue = queue.Queue()
         text_queue = queue.Queue()
 
         # Create Recognizer with mock model
-        recognizer = Recognizer(chunk_queue, text_queue, mock_model, verbose=False)
+        recognizer = Recognizer(chunk_queue, text_queue, mock_model, sample_rate=16000, verbose=False)
 
         # Create AudioSegment with speech audio
         segment = stt_types.AudioSegment(
