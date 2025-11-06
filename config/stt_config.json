@@ -2,7 +2,7 @@
   "audio": {
     "sample_rate": 16000,
     "chunk_duration": 0.032,
-    "silence_energy_threshold": 1.5,
+    "silence_energy_threshold": 3,
     "rms_normalization": {
       "target_rms": 0.07,
       "silence_threshold": 0.0001,
@@ -11,7 +11,7 @@
   },
   "vad": {
     "frame_duration_ms": 32,
-    "threshold": 0.4
+    "threshold": 0.55
   },
   "windowing": {
     "window_duration": 3.0,
