@@ -243,7 +243,7 @@ class TestTimestampedRecognition:
         # Mock model returns TimestampedResult
         timestamped_mock_model.recognize.return_value = TimestampedResult(
             text="hello world",
-            tokens=["▁hello", "▁world"],
+            tokens=[" hello", " world"],
             timestamps=[0.5, 1.0]
         )
 
@@ -275,7 +275,7 @@ class TestTimestampedRecognition:
         """Token filtering should keep all tokens when all are within data region."""
         timestamped_mock_model.recognize.return_value = TimestampedResult(
             text="hello world",
-            tokens=["▁hello", "▁world"],
+            tokens=[" hello", " world"],
             timestamps=[0.5, 1.0]  # Both within data region
         )
 
@@ -306,11 +306,11 @@ class TestTimestampedRecognition:
         # Simulate: left_context (0.5s) + data (1.0s) + right_context (0.5s)
         # Total audio: 2.0s
         # Data region: 0.5s to 1.5s
-        # Tokens: "yeah" @ 0.2s (in left context), "hello" @ 0.8s (in data), "mm-hmm" @ 1.7s (in right context)
+        # Tokens: "yeah" @ 0.1s (in left context, outside tolerance), "hello" @ 0.8s (in data), "mm-hmm" @ 1.7s (in right context)
         timestamped_mock_model.recognize.return_value = TimestampedResult(
             text="yeah hello mm-hmm",
-            tokens=["▁yeah", "▁hello", "▁mm", "-", "hmm"],
-            timestamps=[0.2, 0.8, 1.7, 1.75, 1.8]
+            tokens=[" yeah", " hello", " mm", "-", "hmm"],
+            timestamps=[0.1, 0.8, 1.7, 1.75, 1.8]
         )
 
         recognizer = Recognizer(
@@ -343,7 +343,7 @@ class TestTimestampedRecognition:
         # All tokens are outside data region (in contexts)
         timestamped_mock_model.recognize.return_value = TimestampedResult(
             text="yeah mm-hmm",
-            tokens=["▁yeah", "▁mm", "-", "hmm"],
+            tokens=[" yeah", " mm", "-", "hmm"],
             timestamps=[0.1, 1.9, 1.95, 2.0]  # All in context regions
         )
 
@@ -461,8 +461,8 @@ class TestTimestampedRecognition:
 
         # Test case: tokens with various timestamps
         text = "yeah hello world mm-hmm"
-        tokens = ["▁yeah", "▁hello", "▁world", "▁mm", "-", "hmm"]
-        timestamps = [0.2, 0.8, 1.0, 1.7, 1.75, 1.8]
+        tokens = [" yeah", " hello", " world", " mm", "-", "hmm"]
+        timestamps = [0.1, 0.8, 1.0, 1.7, 1.75, 1.8]  # "yeah" at 0.1s outside tolerance
         data_start = 0.5
         data_end = 1.5
 
@@ -493,6 +493,6 @@ class TestTimestampedRecognition:
 
         # Empty timestamps - should return full text (fallback)
         filtered = recognizer._filter_tokens_by_timestamp(
-            "hello world", ["▁hello", "▁world"], None, 0.0, 1.0
+            "hello world", [" hello", " world"], None, 0.0, 1.0
         )
         assert filtered == "hello world"
