@@ -106,7 +106,7 @@ class SoundPreProcessor:
         # Captured left context when speech starts
         self.left_context_snapshot: List[np.ndarray] | None = None  
 
-        self.voice_chunk_id_counter: int = 0
+        self.chunk_id_counter: int = 0
 
         self.is_running: bool = False
         self.thread: threading.Thread | None = None
@@ -265,28 +265,23 @@ class SoundPreProcessor:
 
             # Add first speech chunks to speech_buffer
             for chunk in last_chunks:
-                self.speech_buffer.append({
-                    'audio': chunk['audio'],
-                    'timestamp': chunk['timestamp'],
-                    'chunk_id': self.voice_chunk_id_counter
-                })
-                self.voice_chunk_id_counter += 1
+                self.speech_buffer.append(chunk)
 
-        # Always add current chunk to context_buffer
-        self.context_buffer.append({
+        # Always add to context_buffer (no chunk_id yet)
+        buffer_chunk = {
             'audio': audio_chunk,
             'timestamp': timestamp,
-            'chunk_id': self.voice_chunk_id_counter if self.is_speech_active else None,
-            'is_speech': self.is_speech_active
-        })
+            'chunk_id': self.chunk_id_counter,
+            'is_speech': True
+        }
+        self.context_buffer.append(buffer_chunk)
 
-        if self.is_speech_active: # will skip single false positives from VAD
-            self.speech_buffer.append({
-                'audio': audio_chunk,
-                'timestamp': timestamp,
-                'chunk_id': self.voice_chunk_id_counter
-            })
-            self.voice_chunk_id_counter += 1
+        if self.is_speech_active: # will skip single false negatives from VAD
+            # Add to speech_buffer with chunk_id
+            speech_chunk = buffer_chunk
+            self.speech_buffer.append(speech_chunk)
+
+        self.chunk_id_counter += 1
 
         # Check max duration
         if self.is_speech_active:
@@ -313,17 +308,15 @@ class SoundPreProcessor:
             audio_chunk: Audio frame data (buffered to capture release transients)
             timestamp: Timestamp of this frame
         """
-        # Always add to circular context buffer
-        self.context_buffer.append({
-            'audio': audio_chunk,
-            'timestamp': timestamp,
-            'chunk_id': None,
-            'is_speech': False
-        })
-
         if self.is_speech_active:
-            # Buffer silence chunk (no chunk_id, just audio and timestamp) for right_context
-            self.speech_buffer.append({'audio': audio_chunk, 'timestamp': timestamp})
+            chunk = {
+                'audio': audio_chunk,
+                'timestamp': timestamp,
+                'chunk_id': self.chunk_id_counter,
+                'is_speech': False,
+            }
+            self.speech_buffer.append(chunk)
+            self.chunk_id_counter += 1
 
             if self.verbose:
                 logging.debug(f"SoundPreProcessor: silence_energy={self.silence_energy:.2f}")
@@ -333,6 +326,16 @@ class SoundPreProcessor:
                     logging.debug(f"SoundPreProcessor: silence_energy_threshold reached")
                 self.is_speech_active = False
                 self._finalize_segment()
+        else:
+            chunk = {
+                'audio': audio_chunk,
+                'timestamp': timestamp,
+                'chunk_id': None,
+                'is_speech': False,
+            }
+
+        # Always add to circular context buffer
+        self.context_buffer.append(chunk)
 
 
     def _finalize_segment(self) -> None:
@@ -355,17 +358,22 @@ class SoundPreProcessor:
                        else np.array([], dtype=np.float32))
 
         data_chunks = [chunk['audio'] for chunk in self.speech_buffer
-                      if 'chunk_id' in chunk]
+                      if chunk.get('is_speech', True)]
         data = np.concatenate(data_chunks) if data_chunks else np.array([], dtype=np.float32)
 
-        right_context_chunks = [chunk['audio'] for chunk in self.speech_buffer
-                               if 'chunk_id' not in chunk]
+        right_context_chunks = []
+        for chunk in reversed(self.speech_buffer):
+            if not chunk.get('is_speech', True):
+                right_context_chunks.insert(0, chunk['audio'])
+            else:
+                break  # Stop at the first speech chunk from the end
+
         right_context = (np.concatenate(right_context_chunks)
                         if right_context_chunks
                         else np.array([], dtype=np.float32))
 
         chunk_ids = [chunk['chunk_id'] for chunk in self.speech_buffer
-                    if 'chunk_id' in chunk]
+                    if chunk.get('is_speech', True)]
 
         end_time = self.speech_start_time + (len(data) / self.sample_rate)
 
