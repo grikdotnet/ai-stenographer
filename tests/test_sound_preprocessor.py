@@ -672,8 +672,9 @@ class TestSoundPreProcessor:
         assert isinstance(segment, AudioSegment)
         assert segment.type == 'preliminary'
 
-        assert len(segment.chunk_ids) == 3
-        assert segment.chunk_ids == [0, 1, 2]
+        # chunk_ids now includes ALL chunks (3 speech + 2 silence = 5 total)
+        assert len(segment.chunk_ids) == 5
+        assert segment.chunk_ids == [0, 1, 2, 3, 4]
 
         # Audio data should contain only speech (3 chunks = 1536 samples)
         assert len(segment.data) == 512 * 3
@@ -1176,3 +1177,215 @@ class TestSoundPreProcessor:
         # Left context snapshot should have 5 silence chunks
         assert preprocessor.left_context_snapshot is not None
         assert len(preprocessor.left_context_snapshot) == 5
+
+
+    def test_max_duration_breaks_at_last_silence_chunk(self, preprocessor_config, mock_windower):
+        """Max duration should split at last silence chunk before skip zone.
+
+        Pattern: 40 speech → 1 silence → 53 speech (total 94 chunks = 3008ms)
+        Expected: Breakpoint at chunk 40, segment with right_context from chunks 41-46.
+        """
+        chunk_queue = queue.Queue()
+        speech_queue = queue.Queue()
+
+        # Mock VAD: 40 speech, 1 silence (at idx 40), 53 speech
+        call_count = 0
+        def vad_side_effect(audio):
+            nonlocal call_count
+            is_silence = (call_count == 40)
+            call_count += 1
+            if is_silence:
+                return {'is_speech': False, 'speech_probability': 0.1}
+            else:
+                return {'is_speech': True, 'speech_probability': 0.9}
+
+        mock_vad = Mock()
+        mock_vad.process_frame = Mock(side_effect=vad_side_effect)
+
+        preprocessor = SoundPreProcessor(
+            chunk_queue=chunk_queue,
+            speech_queue=speech_queue,
+            vad=mock_vad,
+            windower=mock_windower,
+            config=preprocessor_config,
+            verbose=False
+        )
+
+        # Feed 94 chunks (40 speech + 1 silence + 53 speech)
+        for i in range(94):
+            chunk = {
+                'audio': np.random.randn(512).astype(np.float32) * 0.1,
+                'timestamp': 1.0 + i * 0.032,
+            }
+            preprocessor._process_chunk(chunk)
+
+        assert not speech_queue.empty()
+        segment = speech_queue.get()
+
+        # Segment includes chunks 0-40 (40 speech + 1 silence = 41 chunk_ids)
+        assert len(segment.chunk_ids) == 41
+        assert segment.chunk_ids == list(range(41))
+
+        # Right context: chunks 41-46 (6 chunks)
+        assert len(segment.right_context) == 512 * 6
+
+        # Speech buffer should contain remaining chunks (41-93)
+        assert len(preprocessor.speech_buffer) == 53
+
+        # Speech should still be active
+        assert preprocessor.is_speech_active
+
+
+    def test_max_duration_skips_last_three_chunks_in_search(self, preprocessor_config, mock_windower):
+        """Backward search should skip last 3 chunks to ensure right_context.
+
+        Pattern: 88 speech → 1 silence → 5 speech (total 94 chunks)
+        Expected: Search skips chunks 91-93, finds silence at chunk 88.
+        """
+        chunk_queue = queue.Queue()
+        speech_queue = queue.Queue()
+
+        # Mock VAD: 88 speech, 1 silence (at idx 88), 5 speech
+        call_count = 0
+        def vad_side_effect(audio):
+            nonlocal call_count
+            is_silence = (call_count == 88)
+            call_count += 1
+            if is_silence:
+                return {'is_speech': False, 'speech_probability': 0.1}
+            else:
+                return {'is_speech': True, 'speech_probability': 0.9}
+
+        mock_vad = Mock()
+        mock_vad.process_frame = Mock(side_effect=vad_side_effect)
+
+        preprocessor = SoundPreProcessor(
+            chunk_queue=chunk_queue,
+            speech_queue=speech_queue,
+            vad=mock_vad,
+            windower=mock_windower,
+            config=preprocessor_config,
+            verbose=False
+        )
+
+        for i in range(94):
+            chunk = {
+                'audio': np.random.randn(512).astype(np.float32) * 0.1,
+                'timestamp': 1.0 + i * 0.032,
+            }
+            preprocessor._process_chunk(chunk)
+
+        assert not speech_queue.empty()
+        segment = speech_queue.get()
+
+        # Segment data: chunks 0-88 (89 chunks: 88 speech + 1 silence)
+        assert len(segment.chunk_ids) == 89
+
+        # Right context: chunks 89-93
+        assert len(segment.right_context) == 512 * 5
+
+
+    def test_max_duration_silence_close_to_end(self, preprocessor_config, mock_windower):
+        """Silence within searchable range should be used as breakpoint.
+
+        Pattern: 87 speech → 1 silence → 6 speech (total 94 chunks)
+        Edge case: Silence at position 87, search range 0-90 (skipping 91-93).
+        Expected: Silence found and used.
+        """
+        chunk_queue = queue.Queue()
+        speech_queue = queue.Queue()
+
+        # Mock VAD: 87 speech, 1 silence (at idx 87), 6 speech
+        call_count = 0
+        def vad_side_effect(audio):
+            nonlocal call_count
+            is_silence = (call_count == 87)
+            call_count += 1
+            if is_silence:
+                return {'is_speech': False, 'speech_probability': 0.1}
+            else:
+                return {'is_speech': True, 'speech_probability': 0.9}
+
+        mock_vad = Mock()
+        mock_vad.process_frame = Mock(side_effect=vad_side_effect)
+
+        preprocessor = SoundPreProcessor(
+            chunk_queue=chunk_queue,
+            speech_queue=speech_queue,
+            vad=mock_vad,
+            windower=mock_windower,
+            config=preprocessor_config,
+            verbose=False
+        )
+
+        # Feed 94 chunks
+        for i in range(94):
+            chunk = {
+                'audio': np.random.randn(512).astype(np.float32) * 0.1,
+                'timestamp': 1.0 + i * 0.032,
+            }
+            preprocessor._process_chunk(chunk)
+
+        # Should have emitted segment
+        assert not speech_queue.empty()
+        segment = speech_queue.get()
+
+        # Segment data: chunks 0-87 (88 chunks: 87 speech + 1 silence)
+        assert len(segment.chunk_ids) == 88
+
+        # Right context: chunks 88-93 (6 chunks, exactly at limit)
+        assert len(segment.right_context) == 512 * 6
+
+
+    def test_max_duration_multiple_silence_uses_last_one(self, preprocessor_config, mock_windower):
+        """Backward search should find the last silence chunk.
+
+        Pattern: 30 speech → 1 silence → 30 speech → 1 silence → 32 speech (total 94 chunks)
+        Silences at: positions 30 and 61.
+        Expected: Backward search finds silence at position 61.
+        """
+        chunk_queue = queue.Queue()
+        speech_queue = queue.Queue()
+
+        call_count = 0
+        def vad_side_effect(audio):
+            nonlocal call_count
+            is_silence = (call_count == 30 or call_count == 61)
+            call_count += 1
+            if is_silence:
+                return {'is_speech': False, 'speech_probability': 0.1}
+            else:
+                return {'is_speech': True, 'speech_probability': 0.9}
+
+        mock_vad = Mock()
+        mock_vad.process_frame = Mock(side_effect=vad_side_effect)
+
+        preprocessor = SoundPreProcessor(
+            chunk_queue=chunk_queue,
+            speech_queue=speech_queue,
+            vad=mock_vad,
+            windower=mock_windower,
+            config=preprocessor_config,
+            verbose=False
+        )
+
+        for i in range(94):
+            chunk = {
+                'audio': np.random.randn(512).astype(np.float32) * 0.1,
+                'timestamp': 1.0 + i * 0.032,
+            }
+            preprocessor._process_chunk(chunk)
+
+        assert not speech_queue.empty()
+        segment = speech_queue.get()
+
+        # Segment data: chunks 0-61
+        # chunk_ids includes ALL chunks (speech and silence)
+        assert len(segment.chunk_ids) == 62
+        assert segment.chunk_ids == list(range(62))
+
+        # Right context: chunks 62-67 (6 chunks)
+        assert len(segment.right_context) == 512 * 6
+
+        # Speech buffer: chunks 62-93 (32 chunks remaining)
+        assert len(preprocessor.speech_buffer) == 32
