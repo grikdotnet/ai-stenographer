@@ -158,7 +158,7 @@ class Recognizer:
 
         # Filter tokens within data boundaries
         # Include tokens slightly before data_start to account for VAD RMS normalization delay
-        boundary_tolerance = 0.3
+        boundary_tolerance = 0.37
         filtered_tokens = []
         for token, ts in zip(tokens, timestamps):
             if (data_start - boundary_tolerance) <= ts <= data_end:

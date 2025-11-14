@@ -177,10 +177,6 @@ class SoundPreProcessor:
 
             self._handle_silence_frame(audio, timestamp)
 
-        if self.verbose and speech_prob > 0.2:
-            logging.debug(f"SoundPreProcessor: speech_prob {speech_prob:.2f} gain {self.current_gain}")
-
-
     def _normalize_rms(self, audio_chunk: np.ndarray) -> np.ndarray:
         """Normalize audio chunk to target RMS level with temporal smoothing (AGC).
 
