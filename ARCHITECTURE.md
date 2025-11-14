@@ -473,27 +473,27 @@ The system uses a **Strategy Pattern** for hardware-specific optimizations:
 - `start()` - Start processing thread
 - `stop()` - Stop thread and flush
 
-**Context Buffer Strategy (NEW):**
+**Context Buffer Strategy:**
 - Circular buffer: 48 chunks (1.536s @ 32ms/chunk)
 - `left_context_snapshot`: Captured when speech starts (immune to wraparound)
 - `right_context`: Extracted from trailing silence chunks (reverse iteration)
 - Enables better STT quality for short words (<100ms)
 - Prevents hallucinations from silence padding
 
-**Consecutive Speech Logic (NEW):**
+**Consecutive Speech Logic:**
 - Requires 3 consecutive speech chunks to start segment
 - Prevents false positives from transient noise
 - Chunks 1-3: Buffered in context_buffer as unconfirmed
 - Chunk 3: Triggers segment start, extracts last 3 chunks
 
-**Intelligent Breakpoint Splitting (NEW):**
+**Intelligent Breakpoint Splitting:**
 - When max_speech_duration_ms reached, search backward for last silence chunk
 - Skips last 3 chunks to preserve right_context
 - Splits at natural silence boundaries (no mid-word cuts)
 - Preserves buffer continuity with 6-chunk overlap
 - Fallback to hard cut if no silence found
 
-**Chunk Structure (Refactored):**
+**Chunk Structure:**
 - All chunks: `{'audio', 'timestamp', 'chunk_id', 'is_speech'}`
 - chunk_id: Sequential for segment chunks, None for non-segment silence
 - is_speech: Reflects VAD result (True/False), not placement logic
