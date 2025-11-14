@@ -103,7 +103,6 @@ class SoundPreProcessor:
         # Context buffer: circular buffer for gathering sound context
         # Each item: {'audio': np.ndarray, 'timestamp': float, 'chunk_id': int|None, 'is_speech': bool}
         self.context_buffer: deque = deque(maxlen=self.CONTEXT_BUFFER_SIZE)
-        # Captured left context when speech starts
         self.left_context_snapshot: List[np.ndarray] | None = None  
 
         self.chunk_id_counter: int = 0
@@ -112,6 +111,7 @@ class SoundPreProcessor:
         self.thread: threading.Thread | None = None
         self.verbose: bool = verbose
 
+        self._first_chunk_timestamp = 0
 
     def start(self) -> None:
         """Start processing thread"""
@@ -177,6 +177,9 @@ class SoundPreProcessor:
 
             self._handle_silence_frame(audio, timestamp)
 
+        if self._first_chunk_timestamp == 0:
+            self._first_chunk_timestamp = chunk_data['timestamp']
+
     def _normalize_rms(self, audio_chunk: np.ndarray) -> np.ndarray:
         """Normalize audio chunk to target RMS level with temporal smoothing (AGC).
 
@@ -240,10 +243,6 @@ class SoundPreProcessor:
 
         # Start segment on Nth consecutive chunk if not already in active speech
         if self.consecutive_speech_count == self.CONSECUTIVE_SPEECH_CHUNKS and not self.is_speech_active:
-            if self.verbose:
-                logging.debug(f"SoundPreProcessor: {self.CONSECUTIVE_SPEECH_CHUNKS} consecutive chunks, starting segment. "
-                             f"speech_prob {speech_prob:.2f} gain {self.current_gain}")
-
             buffer_list = list(self.context_buffer)
 
             # Snapshot left_context
@@ -251,13 +250,15 @@ class SoundPreProcessor:
             self.left_context_snapshot = [chunk['audio'] for chunk in buffer_list[:-chunks_already_in_buffer]]
             last_chunks = buffer_list[-chunks_already_in_buffer:]
 
-            if self.verbose:
-                logging.debug(f"SoundPreProcessor: Starting segment, "
-                             f"captured {len(self.left_context_snapshot)} left context chunks")
-
             self.is_speech_active = True
             self.speech_start_time = last_chunks[0]['timestamp']
             self.speech_buffer = []
+
+            if self.verbose:
+                interval = self.speech_start_time-self._first_chunk_timestamp
+                logging.debug(f"----------------------------")
+                logging.debug(f"SoundPreProcessor: Starting segment at {interval:.2f}")
+                logging.debug(f"captured {len(self.left_context_snapshot)} left context chunks")
 
             # Add first speech chunks to speech_buffer
             for chunk in last_chunks:
@@ -282,14 +283,18 @@ class SoundPreProcessor:
             current_duration_ms = len(self.speech_buffer) * self.frame_duration_ms
             if current_duration_ms >= self.max_speech_duration_ms:
                 if self.verbose:
-                    logging.debug(f"SoundPreProcessor: max_speech_duration reached, starting new segment")
+                    interval = timestamp - self._first_chunk_timestamp
+                    logging.debug(f"----------------------------")
+                    logging.debug(f"SoundPreProcessor: max_speech_duration reached, starting new segment at {interval:.2f}")
 
                 # Search for silence breakpoint to avoid hard cuts
                 breakpoint_idx = self._find_silence_breakpoint()
 
                 if breakpoint_idx is not None:
                     if self.verbose:
-                        logging.debug(f"SoundPreProcessor: found silence breakpoint at index {breakpoint_idx}")
+                        breakpoint_file_time = self.speech_buffer[breakpoint_idx]['timestamp']
+                        interval = breakpoint_file_time-self._first_chunk_timestamp
+                        logging.debug(f"SoundPreProcessor: found silence breakpoint at chunk {breakpoint_idx}, time={interval:.2f}s)")
                     self._finalize_segment(breakpoint_idx=breakpoint_idx)
                 else:
                     if self.verbose:
@@ -413,8 +418,7 @@ class SoundPreProcessor:
             data_buffer = self.speech_buffer[0:breakpoint_idx+1]
             right_context_buffer = self.speech_buffer[breakpoint_idx+1:breakpoint_idx+7]  # max 6 chunks
 
-            data_chunks = [chunk['audio'] for chunk in data_buffer
-                          if chunk.get('is_speech', True)]
+            data_chunks = [chunk['audio'] for chunk in data_buffer]
             data = np.concatenate(data_chunks) if data_chunks else np.array([], dtype=np.float32)
 
             right_context_chunks = [chunk['audio'] for chunk in right_context_buffer]
@@ -438,8 +442,19 @@ class SoundPreProcessor:
         )
 
         if self.verbose:
-            logging.debug(f"SoundPreProcessor: emitting preliminary segment, chunk_ids={chunk_ids}, "
-                         f"left_context={len(left_context)} samples, right_context={len(right_context)} samples")
+            logging.debug(f"SoundPreProcessor: emitting preliminary segment")
+            logging.debug(f"  chunk_ids={chunk_ids}")
+
+            # Show actual file timestamps from buffer
+            if self.speech_buffer:
+                file_start_time = self.speech_buffer[0]['timestamp']
+                if breakpoint_idx is not None:
+                    file_end_time = self.speech_buffer[breakpoint_idx]['timestamp']
+                else:
+                    file_end_time = self.speech_buffer[-1]['timestamp']
+                logging.debug(f"  file_time: {file_end_time - file_start_time:.2f}s")
+
+            logging.debug(f"  left_context={len(left_context)/512} chunks, right_context={len(right_context)/512} chunks")
 
         self.speech_queue.put(segment)
 
