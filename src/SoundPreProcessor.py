@@ -255,9 +255,9 @@ class SoundPreProcessor:
             self.speech_buffer = []
 
             if self.verbose:
-                interval = self.speech_start_time-self._first_chunk_timestamp
+                offset = self.speech_start_time-self._first_chunk_timestamp
                 logging.debug(f"----------------------------")
-                logging.debug(f"SoundPreProcessor: Starting segment at {interval:.2f}")
+                logging.debug(f"SoundPreProcessor: Starting segment at {offset:.2f}")
                 logging.debug(f"captured {len(self.left_context_snapshot)} left context chunks")
 
             # Add first speech chunks to speech_buffer
@@ -283,9 +283,9 @@ class SoundPreProcessor:
             current_duration_ms = len(self.speech_buffer) * self.frame_duration_ms
             if current_duration_ms >= self.max_speech_duration_ms:
                 if self.verbose:
-                    interval = timestamp - self._first_chunk_timestamp
+                    offset = timestamp - self._first_chunk_timestamp
                     logging.debug(f"----------------------------")
-                    logging.debug(f"SoundPreProcessor: max_speech_duration reached, starting new segment at {interval:.2f}")
+                    logging.debug(f"SoundPreProcessor: max_speech_duration reached, splitting at {offset:.2f}")
 
                 # Search for silence breakpoint to avoid hard cuts
                 breakpoint_idx = self._find_silence_breakpoint()
@@ -293,8 +293,8 @@ class SoundPreProcessor:
                 if breakpoint_idx is not None:
                     if self.verbose:
                         breakpoint_file_time = self.speech_buffer[breakpoint_idx]['timestamp']
-                        interval = breakpoint_file_time-self._first_chunk_timestamp
-                        logging.debug(f"SoundPreProcessor: found silence breakpoint at chunk {breakpoint_idx}, time={interval:.2f}s)")
+                        offset = breakpoint_file_time-self._first_chunk_timestamp
+                        logging.debug(f"SoundPreProcessor: silence breakpoint at chunk {breakpoint_idx}, offset={offset:.2f}s)")
                     self._finalize_segment(breakpoint_idx=breakpoint_idx)
                 else:
                     if self.verbose:
@@ -447,12 +447,11 @@ class SoundPreProcessor:
 
             # Show actual file timestamps from buffer
             if self.speech_buffer:
-                file_start_time = self.speech_buffer[0]['timestamp']
                 if breakpoint_idx is not None:
                     file_end_time = self.speech_buffer[breakpoint_idx]['timestamp']
                 else:
                     file_end_time = self.speech_buffer[-1]['timestamp']
-                logging.debug(f"  file_time: {file_end_time - file_start_time:.2f}s")
+                logging.debug(f"  offset: {file_end_time - self._first_chunk_timestamp:.2f}s")
 
             logging.debug(f"  left_context={len(left_context)/512} chunks, right_context={len(right_context)/512} chunks")
 
