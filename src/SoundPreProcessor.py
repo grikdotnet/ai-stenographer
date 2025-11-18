@@ -5,12 +5,37 @@ import threading
 import numpy as np
 import logging
 from collections import deque
+from enum import Enum, auto
 from typing import Dict, Any, List, TYPE_CHECKING
 from src.types import AudioSegment
 
 if TYPE_CHECKING:
     from src.VoiceActivityDetector import VoiceActivityDetector
     from src.AdaptiveWindower import AdaptiveWindower
+
+
+class ProcessingState(Enum):
+    """State machine states for speech processing.
+
+    State Transitions:
+    - IDLE: No speech detected, waiting for activity
+    - WAITING_CONFIRMATION: 1-2 consecutive speech chunks detected (prevents false positives)
+    - ACTIVE_SPEECH: 3+ consecutive speech chunks, actively buffering segment
+    - ACCUMULATING_SILENCE: Speech ended, accumulating silence energy before finalization
+
+    Transition Rules:
+    IDLE → WAITING_CONFIRMATION: First speech chunk detected
+    WAITING_CONFIRMATION → ACTIVE_SPEECH: 3rd consecutive speech chunk
+    WAITING_CONFIRMATION → IDLE: Silence chunk (reset counter)
+    ACTIVE_SPEECH → ACCUMULATING_SILENCE: First silence chunk after speech
+    ACTIVE_SPEECH → ACTIVE_SPEECH: Continues on max_duration split
+    ACCUMULATING_SILENCE → ACTIVE_SPEECH: Speech resumes (reset energy)
+    ACCUMULATING_SILENCE → IDLE: Silence energy exceeds threshold
+    """
+    IDLE = auto()
+    WAITING_CONFIRMATION = auto()
+    ACTIVE_SPEECH = auto()
+    ACCUMULATING_SILENCE = auto()
 
 
 class SoundPreProcessor:
@@ -86,10 +111,11 @@ class SoundPreProcessor:
         self.gain_smoothing: float = rms_config['gain_smoothing']
         self.current_gain: float = 1.0  # Start with unity gain
 
+        self._state: ProcessingState = ProcessingState.IDLE
+
         # Speech buffering state
         # Each buffer item: {'audio': np.ndarray, 'timestamp': float, 'chunk_id': int}
         self.speech_buffer: List[Dict[str, Any]] = []
-        self.is_speech_active: bool = False
         self.speech_start_time: float = 0.0
         self.silence_energy: float = 0.0
         self.last_speech_timestamp: float = 0.0
@@ -112,6 +138,21 @@ class SoundPreProcessor:
         self.verbose: bool = verbose
 
         self._first_chunk_timestamp = 0
+
+    @property
+    def state(self) -> ProcessingState:
+        """Current processing state."""
+        return self._state
+
+    @state.setter
+    def state(self, value: ProcessingState) -> None:
+        """Set processing state."""
+        self._state = value
+
+    @property
+    def is_speech_active(self) -> bool:
+        """Check if speech is currently active (ACTIVE_SPEECH or ACCUMULATING_SILENCE)."""
+        return self._state in (ProcessingState.ACTIVE_SPEECH, ProcessingState.ACCUMULATING_SILENCE)
 
     def start(self) -> None:
         """Start processing thread"""
@@ -139,7 +180,7 @@ class SoundPreProcessor:
 
 
     def _process_chunk(self, chunk_data: Dict[str, Any]) -> None:
-        """Process single raw audio chunk (was process_chunk_with_vad in AudioSource).
+        """Process single raw audio chunk using state machine.
 
         Dual-path processing:
         1. Normalize audio for VAD → ensures consistent speech detection
@@ -147,38 +188,186 @@ class SoundPreProcessor:
         3. Buffer raw audio for STT → preserves original quality
 
         Args:
-            chunk_data: Dict with 'audio', 'timestamp' (no chunk_id yet - assigned after VAD)
+            chunk_data: Dict with 'audio', 'timestamp'
         """
         audio = chunk_data['audio']
         timestamp = chunk_data['timestamp']
 
-        normalized_audio = self._normalize_rms(audio)
-
-        vad_result = self.vad.process_frame(normalized_audio)
-        speech_prob = vad_result['speech_probability']
-
-        if vad_result['is_speech']:
-            self.silence_energy = 0.0
-            self.last_speech_timestamp = timestamp
-            self.speech_before_silence = True
-            self._handle_speech_frame(audio, timestamp, speech_prob)
-        else:
-            # Reset consecutive counter on silence
-            self.consecutive_speech_count = 0
-
-            if self.speech_before_silence:
-                self.silence_energy += (1.0 - speech_prob)
-                silence_duration = timestamp - self.last_speech_timestamp
-                if silence_duration >= self.silence_timeout:
-                    if self.verbose:
-                        logging.debug(f"SoundPreProcessor: silence_timeout reached ({silence_duration:.2f}s)")
-                    self.windower.flush()
-                    self.speech_before_silence = False
-
-            self._handle_silence_frame(audio, timestamp)
-
+        # Track first chunk timestamp
         if self._first_chunk_timestamp == 0:
-            self._first_chunk_timestamp = chunk_data['timestamp']
+            self._first_chunk_timestamp = timestamp
+
+        # Dual-path: normalize for VAD, keep raw for STT
+        vad_result = self.vad.process_frame( self._normalize_rms(audio) )
+        speech_prob = vad_result['speech_probability']
+        is_speech = vad_result['is_speech']
+
+        # State machine
+        match self.state:
+            case ProcessingState.IDLE:
+                if is_speech:
+                    # IDLE → WAITING_CONFIRMATION
+                    self.consecutive_speech_count = 1
+                    self.state = ProcessingState.WAITING_CONFIRMATION
+                    self._append_to_context_buffer(audio, timestamp, is_speech=True, chunk_id=None)
+                else:
+                    # IDLE → IDLE
+                    self._append_to_context_buffer(audio, timestamp, is_speech=False, chunk_id=None)
+
+            case ProcessingState.WAITING_CONFIRMATION:
+                if is_speech:
+                    self.consecutive_speech_count += 1
+
+                    if self.consecutive_speech_count >= self.CONSECUTIVE_SPEECH_CHUNKS:
+                        # WAITING_CONFIRMATION → ACTIVE_SPEECH
+                        self.state = ProcessingState.ACTIVE_SPEECH
+                        self._capture_left_context_from_buffer()
+                        self._initialize_speech_buffer_from_context()
+
+                        # Set speech tracking variables
+                        self.last_speech_timestamp = timestamp
+                        self.speech_before_silence = True
+
+                        if self.verbose:
+                            offset = self.speech_start_time - self._first_chunk_timestamp
+                            logging.debug(f"----------------------------")
+                            logging.debug(f"SoundPreProcessor: Starting segment at {offset:.2f}")
+                            logging.debug(f"captured {len(self.left_context_snapshot)} left context chunks")
+
+                        # Add current chunk to speech buffer
+                        self._append_to_speech_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
+                        self._append_to_context_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
+                        self.chunk_id_counter += 1
+                    else:
+                        # WAITING_CONFIRMATION → WAITING_CONFIRMATION
+                        self._append_to_context_buffer(audio, timestamp, is_speech=True, chunk_id=None)
+                else:
+                    # WAITING_CONFIRMATION → IDLE
+                    self.state = ProcessingState.IDLE
+                    self.consecutive_speech_count = 0
+                    self._append_to_context_buffer(audio, timestamp, is_speech=False, chunk_id=None)
+
+            case ProcessingState.ACTIVE_SPEECH:
+                if is_speech:
+                    # ACTIVE_SPEECH → ACTIVE_SPEECH
+                    self.silence_energy = 0.0
+                    self.last_speech_timestamp = timestamp
+                    self.speech_before_silence = True
+
+                    self._append_to_speech_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
+                    self._append_to_context_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
+                    self.chunk_id_counter += 1
+
+                    # Check max duration
+                    current_duration_ms = len(self.speech_buffer) * self.frame_duration_ms
+                    if current_duration_ms >= self.max_speech_duration_ms:
+                        if self.verbose:
+                            offset = timestamp - self._first_chunk_timestamp
+                            logging.debug(f"----------------------------")
+                            logging.debug(f"SoundPreProcessor: max_speech_duration reached, splitting at {offset:.2f}")
+
+                        # Search for silence breakpoint
+                        breakpoint_idx = self._find_silence_breakpoint()
+
+                        if breakpoint_idx is not None:
+                            # Breakpoint split
+                            if self.verbose:
+                                breakpoint_file_time = self.speech_buffer[breakpoint_idx]['timestamp']
+                                offset = breakpoint_file_time - self._first_chunk_timestamp
+                                logging.debug(f"SoundPreProcessor: silence breakpoint at chunk {breakpoint_idx}, offset={offset:.2f}s)")
+
+                            segment = self._build_audio_segment(breakpoint_idx=breakpoint_idx)
+                            self.speech_queue.put(segment)
+                            self.windower.process_segment(segment)
+                            self._keep_remainder_after_breakpoint(breakpoint_idx)
+
+                            if self.verbose:
+                                logging.debug(f"SoundPreProcessor: emitting preliminary segment")
+                                logging.debug(f"  chunk_ids={segment.chunk_ids}")
+                                logging.debug(f"  left_context={len(segment.left_context)/512} chunks, right_context={len(segment.right_context)/512} chunks")
+
+                            # ACTIVE_SPEECH → ACTIVE_SPEECH (continuation)
+                        else:
+                            # Hard cut - emit current buffer and reset for immediate continuation
+                            if self.verbose:
+                                logging.debug(f"SoundPreProcessor: no silence breakpoint found, using hard cut")
+
+                            segment = self._build_audio_segment(breakpoint_idx=None)
+                            self.speech_queue.put(segment)
+                            self.windower.process_segment(segment)
+
+                            if self.verbose:
+                                logging.debug(f"SoundPreProcessor: emitting preliminary segment")
+                                logging.debug(f"  chunk_ids={segment.chunk_ids}")
+                                logging.debug(f"  left_context={len(segment.left_context)/512} chunks, right_context={len(segment.right_context)/512} chunks")
+
+                            # Reset buffer but stay in ACTIVE_SPEECH (speech continues)
+                            self.speech_buffer = []
+                            self.speech_start_time = timestamp
+                            # Keep state = ACTIVE_SPEECH
+                            # Don't reset left_context_snapshot - preserve for continuity
+                else:
+                    # ACTIVE_SPEECH → ACCUMULATING_SILENCE
+                    self.state = ProcessingState.ACCUMULATING_SILENCE
+                    self.consecutive_speech_count = 0
+                    self.silence_energy += (1.0 - speech_prob)
+
+                    self._append_to_speech_buffer(audio, timestamp, is_speech=False, chunk_id=self.chunk_id_counter)
+                    self._append_to_context_buffer(audio, timestamp, is_speech=False, chunk_id=self.chunk_id_counter)
+                    self.chunk_id_counter += 1
+
+                    if self.verbose:
+                        logging.debug(f"SoundPreProcessor: silence_energy={self.silence_energy:.2f}")
+
+            case ProcessingState.ACCUMULATING_SILENCE:
+                if is_speech:
+                    # ACCUMULATING_SILENCE → ACTIVE_SPEECH
+                    self.state = ProcessingState.ACTIVE_SPEECH
+                    self.silence_energy = 0.0
+                    self.consecutive_speech_count = 1
+                    self.last_speech_timestamp = timestamp
+                    self.speech_before_silence = True
+
+                    self._append_to_speech_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
+                    self._append_to_context_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
+                    self.chunk_id_counter += 1
+                else:
+                    # ACCUMULATING_SILENCE → ACCUMULATING_SILENCE or IDLE
+                    self.silence_energy += (1.0 - speech_prob)
+
+                    self._append_to_speech_buffer(audio, timestamp, is_speech=False, chunk_id=self.chunk_id_counter)
+                    self._append_to_context_buffer(audio, timestamp, is_speech=False, chunk_id=self.chunk_id_counter)
+                    self.chunk_id_counter += 1
+
+                    if self.verbose:
+                        logging.debug(f"SoundPreProcessor: silence_energy={self.silence_energy:.2f}")
+
+                    if self.silence_energy >= self.silence_energy_threshold:
+                        # ACCUMULATING_SILENCE → IDLE
+                        if self.verbose:
+                            logging.debug(f"SoundPreProcessor: silence_energy_threshold reached")
+
+                        segment = self._build_audio_segment(breakpoint_idx=None)
+                        self.speech_queue.put(segment)
+                        self.windower.process_segment(segment)
+                        self._reset_segment_state()
+
+                        if self.verbose:
+                            logging.debug(f"SoundPreProcessor: emitting preliminary segment")
+                            logging.debug(f"  chunk_ids={segment.chunk_ids}")
+                            logging.debug(f"  left_context={len(segment.left_context)/512} chunks, right_context={len(segment.right_context)/512} chunks")
+
+                        self.state = ProcessingState.IDLE
+                        self.consecutive_speech_count = 0
+
+        # Silence timeout logic (for windower flushing)
+        if self.speech_before_silence and not is_speech:
+            silence_duration = timestamp - self.last_speech_timestamp
+            if silence_duration >= self.silence_timeout:
+                if self.verbose:
+                    logging.debug(f"SoundPreProcessor: silence_timeout reached ({silence_duration:.2f}s)")
+                self.windower.flush()
+                self.speech_before_silence = False
 
     def _normalize_rms(self, audio_chunk: np.ndarray) -> np.ndarray:
         """Normalize audio chunk to target RMS level with temporal smoothing (AGC).
@@ -218,184 +407,100 @@ class SoundPreProcessor:
 
         return audio_chunk * self.current_gain
 
+    # ========================================================================
+    # Helper Methods for State Machine
+    # ========================================================================
 
-    def _handle_speech_frame(self, audio_chunk: np.ndarray, timestamp: float, speech_prob: float) -> None:
-        """Buffer a speech frame, managing consecutive speech logic internally.
-
-        Consecutive Speech Logic:
-        - Requires 3 consecutive speech chunks to start segment (prevents false positives)
-        - Chunks 1-3: Buffered in context_buffer as unconfirmed speech
-        - Chunk 3: Triggers segment start, extracts last 3 chunks from buffer (KEEP in buffer)
-        - Subsequent chunks: Added to both context_buffer AND speech_buffer
-
-        Context Buffer Management:
-        - Circular buffer (deque with maxlen=48) maintains ALL recent audio history
-        - Speech chunks remain in buffer (not removed) for continuous history
-        - On segment start: snapshot left_context from everything BEFORE last 3 chunks
-        - Circular buffer automatically evicts old chunks when full
+    def _append_to_context_buffer(self, audio: np.ndarray, timestamp: float, is_speech: bool, chunk_id: int | None) -> None:
+        """Append chunk dict to circular context_buffer.
 
         Args:
-            audio_chunk: Audio frame data (raw, not normalized)
-            timestamp: Timestamp of this frame
-            speech_prob: Speech probability from VAD (for logging)
+            audio: Audio chunk data
+            timestamp: Timestamp of chunk
+            is_speech: Whether chunk is speech
+            chunk_id: Chunk ID (None for silence outside active speech)
         """
-        self.consecutive_speech_count += 1
-
-        # Start segment on Nth consecutive chunk if not already in active speech
-        if self.consecutive_speech_count == self.CONSECUTIVE_SPEECH_CHUNKS and not self.is_speech_active:
-            buffer_list = list(self.context_buffer)
-
-            # Snapshot left_context
-            chunks_already_in_buffer = self.CONSECUTIVE_SPEECH_CHUNKS - 1
-            self.left_context_snapshot = [chunk['audio'] for chunk in buffer_list[:-chunks_already_in_buffer]]
-            last_chunks = buffer_list[-chunks_already_in_buffer:]
-
-            self.is_speech_active = True
-            self.speech_start_time = last_chunks[0]['timestamp']
-            self.speech_buffer = []
-
-            if self.verbose:
-                offset = self.speech_start_time-self._first_chunk_timestamp
-                logging.debug(f"----------------------------")
-                logging.debug(f"SoundPreProcessor: Starting segment at {offset:.2f}")
-                logging.debug(f"captured {len(self.left_context_snapshot)} left context chunks")
-
-            # Add first speech chunks to speech_buffer
-            for chunk in last_chunks:
-                self.speech_buffer.append(chunk)
-
-        buffer_chunk = {
-            'audio': audio_chunk,
+        chunk = {
+            'audio': audio,
             'timestamp': timestamp,
-            'chunk_id': self.chunk_id_counter,
-            'is_speech': True
+            'chunk_id': chunk_id,
+            'is_speech': is_speech
         }
-        self.context_buffer.append(buffer_chunk)
-
-        if self.is_speech_active: # will skip single false negatives from VAD
-            speech_chunk = buffer_chunk
-            self.speech_buffer.append(speech_chunk)
-
-        self.chunk_id_counter += 1
-
-        # Check max duration
-        if self.is_speech_active:
-            current_duration_ms = len(self.speech_buffer) * self.frame_duration_ms
-            if current_duration_ms >= self.max_speech_duration_ms:
-                if self.verbose:
-                    offset = timestamp - self._first_chunk_timestamp
-                    logging.debug(f"----------------------------")
-                    logging.debug(f"SoundPreProcessor: max_speech_duration reached, splitting at {offset:.2f}")
-
-                # Search for silence breakpoint to avoid hard cuts
-                breakpoint_idx = self._find_silence_breakpoint()
-
-                if breakpoint_idx is not None:
-                    if self.verbose:
-                        breakpoint_file_time = self.speech_buffer[breakpoint_idx]['timestamp']
-                        offset = breakpoint_file_time-self._first_chunk_timestamp
-                        logging.debug(f"SoundPreProcessor: silence breakpoint at chunk {breakpoint_idx}, offset={offset:.2f}s)")
-                    self._finalize_segment(breakpoint_idx=breakpoint_idx)
-                else:
-                    if self.verbose:
-                        logging.debug(f"SoundPreProcessor: no silence breakpoint found, using hard cut")
-                    self._finalize_segment()
-                    # Start new segment after hard cut
-                    self.is_speech_active = True
-                    self.speech_start_time = timestamp
-                    self.speech_buffer = []
-
-
-    def _handle_silence_frame(self, audio_chunk: np.ndarray, timestamp: float) -> None:
-        """Handle silence, buffer silence chunks during energy accumulation, finalize when threshold reached.
-
-        Context Buffer Logic:
-        - Always append to context_buffer with is_speech=False
-        - During active speech: accumulate in speech_buffer as trailing silence (right_context)
-        - Silence chunks outside of active speech have no chunk_id
-
-        Args:
-            audio_chunk: Audio frame data (buffered to capture release transients)
-            timestamp: Timestamp of this frame
-        """
-        if self.is_speech_active:
-            chunk = {
-                'audio': audio_chunk,
-                'timestamp': timestamp,
-                'chunk_id': self.chunk_id_counter,
-                'is_speech': False,
-            }
-            self.speech_buffer.append(chunk)
-            self.chunk_id_counter += 1
-
-            if self.verbose:
-                logging.debug(f"SoundPreProcessor: silence_energy={self.silence_energy:.2f}")
-
-            if self.silence_energy >= self.silence_energy_threshold:
-                if self.verbose:
-                    logging.debug(f"SoundPreProcessor: silence_energy_threshold reached")
-                self.is_speech_active = False
-                self._finalize_segment()
-        else:
-            chunk = {
-                'audio': audio_chunk,
-                'timestamp': timestamp,
-                'chunk_id': None,
-                'is_speech': False,
-            }
-
-        # Always add to circular context buffer
         self.context_buffer.append(chunk)
 
-
-    def _find_silence_breakpoint(self) -> int | None:
-        """Search backward for last silence chunk, skipping last 3 elements.
-
-        Used when max_speech_duration_ms is reached to find a natural breakpoint.
-        Searches backward from the end of speech_buffer, skipping the last 3 chunks
-        to ensure right_context isn't empty.
-
-        Returns:
-            Index of breakpoint (inclusive in data), or None if no silence found
-        """
-        if len(self.speech_buffer) < 4:
-            return None
-
-        # Search range: 0 to len-4 (skip last 3 chunks)
-        search_end = len(self.speech_buffer) - 3
-
-        # Search backward for last silence chunk
-        for i in range(search_end - 1, -1, -1):
-            if not self.speech_buffer[i].get('is_speech', True):
-                return i
-
-        return None
-
-
-    def _finalize_segment(self, breakpoint_idx: int | None = None) -> None:
-        """Emit preliminary AudioSegment and call windower.
-
-        Creates AudioSegment from buffered chunks and:
-        1. Uses left_context_snapshot
-        2. Extracts data from speech_buffer (speech chunks only)
-        3. Assigns trailing silence to right_context
-        4. Emits to speech_queue (preliminary segment)
-        5. Calls windower.process_segment() synchronously
-        6. Resets buffering state (or keeps remainder if breakpoint provided)
+    def _append_to_speech_buffer(self, audio: np.ndarray, timestamp: float, is_speech: bool, chunk_id: int) -> None:
+        """Append chunk dict to speech_buffer.
 
         Args:
-            breakpoint_idx: Optional index to split at (for duration-based splits).
-                           If provided, keeps remainder in buffer with overlap.
+            audio: Audio chunk data
+            timestamp: Timestamp of chunk
+            is_speech: Whether chunk is speech
+            chunk_id: Chunk ID
         """
-        if not self.speech_buffer:
-            return
+        chunk = {
+            'audio': audio,
+            'timestamp': timestamp,
+            'chunk_id': chunk_id,
+            'is_speech': is_speech
+        }
+        self.speech_buffer.append(chunk)
 
+    def _capture_left_context_from_buffer(self) -> None:
+        """Extract left context from context_buffer (exclude last 2 chunks).
+
+        Called when transitioning WAITING_CONFIRMATION → ACTIVE_SPEECH.
+        Snapshots left context from everything BEFORE the last 2 chunks.
+        """
+        buffer_list = list(self.context_buffer)
+        chunks_already_in_buffer = self.CONSECUTIVE_SPEECH_CHUNKS - 1
+        self.left_context_snapshot = [chunk['audio'] for chunk in buffer_list[:-chunks_already_in_buffer]]
+
+    def _initialize_speech_buffer_from_context(self) -> None:
+        """Extract last 2 chunks from context_buffer and initialize speech_buffer.
+
+        Called when transitioning WAITING_CONFIRMATION → ACTIVE_SPEECH.
+        Assigns chunk_ids and populates speech_buffer with first speech chunks.
+        Sets speech_start_time to first chunk timestamp.
+        """
+        buffer_list = list(self.context_buffer)
+        chunks_already_in_buffer = self.CONSECUTIVE_SPEECH_CHUNKS - 1
+        last_chunks = buffer_list[-chunks_already_in_buffer:]
+
+        self.speech_buffer = []
+        for chunk in last_chunks:
+            # Assign chunk_id from counter
+            chunk_with_id = {
+                'audio': chunk['audio'],
+                'timestamp': chunk['timestamp'],
+                'chunk_id': self.chunk_id_counter,
+                'is_speech': chunk['is_speech']
+            }
+            self.speech_buffer.append(chunk_with_id)
+            self.chunk_id_counter += 1
+
+        if self.speech_buffer:
+            self.speech_start_time = self.speech_buffer[0]['timestamp']
+
+    def _build_audio_segment(self, breakpoint_idx: int | None = None) -> AudioSegment:
+        """Build AudioSegment from speech_buffer.
+
+        Extracts:
+        - left_context from left_context_snapshot
+        - data from speech chunks (0 to breakpoint_idx or all)
+        - right_context from trailing silence or buffer after breakpoint
+
+        Args:
+            breakpoint_idx: Optional index to split at (inclusive in data)
+
+        Returns:
+            AudioSegment ready to emit
+        """
         left_context = (np.concatenate(self.left_context_snapshot)
                        if self.left_context_snapshot
                        else np.array([], dtype=np.float32))
 
         if breakpoint_idx is None:
-            # use entire buffer, trailing silence as right_context
+            # Use entire buffer, trailing silence as right_context
             data_chunks = [chunk['audio'] for chunk in self.speech_buffer
                           if chunk.get('is_speech', True)]
             data = np.concatenate(data_chunks) if data_chunks else np.array([], dtype=np.float32)
@@ -405,7 +510,7 @@ class SoundPreProcessor:
                 if not chunk.get('is_speech', True):
                     right_context_chunks.insert(0, chunk['audio'])
                 else:
-                    break  # Stop at the first speech chunk from the end
+                    break
 
             right_context = (np.concatenate(right_context_chunks)
                             if right_context_chunks
@@ -431,7 +536,7 @@ class SoundPreProcessor:
 
         end_time = self.speech_start_time + (len(data) / self.sample_rate)
 
-        segment = AudioSegment(
+        return AudioSegment(
             type='preliminary',
             data=data,
             left_context=left_context,
@@ -441,46 +546,56 @@ class SoundPreProcessor:
             chunk_ids=chunk_ids
         )
 
-        if self.verbose:
-            logging.debug(f"SoundPreProcessor: emitting preliminary segment")
-            logging.debug(f"  chunk_ids={chunk_ids}")
+    def _keep_remainder_after_breakpoint(self, breakpoint_idx: int) -> None:
+        """Keep remainder chunks in speech_buffer after breakpoint_idx.
 
-            # Show actual file timestamps from buffer
-            if self.speech_buffer:
-                if breakpoint_idx is not None:
-                    file_end_time = self.speech_buffer[breakpoint_idx]['timestamp']
-                else:
-                    file_end_time = self.speech_buffer[-1]['timestamp']
-                logging.debug(f"  offset: {file_end_time - self._first_chunk_timestamp:.2f}s")
+        Updates:
+        - speech_buffer to contain only remainder
+        - speech_start_time for remainder
+        - silence_energy reset to 0
 
-            logging.debug(f"  left_context={len(left_context)/512} chunks, right_context={len(right_context)/512} chunks")
-
-        self.speech_queue.put(segment)
-
-        self.windower.process_segment(segment)
-
-        if breakpoint_idx is None:
-            # Hard cut: reset completely
-            self._reset_segment_state()
-        else:
-            # Breakpoint split: keep remainder in buffer
-            self.speech_buffer = self.speech_buffer[breakpoint_idx+1:]
-            if self.speech_buffer:
-                self.speech_start_time = self.speech_buffer[0]['timestamp']
-                self.is_speech_active = True
-            else:
-                self._reset_segment_state()
-            self.silence_energy = 0.0
-            # Keep left_context_snapshot for continuity (don't reset)
-
+        Args:
+            breakpoint_idx: Index of breakpoint (chunks after this are kept)
+        """
+        self.speech_buffer = self.speech_buffer[breakpoint_idx+1:]
+        if self.speech_buffer:
+            self.speech_start_time = self.speech_buffer[0]['timestamp']
+        self.silence_energy = 0.0
 
     def _reset_segment_state(self) -> None:
-        """Reset state after segment finalization.
+        """Reset segment state after finalization.
+
+        Clears:
+        - speech_buffer
+        - silence_energy
+        - left_context_snapshot
         """
         self.speech_buffer = []
         self.silence_energy = 0.0
         self.left_context_snapshot = None
 
+    def _find_silence_breakpoint(self) -> int | None:
+        """Search backward for last silence chunk, skipping last 3 elements.
+
+        Used when max_speech_duration_ms is reached to find a natural breakpoint.
+        Searches backward from the end of speech_buffer, skipping the last 3 chunks
+        to ensure right_context isn't empty.
+
+        Returns:
+            Index of breakpoint (inclusive in data), or None if no silence found
+        """
+        if len(self.speech_buffer) < 4:
+            return None
+
+        # Search range: 0 to len-4 (skip last 3 chunks)
+        search_end = len(self.speech_buffer) - 3
+
+        # Search backward for last silence chunk
+        for i in range(search_end - 1, -1, -1):
+            if not self.speech_buffer[i].get('is_speech', True):
+                return i
+
+        return None
 
     def flush(self) -> None:
         """Emit pending segment and flush windower.
@@ -488,7 +603,11 @@ class SoundPreProcessor:
         Useful for end-of-stream or testing scenarios.
         """
         if self.is_speech_active and len(self.speech_buffer) > 0:
-            self._finalize_segment()
+            segment = self._build_audio_segment(breakpoint_idx=None)
+            self.speech_queue.put(segment)
+            self.windower.process_segment(segment)
+            self._reset_segment_state()
+            self.state = ProcessingState.IDLE
 
         self.windower.flush()
 

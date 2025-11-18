@@ -1,479 +1,257 @@
-# Implementation Plan: Context-Aware Speech Recognition with Token Filtering
+# State Machine Refactoring Plan - TDD Approach
 
 ## Overview
-Implement a three-phase refactoring to add left/right audio context for better STT quality while filtering hallucinated tokens based on timestamps.
+
+Refactor `SoundPreProcessor` from implicit boolean-flag-based state management to an explicit enum-based state machine using `match/case` pattern. Follow TDD: write tests first, then implement.
+
+**Goal:** Make the code clearer and more maintainable. 
+---
+
+## Phase 1: Create State Machine Tests
+
+### Test File
+**File:** `tests/test_sound_preprocessor_state_machine.py` (new file)
+
+### Test 1: State Transitions - IDLE
+**Test:** `test_state_idle_to_waiting_on_speech`
+- Initial state: IDLE
+- Feed 1 speech chunk
+- Verify: `state == WAITING_CONFIRMATION`, `consecutive_speech_count == 1`
+
+**Test:** `test_state_idle_stays_idle_on_silence`
+- Initial state: IDLE
+- Feed silence chunks
+- Verify: `state == IDLE`
+
+### Test 2: State Transitions - WAITING_CONFIRMATION
+**Test:** `test_state_waiting_to_active_on_third_speech`
+- State: WAITING_CONFIRMATION, count = 2
+- Feed 3rd speech chunk
+- Verify:
+  - `state == ACTIVE_SPEECH`
+  - `speech_buffer` has 3 chunks
+  - `left_context_snapshot` captured
+
+**Test:** `test_state_waiting_to_idle_on_silence`
+- State: WAITING_CONFIRMATION, count = 2
+- Feed silence chunk
+- Verify: `state == IDLE`, `consecutive_speech_count == 0`
+
+**Test:** `test_state_waiting_continues_on_second_speech`
+- State: WAITING_CONFIRMATION, count = 1
+- Feed 2nd speech chunk
+- Verify: `state == WAITING_CONFIRMATION`, `consecutive_speech_count == 2`
+
+### Test 3: State Transitions - ACTIVE_SPEECH
+**Test:** `test_state_active_stays_active_on_speech`
+- State: ACTIVE_SPEECH
+- Feed speech chunks (below max duration)
+- Verify: `state == ACTIVE_SPEECH`, buffer grows
+
+**Test:** `test_state_active_to_accumulating_on_silence`
+- State: ACTIVE_SPEECH
+- Feed silence chunk
+- Verify:
+  - `state == ACCUMULATING_SILENCE`
+  - `silence_energy > 0`
+
+**Test:** `test_state_active_stays_active_on_max_duration_with_breakpoint`
+- State: ACTIVE_SPEECH, buffer at max duration
+- Mock `_find_silence_breakpoint()` to return a breakpoint
+- Feed chunk that triggers max_duration
+- Verify:
+  - `state == ACTIVE_SPEECH` (continuation, speech continues)
+  - `_build_audio_segment(breakpoint_idx)` called
+  - Segment emitted to speech_queue
+  - windower.process_segment() called
+  - `_keep_remainder_after_breakpoint(breakpoint_idx)` called
+
+**Test:** `test_state_active_stays_active_on_max_duration_hard_cut`
+- State: ACTIVE_SPEECH, buffer at max duration
+- Mock `_find_silence_breakpoint()` to return None
+- Feed chunk that triggers max_duration
+- Verify:
+  - `state == ACTIVE_SPEECH` (continuation, speech continues)
+  - `_build_audio_segment(None)` called
+  - Segment emitted to speech_queue
+  - windower.process_segment() called
+  - `_reset_segment_state()` called
+  - Current chunk re-processed (starts new segment)
+
+### Test 4: State Transitions - ACCUMULATING_SILENCE
+**Test:** `test_state_accumulating_to_active_on_speech_resume`
+- State: ACCUMULATING_SILENCE, energy < threshold
+- Feed speech chunk
+- Verify:
+  - `state == ACTIVE_SPEECH`
+  - `silence_energy == 0`
+
+**Test:** `test_state_accumulating_stays_accumulating`
+- State: ACCUMULATING_SILENCE, energy < threshold
+- Feed silence chunk (doesn't reach threshold)
+- Verify:
+  - `state == ACCUMULATING_SILENCE`
+  - `silence_energy` increased
+
+**Test:** `test_state_accumulating_to_idle_on_threshold`
+- State: ACCUMULATING_SILENCE, energy approaching threshold
+- Feed silence chunk that exceeds threshold
+- Verify:
+  - `state == IDLE`
+  - Finalization method called (segment emitted)
+
+### Test 5: State Consistency
+**Test:** `test_state_property_is_speech_active`
+- Verify property works correctly:
+  - `IDLE` � `is_speech_active == False`
+  - `WAITING_CONFIRMATION` � `is_speech_active == False`
+  - `ACTIVE_SPEECH` � `is_speech_active == True`
+  - `ACCUMULATING_SILENCE` � `is_speech_active == True`
 
 ---
 
-## Task 1: AudioSegment Refactoring for Context Support
+## Phase 2: Helper Methods Design
 
-### 1.1 Update AudioSegment Dataclass
-**File:** `src/types.py`
+### Helper Methods to Extract
 
-**Changes:**
-```python
-@dataclass
-class AudioSegment:
-    type: Literal['preliminary', 'finalized', 'flush']
-    data: npt.NDArray[np.float32]           # Speech audio (concatenated)
-    left_context: npt.NDArray[np.float32]   # NEW: Pre-speech context
-    right_context: npt.NDArray[np.float32]  # NEW: Post-speech context
-    start_time: float                        # Start of data (not context)
-    end_time: float                          # End of data (not context)
-    chunk_ids: list[int] = field(default_factory=list)
-```
+These methods will be extracted from existing code to keep the `match/case` logic clean:
 
-**Decision:** Keep as concatenated numpy arrays (NOT list of chunks) because:
-- Simpler implementation
-- Model needs concatenated array anyway
-- Memory savings from chunk reuse are minimal (~50KB max)
-- No need for complex deque indexing logic
+#### Buffering Methods
+1. **`_append_to_context_buffer(audio, timestamp, is_speech, chunk_id)`**
+   - Append chunk dict to circular context_buffer
+   - Used in all states
 
-### 1.2 Update SoundPreProcessor
-**File:** `src/SoundPreProcessor.py`
+2. **`_append_to_speech_buffer(audio, timestamp, is_speech, chunk_id)`**
+   - Append chunk dict to speech_buffer
+   - Used in ACTIVE_SPEECH and ACCUMULATING_SILENCE states
 
-**Changes:**
-1. **Remove `last_silence_chunk`** property and all related logic
-2. **Add circular buffer** (48 chunks = 1.536s @ 32ms/chunk):
-   ```python
-   CONTEXT_BUFFER_SIZE = 48  # Class constant
-   self.context_buffer: deque = deque(maxlen=48)
-   ```
-3. **Update `_process_chunk()`**: Always append to context_buffer (speech or silence)
-4. **Update `_finalize_segment()`**:
-   ```python
-   # Extract left context from buffer (everything before speech_start_index)
-   left_context_chunks = [buffer items before speech start]
-   left_context = np.concatenate(left_context_chunks) if left_context_chunks else np.array([], dtype=np.float32)
+#### Segment Initialization Methods
+3. **`_capture_left_context_from_buffer()`**
+   - Extract left context from context_buffer (exclude last 2 chunks)
+   - Set `self.left_context_snapshot`
+   - Called when transitioning WAITING_CONFIRMATION → ACTIVE_SPEECH
 
-   # Extract right context (accumulated silence chunks after speech)
-   right_context_chunks = [silence chunks at end of speech_buffer]
-   right_context = np.concatenate(right_context_chunks) if right_context_chunks else np.array([], dtype=np.float32)
+4. **`_initialize_speech_buffer_from_context()`**
+   - Extract last 2 chunks from context_buffer
+   - Assign chunk_ids and populate speech_buffer
+   - Set `self.speech_start_time`
+   - Called when transitioning WAITING_CONFIRMATION → ACTIVE_SPEECH
 
-   # Extract data (only speech chunks)
-   data_chunks = [speech chunks only]
-   data = np.concatenate(data_chunks)
+#### Segment Finalization Methods
+5. **`_build_audio_segment(breakpoint_idx) -> AudioSegment`**
+   - Build AudioSegment from speech_buffer
+   - Extract left_context from left_context_snapshot
+   - Extract data (speech chunks only, from 0 to breakpoint_idx or all)
+   - Extract right_context (trailing silence or from buffer after breakpoint)
+   - Return AudioSegment
+   - Called from state machine, which then emits to queue and windower
 
-   segment = AudioSegment(
-       type='preliminary',
-       data=data,
-       left_context=left_context,
-       right_context=right_context,
-       start_time=speech_start_time,
-       end_time=end_time,
-       chunk_ids=chunk_ids
-   )
-   ```
+6. **`_keep_remainder_after_breakpoint(breakpoint_idx)`**
+   - Keep remainder chunks in speech_buffer (after breakpoint_idx)
+   - Update speech_start_time for remainder
+   - Reset silence_energy
+   - Called from state machine after breakpoint split
 
-### 1.3 Update AdaptiveWindower
-**File:** `src/AdaptiveWindower.py`
+7. **`_reset_segment_state()`**
+   - Reset speech_buffer, silence_energy, left_context_snapshot
+   - Called from state machine when transitioning to IDLE
 
-**Changes:**
-- Update `_emit_window()` and `flush()` to pass empty contexts:
-  ```python
-  window = AudioSegment(
-      type='finalized',  # or 'flush'
-      data=window_audio,
-      left_context=np.array([], dtype=np.float32),   # No context for windows
-      right_context=np.array([], dtype=np.float32),  # No context for windows
-      start_time=start_time,
-      end_time=end_time,
-      chunk_ids=chunk_ids
-  )
-  ```
+#### Existing Methods to Keep
+8. **`_find_silence_breakpoint()`** - unchanged
+9. **`_normalize_rms(audio)`** - unchanged
 
-**Rationale:** Finalized windows already have proper context from preliminary segments - no additional context needed.
+### Tests for Helper Methods
 
----
+**File:** `tests/test_sound_preprocessor_helpers.py` (new file)
 
-## Task 2: Timestamped Recognition
+#### Test: Buffering Methods
+**Test:** `test_append_to_context_buffer`
+- Call `_append_to_context_buffer()` with chunk data
+- Verify chunk dict added to context_buffer with correct structure
 
-### 2.1 Update Model Loading
-**File:** `src/pipeline.py`
+**Test:** `test_append_to_speech_buffer`
+- Call `_append_to_speech_buffer()` with chunk data
+- Verify chunk dict added to speech_buffer with correct structure
 
-**Change line 52:**
-```python
-# Before:
-self.model: TextResultsAsrAdapter = onnx_asr.load_model(...)
+#### Test: Segment Initialization
+**Test:** `test_capture_left_context_from_buffer`
+- Populate context_buffer with 10 chunks
+- Set consecutive_speech_count = 3 (last 2 chunks already in buffer)
+- Call `_capture_left_context_from_buffer()`
+- Verify `left_context_snapshot` contains first 8 chunks (10 - 2)
 
-# After:
-base_model = onnx_asr.load_model(...)
-self.model: TimestampedResultsAsrAdapter = base_model.with_timestamps()
-```
+**Test:** `test_initialize_speech_buffer_from_context`
+- Populate context_buffer with last 2 speech chunks
+- Call `_initialize_speech_buffer_from_context()`
+- Verify:
+  - speech_buffer has 2 chunks
+  - chunk_ids assigned correctly
+  - speech_start_time set to first chunk timestamp
 
-**Add import:**
-```python
-from onnx_asr.adapters import TimestampedResultsAsrAdapter
-from onnx_asr.asr import TimestampedResult
-```
+#### Test: Segment Finalization
+**Test:** `test_build_audio_segment_without_breakpoint`
+- Set left_context_snapshot
+- Populate speech_buffer with speech and trailing silence chunks
+- Call `segment = _build_audio_segment(breakpoint_idx=None)`
+- Verify returned AudioSegment:
+  - left_context from snapshot
+  - data has speech chunks only
+  - right_context has trailing silence
+  - chunk_ids correct
+  - type == 'preliminary'
 
-### 2.2 Update Recognizer
-**File:** `src/Recognizer.py`
+**Test:** `test_build_audio_segment_with_breakpoint`
+- Set left_context_snapshot
+- Populate speech_buffer with 60 chunks
+- Call `segment = _build_audio_segment(breakpoint_idx=40)`
+- Verify returned AudioSegment:
+  - data from chunks 0-40 only
+  - right_context extracted from chunks 41-46 (up to 6 chunks)
+  - chunk_ids from 0-40
 
-**Changes to `__init__()`:**
-```python
-def __init__(self,
-             speech_queue: queue.Queue,
-             text_queue: queue.Queue,
-             model: TimestampedResultsAsrAdapter,  # Type changed
-             sample_rate: int = 16000,  # NEW parameter
-             verbose: bool = False) -> None:
-    # ... existing fields ...
-    self.sample_rate = sample_rate
-```
+**Test:** `test_keep_remainder_after_breakpoint`
+- Populate speech_buffer with 60 chunks
+- Call `_keep_remainder_after_breakpoint(40)`
+- Verify:
+  - speech_buffer has remainder (41-59)
+  - speech_start_time updated to chunk 41 timestamp
+  - silence_energy reset to 0
 
-**Changes to `recognize_window()`:**
-```python
-def recognize_window(self, window_data: ChunkQueueItem) -> Optional[RecognitionResult]:
-    # Concatenate context + data + context for recognition
-    audio_parts = []
-    if window_data.left_context.size > 0:
-        audio_parts.append(window_data.left_context)
-    audio_parts.append(window_data.data)
-    if window_data.right_context.size > 0:
-        audio_parts.append(window_data.right_context)
-
-    full_audio = np.concatenate(audio_parts) if len(audio_parts) > 1 else window_data.data
-
-    # Recognize with timestamps
-    result: TimestampedResult = self.model.recognize(full_audio)
-
-    if not result.text or not result.text.strip():
-        return None
-
-    # Calculate context boundaries in seconds
-    left_context_duration = len(window_data.left_context) / self.sample_rate
-    data_duration = len(window_data.data) / self.sample_rate
-    data_start = left_context_duration
-    data_end = left_context_duration + data_duration
-
-    # Filter tokens within data region
-    filtered_text = self._filter_tokens_by_timestamp(
-        result.text,
-        result.tokens,
-        result.timestamps,
-        data_start,
-        data_end
-    )
-
-    if not filtered_text or not filtered_text.strip():
-        return None
-
-    # Create result with filtered text, original timing
-    status = {'preliminary': 'preliminary', 'finalized': 'final', 'flush': 'flush'}[window_data.type]
-
-    return RecognitionResult(
-        text=filtered_text,
-        start_time=window_data.start_time,
-        end_time=window_data.end_time,
-        status=status,
-        chunk_ids=window_data.chunk_ids
-    )
-```
-
-**New private method:**
-```python
-def _filter_tokens_by_timestamp(self,
-                                 text: str,
-                                 tokens: list[str] | None,
-                                 timestamps: list[float] | None,
-                                 data_start: float,
-                                 data_end: float) -> str:
-    """Filter tokens to only those within data region (exclude context).
-
-    Args:
-        text: Full recognized text
-        tokens: Token list from TimestampedResult (subword units with � prefix)
-        timestamps: Timestamp list (in seconds, relative to audio start)
-        data_start: Start of data region in seconds
-        data_end: End of data region in seconds
-
-    Returns:
-        Filtered text containing only tokens from data region
-    """
-    if not tokens or not timestamps:
-        # No timestamps available - return full text (fallback)
-        return text
-
-    # Filter tokens within data boundaries
-    filtered_tokens = []
-    for token, ts in zip(tokens, timestamps):
-        if data_start <= ts <= data_end:
-            filtered_tokens.append(token)
-
-    if not filtered_tokens:
-        return ""
-
-    # Reconstruct text from filtered tokens
-    # Tokens use � (U+2581) for word boundaries
-    reconstructed = ''.join(filtered_tokens)
-    reconstructed = reconstructed.replace('�', ' ')
-    reconstructed = reconstructed.strip()
-
-    return reconstructed
-```
+**Test:** `test_reset_segment_state`
+- Populate speech_buffer, silence_energy, left_context_snapshot
+- Call `_reset_segment_state()`
+- Verify all cleared
 
 ---
 
-## Task 3: Context Buffer Implementation
+## Implementation Order
 
-### 3.1 SoundPreProcessor Circular Buffer
-**File:** `src/SoundPreProcessor.py`
-
-**Implementation details:**
-
-```python
-class SoundPreProcessor:
-    CONTEXT_BUFFER_SIZE = 48  # 1.536s @ 32ms/chunk
-
-    def __init__(self, ...):
-        # Remove: self.last_silence_chunk
-        self.context_buffer: deque = deque(maxlen=self.CONTEXT_BUFFER_SIZE)
-        self.speech_start_index: int | None = None  # Index in buffer when speech started
-
-    def _handle_speech_frame(self, audio_chunk, timestamp, chunk_id):
-        # Add to circular buffer
-        self.context_buffer.append({
-            'audio': audio_chunk,
-            'timestamp': timestamp,
-            'chunk_id': chunk_id,
-            'is_speech': True
-        })
-
-        if not self.is_speech_active:
-            # Mark where speech started in buffer
-            self.speech_start_index = len(self.context_buffer) - 1
-            self.is_speech_active = True
-            self.speech_start_time = timestamp
-
-        # Add to speech buffer (for data extraction)
-        self.speech_buffer.append({
-            'audio': audio_chunk,
-            'timestamp': timestamp,
-            'chunk_id': chunk_id
-        })
-
-        # Max duration check (unchanged)
-        if (timestamp - self.speech_start_time) * 1000 >= self.max_speech_duration_ms:
-            self._finalize_segment()
-
-    def _handle_silence_frame(self, audio_chunk, timestamp, chunk_id):
-        # Always add to circular buffer
-        self.context_buffer.append({
-            'audio': audio_chunk,
-            'timestamp': timestamp,
-            'chunk_id': chunk_id,
-            'is_speech': False
-        })
-
-        if self.is_speech_active:
-            # Accumulate trailing silence in speech_buffer
-            self.speech_buffer.append({
-                'audio': audio_chunk,
-                'timestamp': timestamp
-                # No chunk_id for silence
-            })
-
-            # Check silence energy threshold (unchanged)
-            speech_prob = self.vad.process_frame(normalized_audio)
-            self.silence_energy += (1.0 - speech_prob)
-
-            if self.silence_energy >= self.silence_energy_threshold:
-                self._finalize_segment()
-
-    def _finalize_segment(self):
-        if not self.speech_buffer:
-            return
-
-        # Extract left context from circular buffer
-        left_context_chunks = []
-        if self.speech_start_index is not None:
-            # Get all chunks before speech start (available in buffer)
-            buffer_list = list(self.context_buffer)
-            for i in range(self.speech_start_index):
-                if i < len(buffer_list):
-                    left_context_chunks.append(buffer_list[i]['audio'])
-
-        left_context = (np.concatenate(left_context_chunks)
-                       if left_context_chunks
-                       else np.array([], dtype=np.float32))
-
-        # Extract data (speech chunks only from speech_buffer)
-        data_chunks = [chunk['audio'] for chunk in self.speech_buffer
-                      if 'chunk_id' in chunk]
-        data = np.concatenate(data_chunks)
-
-        # Extract right context (trailing silence from speech_buffer)
-        right_context_chunks = [chunk['audio'] for chunk in self.speech_buffer
-                               if 'chunk_id' not in chunk]
-        right_context = (np.concatenate(right_context_chunks)
-                        if right_context_chunks
-                        else np.array([], dtype=np.float32))
-
-        # Extract chunk_ids (speech only)
-        chunk_ids = [chunk['chunk_id'] for chunk in self.speech_buffer
-                    if 'chunk_id' in chunk]
-
-        # Create segment with contexts
-        segment = AudioSegment(
-            type='preliminary',
-            data=data,
-            left_context=left_context,
-            right_context=right_context,
-            start_time=self.speech_start_time,
-            end_time=end_time,
-            chunk_ids=chunk_ids
-        )
-
-        self.speech_queue.put(segment)
-
-        # Reset state
-        self.speech_buffer.clear()
-        self.is_speech_active = False
-        self.speech_start_index = None
-        self.silence_energy = 0.0
-
-        # Call windower (unchanged)
-        self.windower.process_segment(segment)
-```
-
----
-
-## Test Strategy
-
-### Phase 1: Task 1 Tests (AudioSegment + Context Buffer)
-
-**New Tests:**
-1. `tests/test_sound_preprocessor.py`:
-   - `test_circular_buffer_initialization()` - Verify buffer created with size 48
-   - `test_context_buffer_fills_before_speech()` - Verify buffer accumulates silence before speech
-   - `test_left_context_extraction()` - Verify left context extracted from buffer
-   - `test_right_context_extraction()` - Verify right context from trailing silence
-   - `test_early_speech_small_left_context()` - Verify handling when speech starts within first 18 chunks
-   - `test_no_left_context_at_startup()` - Verify empty left context when speech starts immediately
-
-**Tests to Remove:**
-2. `tests/test_sound_preprocessor.py`:
-   - `test_last_silence_chunk_prepended()` (lines 622-721) - Feature removed
-   - `test_last_silence_chunk_cleared()` - Feature removed
-   - Any other tests checking `last_silence_chunk` property
-
-**Tests to Update:**
-3. `tests/test_sound_preprocessor.py`:
-   - All tests creating AudioSegment must add `left_context` and `right_context` fields
-   - Update assertions to check context fields
-
-4. `tests/test_adaptive_windower.py`:
-   - Update all AudioSegment creations to include empty contexts
-   - Verify finalized windows have empty contexts
-
-5. `tests/test_recognizer.py`:
-   - Update all AudioSegment creations to include context fields
-
-### Phase 2: Task 2 Tests (Timestamped Recognition)
-
-**New Tests:**
-6. `tests/test_recognizer.py`:
-   - `test_recognize_with_timestamps()` - Verify model returns TimestampedResult
-   - `test_filter_tokens_by_timestamp()` - Unit test for token filtering
-   - `test_filter_tokens_all_in_range()` - All tokens within data region
-   - `test_filter_tokens_partial_overlap()` - Some tokens in context, some in data
-   - `test_filter_tokens_none_in_range()` - All tokens in context (return empty)
-   - `test_filter_tokens_no_timestamps()` - Fallback when timestamps unavailable
-   - `test_context_concatenation()` - Verify left+data+right concatenated correctly
-
-**Tests to Update:**
-7. `tests/test_recognizer.py`:
-   - Update mock model to return TimestampedResult instead of str
-   - Update 3 existing tests for new signature
-
-### Phase 3: Integration Tests
-
-**New Tests:**
-8. `tests/test_integration_context_filtering.py`:
-   - `test_end_to_end_with_context()` - Full pipeline with real audio
-   - `test_hallucination_filtering()` - Verify context prevents "yeah"/"mm-hmm" hallucinations
-   - `test_short_word_with_context()` - Verify 50-128ms words recognized correctly
-
----
-
-## Implementation Order (TDD: Tests First!)
-
-### Phase 1: AudioSegment + Context Buffer
-
-1. **Phase 1a:** Update AudioSegment dataclass (add context fields) - *minimal change to enable tests*
-2. **Phase 1b:** Update AdaptiveWindower (pass empty contexts) - *minimal change to enable tests*
-3. **Phase 1c:** Update all existing tests to use new AudioSegment fields (left_context, right_context)
-4. **Phase 1d:** Remove obsolete tests (last_silence_chunk related)
-5. **Phase 1e:** Write NEW Phase 1 tests (context buffer) - *tests will FAIL*
-6. **Phase 1f:** Implement circular buffer in SoundPreProcessor - *make tests PASS*
-7. **Phase 1g:** Run Phase 1 tests, verify all GREEN
-
-### Phase 2: Timestamped Recognition
-
-8. **Phase 2a:** Write Phase 2 tests (token filtering) - *tests will FAIL*
-9. **Phase 2b:** Update pipeline.py model loading (with_timestamps())
-10. **Phase 2c:** Implement token filtering in Recognizer - *make tests PASS*
-11. **Phase 2d:** Run Phase 2 tests, verify all GREEN
-
-### Phase 3: Integration & Validation
-
-12. **Phase 3a:** Write integration tests - *tests will FAIL*
-13. **Phase 3b:** Fix any integration issues - *make tests PASS*
-14. **Phase 3c:** Run FULL test suite, verify all GREEN
-15. **Phase 3d:** Manual testing with real audio
-
----
-
-## Design Constants (No Config Changes)
-
-```python
-# In SoundPreProcessor
-CONTEXT_BUFFER_SIZE = 48  # chunks (1.536s @ 32ms/chunk)
-
-# In Recognizer
-# sample_rate passed from Pipeline (16000)
-```
-
----
-
-## Risks and Mitigations
-
-### Risk 1: Token filtering too aggressive
-- **Mitigation:** Log filtered vs original text in verbose mode
-- **Fallback:** Return full text if no tokens in range
-
-### Risk 2: 80ms timestamp resolution insufficient
-- **Mitigation:** Use timestamp boundaries with tolerance (�40ms)
-- **Monitor:** Track filtering accuracy in tests
-
-### Risk 3: Circular buffer index tracking complex
-- **Mitigation:** Thorough unit tests for edge cases
-- **Simplification:** Convert deque to list for indexing when needed
-
-### Risk 4: Memory increase from context storage
-- **Impact:** ~50KB per segment (1.5s @ 16kHz = 24KB per context)
-- **Acceptable:** Small compared to model memory (600MB+)
+1. **Create state machine tests** (Phase 1)
+2. **Create helper method tests** (Phase 2)
+3. **Add ProcessingState enum**
+4. **Add state field and property**
+5. **Extract helper methods** (implement and verify tests pass)
+6. **Refactor `_process_chunk` to match/case**
+7. **Remove old methods**
+8. **Run all tests**
+9. **Cleanup**
 
 ---
 
 ## Success Criteria
 
-1.  All existing tests pass with updated AudioSegment
-2.  Context buffer correctly extracts left/right contexts
-3.  Token filtering removes context-related tokens
-4.  No regression in recognition quality for normal speech
-5.  Improved quality for short words (50-128ms) - measured manually
-6.  No hallucinations ("yeah", "mm-hmm") on silence - verified in tests
+- [ ] All new state machine tests pass
+- [ ] All existing tests pass (100% backward compatible)
+- [ ] Code is more readable (state machine visible)
+- [ ] No change to public API
+- [ ] No change to behavior
 
 ---
 
-## Validation Plan
+## Key Design Decisions
 
-After implementation:
-1. Run full test suite: `python -m pytest tests/ -v`
-2. Manual test with verbose mode: `python main.py -v`
-3. Speak short words ("yes", "no", "hi") and verify recognition
-4. Test with silence periods - verify no hallucinations
-5. Check logs for context sizes and filtered tokens
-
+1. **Use `match/case`** for state machine (Python 3.10+)
+2. **All state transitions in `_process_chunk`** - single source of truth
+3. **Explicit state assignments** - `self.state = ProcessingState.X`
+4. **Helper methods for actions** - keep match/case readable
+5. **Pure refactoring** - no behavior changes, no bug fixes
