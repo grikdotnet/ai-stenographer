@@ -326,10 +326,10 @@ class TestSoundPreProcessor:
         assert abs(segment.end_time - expected_end) < 0.001
 
 
-    def test_context_buffer_fills_before_speech(self, preprocessor_config, mock_windower):
-        """Verify context_buffer accumulates silence before speech starts.
+    def test_idle_buffer_fills_before_speech(self, preprocessor_config, mock_windower):
+        """Verify idle_buffer accumulates silence before speech starts.
 
-        Logic: Feed 10 silence chunks → context_buffer should contain 10 chunks.
+        Logic: Feed 10 silence chunks → idle_buffer should contain 10 chunks.
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
@@ -356,15 +356,15 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        # Context buffer should have 10 chunks
-        assert len(preprocessor.context_buffer) == 10
+        # Idle buffer should have 10 chunks
+        assert len(preprocessor.idle_buffer) == 10
 
 
     def test_left_context_extraction(self, preprocessor_config, mock_windower):
-        """Verify left context is extracted from buffer when speech finalizes.
+        """Verify left context is extracted from idle_buffer when speech finalizes.
 
         Logic: 20 silence chunks, then 3 speech chunks, then finalize.
-        left_context should contain approximately 20 chunks of silence.
+        left_context should contain entire idle_buffer (20 chunks = 10,240 samples).
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
@@ -422,11 +422,10 @@ class TestSoundPreProcessor:
         assert not speech_queue.empty()
         segment = speech_queue.get()
 
-        # Verify left_context contains silence (20 chunks * 512 samples)
-        # May be less due to circular buffer overflow
-        assert len(segment.left_context) > 0
+        # Verify left_context contains entire idle_buffer (20 chunks * 512 samples = 10,240 samples)
+        # No slicing needed with new design
         expected_samples = 20 * 512
-        assert len(segment.left_context) <= expected_samples
+        assert len(segment.left_context) == expected_samples
 
 
     def test_right_context_extraction(self, preprocessor_config, mock_windower):
@@ -489,8 +488,6 @@ class TestSoundPreProcessor:
     def test_no_left_context_at_startup(self, preprocessor_config, mock_windower):
         """Verify empty left context when speech starts immediately.
 
-        Logic: Speech starts immediately (no preceding silence).
-        left_context should be empty.
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
@@ -516,6 +513,9 @@ class TestSoundPreProcessor:
             verbose=False
         )
 
+        # Verify idle_buffer is empty at startup
+        assert len(preprocessor.idle_buffer) == 0
+
         for i in range(3):
             audio = np.random.randn(512).astype(np.float32) * 0.1
             chunk = {
@@ -536,6 +536,190 @@ class TestSoundPreProcessor:
         segment = speech_queue.get()
 
         assert len(segment.left_context) == 0
+
+
+    def test_confirmation_chunks_initialize_speech_buffer(self, preprocessor_config, mock_windower):
+        """Verify confirmation_chunks are used to initialize speech_buffer on transition to ACTIVE_SPEECH.
+
+        Logic: 10 silence chunks (IDLE), 3 speech chunks (triggers ACTIVE_SPEECH) →
+        speech_buffer should have 3 chunks with sequential chunk_ids starting at 0.
+        """
+        chunk_queue = queue.Queue()
+        speech_queue = queue.Queue()
+
+        # Mock VAD: 10 silence, then speech
+        call_count = 0
+        def vad_side_effect(audio):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 10:
+                return {'is_speech': False, 'speech_probability': 0.2}
+            else:
+                return {'is_speech': True, 'speech_probability': 0.9}
+
+        mock_vad = Mock()
+        mock_vad.process_frame = Mock(side_effect=vad_side_effect)
+
+        preprocessor = SoundPreProcessor(
+            chunk_queue=chunk_queue,
+            speech_queue=speech_queue,
+            vad=mock_vad,
+            windower=mock_windower,
+            config=preprocessor_config,
+            verbose=False
+        )
+
+        # Feed 10 silence chunks
+        for i in range(10):
+            audio = np.random.randn(512).astype(np.float32) * 0.01
+            chunk = {
+                'audio': audio,
+                'timestamp': 1.0 + i * 0.032,
+            }
+            preprocessor._process_chunk(chunk)
+
+        # Feed 3 speech chunks (triggers ACTIVE_SPEECH)
+        for i in range(3):
+            audio = np.random.randn(512).astype(np.float32) * 0.1
+            chunk = {
+                'audio': audio,
+                'timestamp': 1.0 + (10 + i) * 0.032,
+            }
+            preprocessor._process_chunk(chunk)
+
+        # Verify speech_buffer has 3 chunks from confirmation
+        from src.SoundPreProcessor import ProcessingState
+        assert preprocessor.state == ProcessingState.ACTIVE_SPEECH
+        assert len(preprocessor.speech_buffer) == 3
+
+        assert preprocessor.speech_buffer[0]['chunk_id'] == 0
+        assert preprocessor.speech_buffer[1]['chunk_id'] == 1
+        assert preprocessor.speech_buffer[2]['chunk_id'] == 2
+        # confirmation_chunks should be cleared
+
+        assert len(preprocessor.confirmation_chunks) == 0
+
+
+    def test_confirmation_chunks_cleared_on_idle_transition(self, preprocessor_config, mock_windower):
+        """Verify confirmation_chunks cleared when WAITING_CONFIRMATION → IDLE.
+
+        Logic: 2 speech chunks (WAITING_CONFIRMATION), 1 silence chunk (back to IDLE) →
+        confirmation_chunks should be cleared.
+        """
+        chunk_queue = queue.Queue()
+        speech_queue = queue.Queue()
+
+        # Mock VAD: 2 speech, then 1 silence
+        call_count = 0
+        def vad_side_effect(audio):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return {'is_speech': True, 'speech_probability': 0.9}
+            else:
+                return {'is_speech': False, 'speech_probability': 0.1}
+
+        mock_vad = Mock()
+        mock_vad.process_frame = Mock(side_effect=vad_side_effect)
+
+        preprocessor = SoundPreProcessor(
+            chunk_queue=chunk_queue,
+            speech_queue=speech_queue,
+            vad=mock_vad,
+            windower=mock_windower,
+            config=preprocessor_config,
+            verbose=False
+        )
+
+        # Feed 2 speech chunks
+        for i in range(2):
+            audio = np.random.randn(512).astype(np.float32) * 0.1
+            chunk = {
+                'audio': audio,
+                'timestamp': 1.0 + i * 0.032,
+            }
+            preprocessor._process_chunk(chunk)
+
+        # Verify state is WAITING_CONFIRMATION
+        from src.SoundPreProcessor import ProcessingState
+        assert preprocessor.state == ProcessingState.WAITING_CONFIRMATION
+        assert len(preprocessor.confirmation_chunks) == 2
+
+        # Feed 1 silence chunk (back to IDLE)
+        audio = np.random.randn(512).astype(np.float32) * 0.01
+        chunk = {
+            'audio': audio,
+            'timestamp': 1.0 + 2 * 0.032,
+        }
+        preprocessor._process_chunk(chunk)
+
+        # Verify state is IDLE and confirmation_chunks cleared
+        assert preprocessor.state == ProcessingState.IDLE
+        assert len(preprocessor.confirmation_chunks) == 0
+
+
+    def test_waiting_confirmation_timeout_preserves_idle_buffer(self, preprocessor_config, mock_windower):
+        """
+        Logic: 8 silence chunks (IDLE), 2 speech chunks (WAITING_CONFIRMATION), 1 silence chunk (back to IDLE) →
+        idle_buffer should have 11 chunks (8 + 2 + 1).
+        """
+        chunk_queue = queue.Queue()
+        speech_queue = queue.Queue()
+
+        # Mock VAD: silence, speech, silence
+        call_count = 0
+        def vad_side_effect(audio):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 8:
+                return {'is_speech': False, 'speech_probability': 0.2}
+            elif call_count <= 10:
+                return {'is_speech': True, 'speech_probability': 0.9}
+            else:
+                return {'is_speech': False, 'speech_probability': 0.1}
+
+        mock_vad = Mock()
+        mock_vad.process_frame = Mock(side_effect=vad_side_effect)
+
+        preprocessor = SoundPreProcessor(
+            chunk_queue=chunk_queue,
+            speech_queue=speech_queue,
+            vad=mock_vad,
+            windower=mock_windower,
+            config=preprocessor_config,
+            verbose=False
+        )
+
+        # Feed 8 silence chunks
+        for i in range(8):
+            audio = np.random.randn(512).astype(np.float32) * 0.01
+            chunk = {
+                'audio': audio,
+                'timestamp': 1.0 + i * 0.032,
+            }
+            preprocessor._process_chunk(chunk)
+
+        # Feed 2 speech chunks
+        for i in range(2):
+            audio = np.random.randn(512).astype(np.float32) * 0.1
+            chunk = {
+                'audio': audio,
+                'timestamp': 1.0 + (8 + i) * 0.032,
+            }
+            preprocessor._process_chunk(chunk)
+
+        # Feed 1 silence chunk (back to IDLE)
+        audio = np.random.randn(512).astype(np.float32) * 0.01
+        chunk = {
+            'audio': audio,
+            'timestamp': 1.0 + 10 * 0.032,
+        }
+        preprocessor._process_chunk(chunk)
+
+        # Verify state is IDLE and idle_buffer has all 11 chunks
+        from src.SoundPreProcessor import ProcessingState
+        assert preprocessor.state == ProcessingState.IDLE
+        assert len(preprocessor.idle_buffer) == 11
 
 
     # Consecutive Speech Chunk Tests (False Positive Prevention)

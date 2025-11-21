@@ -44,10 +44,12 @@ class SoundPreProcessor:
     Runs in dedicated thread to avoid blocking audio capture.
     Orchestrates VAD, speech buffering, and AdaptiveWindower.
 
-    Context Buffer Strategy:
+    Idle Buffer Strategy:
     - Maintains circular buffer of last 48 chunks (1.536s @ 32ms/chunk)
-    - Accumulates both speech and silence chunks for context extraction
-    - left_context: chunks before speech
+    - Accumulates during IDLE state
+    - WAITING_CONFIRMATION uses separate confirmation_chunks list
+    - Stops accumulating during ACTIVE_SPEECH and ACCUMULATING_SILENCE
+    - left_context: entire idle_buffer snapshot at speech start
     - right_context: trailing silence after speech ends
     - Enables better STT quality for short words and prevents hallucinations
 
@@ -126,10 +128,14 @@ class SoundPreProcessor:
         self.consecutive_speech_count: int = 0
         self.CONSECUTIVE_SPEECH_CHUNKS: int = 3
 
-        # Context buffer: circular buffer for gathering sound context
+        # Idle buffer: circular buffer for gathering pre-speech context (only in IDLE/WAITING_CONFIRMATION)
         # Each item: {'audio': np.ndarray, 'timestamp': float, 'chunk_id': int|None, 'is_speech': bool}
-        self.context_buffer: deque = deque(maxlen=self.CONTEXT_BUFFER_SIZE)
-        self.left_context_snapshot: List[np.ndarray] | None = None  
+        self.idle_buffer: deque = deque(maxlen=self.CONTEXT_BUFFER_SIZE)
+        self.left_context_snapshot: List[np.ndarray] | None = None
+
+        # Confirmation chunks: temporary list for WAITING_CONFIRMATION state
+        # Holds 1-2 chunks before confirming speech started
+        self.confirmation_chunks: List[Dict[str, Any]] = []
 
         self.chunk_id_counter: int = 0
 
@@ -209,10 +215,11 @@ class SoundPreProcessor:
                     # IDLE → WAITING_CONFIRMATION
                     self.consecutive_speech_count = 1
                     self.state = ProcessingState.WAITING_CONFIRMATION
-                    self._append_to_context_buffer(audio, timestamp, is_speech=True, chunk_id=None)
+                    # Start confirmation_chunks, don't add to idle_buffer yet
+                    self._append_to_confirmation_chunks(audio, timestamp, is_speech=True)
                 else:
                     # IDLE → IDLE
-                    self._append_to_context_buffer(audio, timestamp, is_speech=False, chunk_id=None)
+                    self._append_to_idle_buffer(audio, timestamp, is_speech=False, chunk_id=None)
 
             case ProcessingState.WAITING_CONFIRMATION:
                 if is_speech:
@@ -222,7 +229,7 @@ class SoundPreProcessor:
                         # WAITING_CONFIRMATION → ACTIVE_SPEECH
                         self.state = ProcessingState.ACTIVE_SPEECH
                         self._capture_left_context_from_buffer()
-                        self._initialize_speech_buffer_from_context()
+                        self._initialize_speech_buffer_from_confirmation()
 
                         # Set speech tracking variables
                         self.last_speech_timestamp = timestamp
@@ -234,18 +241,22 @@ class SoundPreProcessor:
                             logging.debug(f"SoundPreProcessor: Starting segment at {offset:.2f}")
                             logging.debug(f"captured {len(self.left_context_snapshot)} left context chunks")
 
-                        # Add current chunk to speech buffer
+                        # Add current chunk to speech buffer (3rd confirmation chunk)
                         self._append_to_speech_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
-                        self._append_to_context_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
                         self.chunk_id_counter += 1
                     else:
                         # WAITING_CONFIRMATION → WAITING_CONFIRMATION
-                        self._append_to_context_buffer(audio, timestamp, is_speech=True, chunk_id=None)
+                        self._append_to_confirmation_chunks(audio, timestamp, is_speech=True)
                 else:
                     # WAITING_CONFIRMATION → IDLE
                     self.state = ProcessingState.IDLE
                     self.consecutive_speech_count = 0
-                    self._append_to_context_buffer(audio, timestamp, is_speech=False, chunk_id=None)
+                    # Move confirmation chunks back to idle_buffer before clearing
+                    for conf_chunk in self.confirmation_chunks:
+                        self._append_to_idle_buffer(conf_chunk['audio'], conf_chunk['timestamp'],
+                                                   is_speech=True, chunk_id=None)
+                    self.confirmation_chunks = []
+                    self._append_to_idle_buffer(audio, timestamp, is_speech=False, chunk_id=None)
 
             case ProcessingState.ACTIVE_SPEECH:
                 if is_speech:
@@ -255,7 +266,7 @@ class SoundPreProcessor:
                     self.speech_before_silence = True
 
                     self._append_to_speech_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
-                    self._append_to_context_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
+                    # Note: Do NOT append to idle_buffer during ACTIVE_SPEECH
                     self.chunk_id_counter += 1
 
                     # Check max duration
@@ -313,7 +324,7 @@ class SoundPreProcessor:
                     self.silence_energy += (1.0 - speech_prob)
 
                     self._append_to_speech_buffer(audio, timestamp, is_speech=False, chunk_id=self.chunk_id_counter)
-                    self._append_to_context_buffer(audio, timestamp, is_speech=False, chunk_id=self.chunk_id_counter)
+                    # Note: Do NOT append to idle_buffer during ACCUMULATING_SILENCE
                     self.chunk_id_counter += 1
 
                     if self.verbose:
@@ -329,14 +340,14 @@ class SoundPreProcessor:
                     self.speech_before_silence = True
 
                     self._append_to_speech_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
-                    self._append_to_context_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
+                    # Note: Do NOT append to idle_buffer during ACTIVE_SPEECH
                     self.chunk_id_counter += 1
                 else:
                     # ACCUMULATING_SILENCE → ACCUMULATING_SILENCE or IDLE
                     self.silence_energy += (1.0 - speech_prob)
 
                     self._append_to_speech_buffer(audio, timestamp, is_speech=False, chunk_id=self.chunk_id_counter)
-                    self._append_to_context_buffer(audio, timestamp, is_speech=False, chunk_id=self.chunk_id_counter)
+                    # Note: Do NOT append to idle_buffer during ACCUMULATING_SILENCE
                     self.chunk_id_counter += 1
 
                     if self.verbose:
@@ -411,8 +422,8 @@ class SoundPreProcessor:
     # Helper Methods for State Machine
     # ========================================================================
 
-    def _append_to_context_buffer(self, audio: np.ndarray, timestamp: float, is_speech: bool, chunk_id: int | None) -> None:
-        """Append chunk dict to circular context_buffer.
+    def _append_to_idle_buffer(self, audio: np.ndarray, timestamp: float, is_speech: bool, chunk_id: int | None) -> None:
+        """Append chunk dict to circular idle_buffer (only during IDLE).
 
         Args:
             audio: Audio chunk data
@@ -426,7 +437,22 @@ class SoundPreProcessor:
             'chunk_id': chunk_id,
             'is_speech': is_speech
         }
-        self.context_buffer.append(chunk)
+        self.idle_buffer.append(chunk)
+
+    def _append_to_confirmation_chunks(self, audio: np.ndarray, timestamp: float, is_speech: bool) -> None:
+        """Append chunk to confirmation_chunks list (during WAITING_CONFIRMATION).
+
+        Args:
+            audio: Audio chunk data
+            timestamp: Timestamp of chunk
+            is_speech: Whether chunk is speech
+        """
+        chunk = {
+            'audio': audio,
+            'timestamp': timestamp,
+            'is_speech': is_speech
+        }
+        self.confirmation_chunks.append(chunk)
 
     def _append_to_speech_buffer(self, audio: np.ndarray, timestamp: float, is_speech: bool, chunk_id: int) -> None:
         """Append chunk dict to speech_buffer.
@@ -446,28 +472,23 @@ class SoundPreProcessor:
         self.speech_buffer.append(chunk)
 
     def _capture_left_context_from_buffer(self) -> None:
-        """Extract left context from context_buffer (exclude last 2 chunks).
+        """Extract left context from idle_buffer (entire buffer, no slicing).
 
         Called when transitioning WAITING_CONFIRMATION → ACTIVE_SPEECH.
-        Snapshots left context from everything BEFORE the last 2 chunks.
+        Snapshots left context from entire idle_buffer at transition time.
         """
-        buffer_list = list(self.context_buffer)
-        chunks_already_in_buffer = self.CONSECUTIVE_SPEECH_CHUNKS - 1
-        self.left_context_snapshot = [chunk['audio'] for chunk in buffer_list[:-chunks_already_in_buffer]]
+        self.left_context_snapshot = [chunk['audio'] for chunk in self.idle_buffer]
 
-    def _initialize_speech_buffer_from_context(self) -> None:
-        """Extract last 2 chunks from context_buffer and initialize speech_buffer.
+    def _initialize_speech_buffer_from_confirmation(self) -> None:
+        """Initialize speech_buffer from confirmation_chunks.
 
         Called when transitioning WAITING_CONFIRMATION → ACTIVE_SPEECH.
         Assigns chunk_ids and populates speech_buffer with first speech chunks.
         Sets speech_start_time to first chunk timestamp.
+        Clears confirmation_chunks after initialization.
         """
-        buffer_list = list(self.context_buffer)
-        chunks_already_in_buffer = self.CONSECUTIVE_SPEECH_CHUNKS - 1
-        last_chunks = buffer_list[-chunks_already_in_buffer:]
-
         self.speech_buffer = []
-        for chunk in last_chunks:
+        for chunk in self.confirmation_chunks:
             # Assign chunk_id from counter
             chunk_with_id = {
                 'audio': chunk['audio'],
@@ -480,6 +501,9 @@ class SoundPreProcessor:
 
         if self.speech_buffer:
             self.speech_start_time = self.speech_buffer[0]['timestamp']
+
+        # Clear confirmation chunks after initialization
+        self.confirmation_chunks = []
 
     def _build_audio_segment(self, breakpoint_idx: int | None = None) -> AudioSegment:
         """Build AudioSegment from speech_buffer.

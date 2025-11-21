@@ -62,17 +62,17 @@ def make_audio(num_samples=512):
 # Test: Buffering Methods
 # ============================================================================
 
-def test_append_to_context_buffer(spp):
-    """Test _append_to_context_buffer adds chunk dict to context_buffer."""
+def test_append_to_idle_buffer(spp):
+    """Test _append_to_idle_buffer adds chunk dict to idle_buffer."""
     audio = make_audio()
     timestamp = 1.0
     is_speech = True
     chunk_id = 42
 
-    spp._append_to_context_buffer(audio, timestamp, is_speech, chunk_id)
+    spp._append_to_idle_buffer(audio, timestamp, is_speech, chunk_id)
 
-    assert len(spp.context_buffer) == 1
-    chunk = spp.context_buffer[0]
+    assert len(spp.idle_buffer) == 1
+    chunk = spp.idle_buffer[0]
     assert np.array_equal(chunk['audio'], audio)
     assert chunk['timestamp'] == timestamp
     assert chunk['is_speech'] == is_speech
@@ -94,70 +94,6 @@ def test_append_to_speech_buffer(spp):
     assert chunk['timestamp'] == timestamp
     assert chunk['is_speech'] == is_speech
     assert chunk['chunk_id'] == chunk_id
-
-
-# ============================================================================
-# Test: Segment Initialization
-# ============================================================================
-
-def test_capture_left_context_from_buffer(spp):
-    """Test _capture_left_context_from_buffer extracts left context correctly."""
-    # Populate context_buffer with 10 chunks
-    for i in range(10):
-        spp.context_buffer.append({
-            'audio': make_audio(),
-            'timestamp': i * 0.032,
-            'chunk_id': i,
-            'is_speech': True
-        })
-
-    # Simulate 3 consecutive speech chunks (last 2 already in buffer)
-    spp.consecutive_speech_count = 3
-
-    # Call method
-    spp._capture_left_context_from_buffer()
-
-    # Verify left_context_snapshot contains first 8 chunks (10 - 2)
-    assert spp.left_context_snapshot is not None
-    assert len(spp.left_context_snapshot) == 8
-
-
-def test_initialize_speech_buffer_from_context(spp):
-    """Test _initialize_speech_buffer_from_context initializes speech buffer."""
-    # Populate context_buffer with last 2 speech chunks
-    for i in range(10):
-        spp.context_buffer.append({
-            'audio': make_audio(),
-            'timestamp': i * 0.032,
-            'chunk_id': None,
-            'is_speech': False
-        })
-
-    # Add last 2 speech chunks
-    spp.context_buffer.append({
-        'audio': make_audio(),
-        'timestamp': 10 * 0.032,
-        'chunk_id': None,
-        'is_speech': True
-    })
-    spp.context_buffer.append({
-        'audio': make_audio(),
-        'timestamp': 11 * 0.032,
-        'chunk_id': None,
-        'is_speech': True
-    })
-
-    spp.consecutive_speech_count = 3
-    spp.chunk_id_counter = 100
-
-    # Call method
-    spp._initialize_speech_buffer_from_context()
-
-    # Verify speech_buffer has 2 chunks
-    assert len(spp.speech_buffer) == 2
-    assert spp.speech_buffer[0]['chunk_id'] is not None
-    assert spp.speech_buffer[1]['chunk_id'] is not None
-    assert spp.speech_start_time == spp.speech_buffer[0]['timestamp']
 
 
 # ============================================================================
