@@ -222,10 +222,11 @@ class SoundPreProcessor:
                     self.consecutive_speech_count = 1
                     self.state = ProcessingState.WAITING_CONFIRMATION
                     # Start confirmation_chunks, don't add to idle_buffer yet
-                    self._append_to_confirmation_chunks(audio, timestamp, is_speech=True)
+                    chunk = {'audio': audio,'timestamp': timestamp,'is_speech': True}
+                    self.confirmation_chunks.append(chunk)
                 else:
                     # IDLE → IDLE
-                    self._append_to_idle_buffer(audio, timestamp, is_speech=False, chunk_id=None)
+                    self._append_to_idle_buffer(audio, timestamp, is_speech=False)
 
                     # Fush windower if silence timeout exceeded after speech
                     if self.speech_before_silence:
@@ -259,17 +260,17 @@ class SoundPreProcessor:
                             logging.debug(f"captured {len(self.left_context_snapshot)} left context chunks")
 
                     else:
-                        self._append_to_confirmation_chunks(audio, timestamp, is_speech=True)
+                        chunk = {'audio': audio,'timestamp': timestamp,'is_speech': True}
+                        self.confirmation_chunks.append(chunk)
                 else:
                     # WAITING_CONFIRMATION → IDLE
                     self.state = ProcessingState.IDLE
                     self.consecutive_speech_count = 0
                     # Move confirmation chunks back to idle_buffer before clearing
                     for conf_chunk in self.confirmation_chunks:
-                        self._append_to_idle_buffer(conf_chunk['audio'], conf_chunk['timestamp'],
-                                                   is_speech=True, chunk_id=None)
+                        self._append_to_idle_buffer(conf_chunk['audio'], conf_chunk['timestamp'],is_speech=True)
                     self.confirmation_chunks = []
-                    self._append_to_idle_buffer(audio, timestamp, is_speech=False, chunk_id=None)
+                    self._append_to_idle_buffer(audio, timestamp, is_speech=False)
 
             case ProcessingState.ACTIVE_SPEECH:
                 if is_speech:
@@ -277,7 +278,6 @@ class SoundPreProcessor:
                     self.last_speech_timestamp = timestamp
 
                     self._append_to_speech_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
-                    # Note: Do NOT append to idle_buffer during ACTIVE_SPEECH
                     self.chunk_id_counter += 1
 
                     # Check max duration
@@ -290,7 +290,6 @@ class SoundPreProcessor:
                     self.silence_energy += (1.0 - speech_prob)
 
                     self._append_to_speech_buffer(audio, timestamp, is_speech=False, chunk_id=self.chunk_id_counter)
-                    # Note: Do NOT append to idle_buffer during ACCUMULATING_SILENCE
                     self.chunk_id_counter += 1
 
                     if self.verbose:
@@ -305,14 +304,12 @@ class SoundPreProcessor:
                     self.last_speech_timestamp = timestamp
 
                     self._append_to_speech_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
-                    # Note: Do NOT append to idle_buffer during ACTIVE_SPEECH
                     self.chunk_id_counter += 1
                 else:
                     # ACCUMULATING_SILENCE → ACCUMULATING_SILENCE or IDLE
                     self.silence_energy += (1.0 - speech_prob)
 
                     self._append_to_speech_buffer(audio, timestamp, is_speech=False, chunk_id=self.chunk_id_counter)
-                    # Note: Do NOT append to idle_buffer during ACCUMULATING_SILENCE
                     self.chunk_id_counter += 1
 
                     if self.verbose:
@@ -320,9 +317,6 @@ class SoundPreProcessor:
 
                     if self.silence_energy >= self.silence_energy_threshold:
                         # ACCUMULATING_SILENCE → IDLE
-                        if self.verbose:
-                            logging.debug(f"SoundPreProcessor: silence_energy_threshold reached")
-
                         segment = self._build_audio_segment(breakpoint_idx=None)
                         self.speech_queue.put(segment)
                         self.windower.process_segment(segment)
@@ -332,6 +326,7 @@ class SoundPreProcessor:
                         self.consecutive_speech_count = 0
 
                         if self.verbose:
+                            logging.debug(f"SoundPreProcessor: silence_energy_threshold reached")
                             logging.debug(f"SoundPreProcessor: emitting preliminary segment")
                             logging.debug(f"  chunk_ids={segment.chunk_ids}")
                             logging.debug(f"  left_context={len(segment.left_context)/512} chunks, right_context={len(segment.right_context)/512} chunks")
@@ -378,37 +373,21 @@ class SoundPreProcessor:
     # Helper Methods for State Machine
     # ========================================================================
 
-    def _append_to_idle_buffer(self, audio: np.ndarray, timestamp: float, is_speech: bool, chunk_id: int | None) -> None:
+    def _append_to_idle_buffer(self, audio: np.ndarray, timestamp: float, is_speech: bool) -> None:
         """Append chunk dict to circular idle_buffer (only during IDLE).
 
         Args:
             audio: Audio chunk data
             timestamp: Timestamp of chunk
             is_speech: Whether chunk is speech
-            chunk_id: Chunk ID (None for silence outside active speech)
         """
         chunk = {
             'audio': audio,
             'timestamp': timestamp,
-            'chunk_id': chunk_id,
+            'chunk_id': None,
             'is_speech': is_speech
         }
         self.idle_buffer.append(chunk)
-
-    def _append_to_confirmation_chunks(self, audio: np.ndarray, timestamp: float, is_speech: bool) -> None:
-        """Append chunk to confirmation_chunks list (during WAITING_CONFIRMATION).
-
-        Args:
-            audio: Audio chunk data
-            timestamp: Timestamp of chunk
-            is_speech: Whether chunk is speech
-        """
-        chunk = {
-            'audio': audio,
-            'timestamp': timestamp,
-            'is_speech': is_speech
-        }
-        self.confirmation_chunks.append(chunk)
 
     def _append_to_speech_buffer(self, audio: np.ndarray, timestamp: float, is_speech: bool, chunk_id: int) -> None:
         """Append chunk dict to speech_buffer.

@@ -67,16 +67,15 @@ def test_append_to_idle_buffer(spp):
     audio = make_audio()
     timestamp = 1.0
     is_speech = True
-    chunk_id = 42
 
-    spp._append_to_idle_buffer(audio, timestamp, is_speech, chunk_id)
+    spp._append_to_idle_buffer(audio, timestamp, is_speech)
 
     assert len(spp.idle_buffer) == 1
     chunk = spp.idle_buffer[0]
     assert np.array_equal(chunk['audio'], audio)
     assert chunk['timestamp'] == timestamp
     assert chunk['is_speech'] == is_speech
-    assert chunk['chunk_id'] == chunk_id
+    assert chunk['chunk_id'] is None
 
 
 def test_append_to_speech_buffer(spp):
