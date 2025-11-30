@@ -244,24 +244,26 @@ def test_state_active_stays_active_on_max_duration(spp, mock_vad):
     """Test ACTIVE_SPEECH continues after max_duration with hard cut."""
     from src.SoundPreProcessor import ProcessingState
 
-    # Setup: Mock VAD to return speech
+    # Setup: Mock VAD to return speech (no silence, so hard cut will happen)
     mock_vad.process_frame.return_value = {
         'is_speech': True,
         'speech_probability': 0.8
     }
 
-    with patch.object(spp, '_find_silence_breakpoint', return_value=None):
-        for i in range(95):
-            chunk = make_speech_chunk(timestamp=i * 0.032)
-            spp._process_chunk(chunk)
+    # Feed 95 speech chunks (> 3000ms / 32ms = 93.75 chunks)
+    # This will trigger max_duration split with hard cut (no silence to find)
+    for i in range(95):
+        chunk = make_speech_chunk(timestamp=i * 0.032)
+        spp._process_chunk(chunk)
 
-        assert spp.state == ProcessingState.ACTIVE_SPEECH
-        assert not spp.speech_queue.empty()
-        # Verify hard cut happened and new segment started
-        assert len(spp.speech_buffer) == 1
-        assert spp.speech_buffer[0]['chunk_id'] == 94
-        # Verify windower was called
-        assert spp.windower.process_segment.called
+    # Verify state stayed ACTIVE_SPEECH (continuation after hard cut)
+    assert spp.state == ProcessingState.ACTIVE_SPEECH
+    assert not spp.speech_queue.empty()
+    # Verify hard cut happened and new segment started
+    assert len(spp.speech_buffer) == 1
+    assert spp.speech_buffer[0]['chunk_id'] == 94
+    # Verify windower was called
+    assert spp.windower.process_segment.called
 
 
 # ============================================================================
@@ -394,3 +396,51 @@ def test_state_property_is_speech_active(spp, mock_vad):
     spp._process_chunk(chunk)
     assert spp.state == ProcessingState.ACCUMULATING_SILENCE
     assert spp.is_speech_active == True
+
+
+# ============================================================================
+# Test 6: Timeout Flush Logic
+# ============================================================================
+
+def test_timeout_flush_in_idle_state(spp, mock_vad):
+    """Test timeout flush triggers in IDLE state after segment finalization."""
+    from src.SoundPreProcessor import ProcessingState
+
+    # Activate speech
+    mock_vad.process_frame.return_value = {
+        'is_speech': True,
+        'speech_probability': 0.8
+    }
+    for i in range(3):
+        chunk = make_speech_chunk(timestamp=i * 0.032)
+        spp._process_chunk(chunk)
+
+    assert spp.state == ProcessingState.ACTIVE_SPEECH
+    assert spp.speech_before_silence == True
+    last_speech_time = spp.last_speech_timestamp
+
+    # Feed silence to finalize segment (3 chunks with prob=0.1 → 3 * 0.9 = 2.7 > 1.5 threshold)
+    mock_vad.process_frame.return_value = {
+        'is_speech': False,
+        'speech_probability': 0.1
+    }
+    for i in range(3):
+        chunk = make_silence_chunk(timestamp=(3 + i) * 0.032)
+        spp._process_chunk(chunk)
+
+    # Should be in IDLE, speech_before_silence still True (not reset yet)
+    assert spp.state == ProcessingState.IDLE
+    assert spp.speech_before_silence == True
+    assert not spp.speech_queue.empty()  # Segment was emitted
+
+    # Feed silence chunks until timeout is reached (silence_timeout = 2.0s from config)
+    # Need to reach last_speech_time + 2.0s
+    current_time = last_speech_time + 2.1  # Exceed timeout
+    chunk = make_silence_chunk(timestamp=current_time)
+    spp._process_chunk(chunk)
+
+    # Windower flush should have been called
+    assert spp.windower.flush.called
+    # speech_before_silence should now be False
+    assert spp.speech_before_silence == False
+
