@@ -52,10 +52,10 @@ class SoundPreProcessor:
 
     Idle Buffer Strategy:
     - Maintains circular buffer of last 48 chunks (1.536s @ 32ms/chunk)
-    - Accumulates during IDLE state
-    - WAITING_CONFIRMATION uses separate confirmation_chunks list
+    - Accumulates during IDLE and WAITING_CONFIRMATION states
     - Stops accumulating during ACTIVE_SPEECH and ACCUMULATING_SILENCE
-    - left_context: entire idle_buffer snapshot at speech start
+    - On speech confirmation: extracts last (N-1) chunks to initialize speech_buffer
+    - left_context: idle_buffer snapshot (excluding extracted chunks) at speech start
     - right_context: trailing silence after speech ends
     - Enables better STT quality for short words and prevents hallucinations
 
@@ -90,7 +90,7 @@ class SoundPreProcessor:
         verbose: Enable verbose logging
     """
 
-    CONTEXT_BUFFER_SIZE = 48  # 1.536s @ 32ms/chunk
+    CONTEXT_BUFFER_SIZE = 20  # x 32ms/chunk
 
     def __init__(self,
                  chunk_queue: queue.Queue,
@@ -139,9 +139,6 @@ class SoundPreProcessor:
         self.idle_buffer: deque = deque(maxlen=self.CONTEXT_BUFFER_SIZE)
         self.left_context_snapshot: List[np.ndarray] | None = None
 
-        # Confirmation chunks: temporary list for WAITING_CONFIRMATION state
-        # Holds 1-2 chunks before confirming speech started
-        self.confirmation_chunks: List[Dict[str, Any]] = []
 
         self.chunk_id_counter: int = 0
 
@@ -205,11 +202,10 @@ class SoundPreProcessor:
         audio = chunk_data['audio']
         timestamp = chunk_data['timestamp']
 
-        # Track first chunk timestamp
         if self._first_chunk_timestamp == 0:
             self._first_chunk_timestamp = timestamp
 
-        # Dual-path: normalize for VAD, keep raw for STT
+        # normalize for VAD, keep raw for STT
         vad_result = self.vad.process_frame( self._normalize_rms(audio) )
         speech_prob = vad_result['speech_probability']
         is_speech = vad_result['is_speech']
@@ -221,34 +217,45 @@ class SoundPreProcessor:
                     # IDLE → WAITING_CONFIRMATION
                     self.consecutive_speech_count = 1
                     self.state = ProcessingState.WAITING_CONFIRMATION
-                    # Start confirmation_chunks, don't add to idle_buffer yet
-                    chunk = {'audio': audio,'timestamp': timestamp,'is_speech': True}
-                    self.confirmation_chunks.append(chunk)
-                else:
-                    # IDLE → IDLE
-                    self._append_to_idle_buffer(audio, timestamp, is_speech=False)
+                self._append_to_idle_buffer(audio, timestamp, is_speech=is_speech)
 
-                    # Fush windower if silence timeout exceeded after speech
-                    if self.speech_before_silence:
-                        silence_duration = timestamp - self.last_speech_timestamp
-                        if silence_duration >= self.silence_timeout:
-                            if self.verbose:
-                                logging.debug(f"SoundPreProcessor: silence_timeout reached ({silence_duration:.2f}s)")
-                            self.windower.flush()
-                            self.speech_before_silence = False
+                # Flush windower if silence timeout exceeded after speech
+                if self.speech_before_silence:
+                    silence_duration = timestamp - self.last_speech_timestamp
+                    if silence_duration >= self.silence_timeout:
+                        if self.verbose:
+                            logging.debug(f"SoundPreProcessor: silence_timeout reached ({silence_duration:.2f}s)")
+                        self.windower.flush()
+                        self.speech_before_silence = False
 
             case ProcessingState.WAITING_CONFIRMATION:
+                self._append_to_idle_buffer(audio, timestamp, is_speech=is_speech)
+
                 if is_speech:
                     self.consecutive_speech_count += 1
 
                     if self.consecutive_speech_count >= self.CONSECUTIVE_SPEECH_CHUNKS:
                         # WAITING_CONFIRMATION → ACTIVE_SPEECH
                         self.state = ProcessingState.ACTIVE_SPEECH
-                        self.left_context_snapshot = [chunk['audio'] for chunk in self.idle_buffer]
-                        self._initialize_speech_buffer_from_confirmation()
-                        self._append_to_speech_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
 
-                        self.chunk_id_counter += 1
+                        # Extract confirmation chunks from idle_buffer
+                        if len(self.idle_buffer) >= self.CONSECUTIVE_SPEECH_CHUNKS:
+                            confirmation_chunks_from_idle = [
+                                self.idle_buffer.pop()
+                                for _ in range(self.CONSECUTIVE_SPEECH_CHUNKS)
+                            ]
+                            confirmation_chunks_from_idle.reverse() 
+
+                            self.left_context_snapshot = [chunk['audio'] for chunk in self.idle_buffer]
+                        else:
+                            # Edge case: fewer chunks in buffer than expected (shouldn't happen normally)
+                            self.left_context_snapshot = []
+                            confirmation_chunks_from_idle = list(self.idle_buffer)
+                            self.idle_buffer.clear()
+
+                        # Initialize speech_buffer with all N confirmation chunks
+                        self._initialize_speech_buffer_from_idle(confirmation_chunks_from_idle)
+
                         self.last_speech_timestamp = timestamp
                         self.speech_before_silence = True
                         self.silence_energy = 0.0
@@ -258,19 +265,10 @@ class SoundPreProcessor:
                             logging.debug(f"----------------------------")
                             logging.debug(f"SoundPreProcessor: Starting segment at {offset:.2f}")
                             logging.debug(f"captured {len(self.left_context_snapshot)} left context chunks")
-
-                    else:
-                        chunk = {'audio': audio,'timestamp': timestamp,'is_speech': True}
-                        self.confirmation_chunks.append(chunk)
                 else:
                     # WAITING_CONFIRMATION → IDLE
                     self.state = ProcessingState.IDLE
                     self.consecutive_speech_count = 0
-                    # Move confirmation chunks back to idle_buffer before clearing
-                    for conf_chunk in self.confirmation_chunks:
-                        self._append_to_idle_buffer(conf_chunk['audio'], conf_chunk['timestamp'],is_speech=True)
-                    self.confirmation_chunks = []
-                    self._append_to_idle_buffer(audio, timestamp, is_speech=False)
 
             case ProcessingState.ACTIVE_SPEECH:
                 if is_speech:
@@ -406,16 +404,19 @@ class SoundPreProcessor:
         }
         self.speech_buffer.append(chunk)
 
-    def _initialize_speech_buffer_from_confirmation(self) -> None:
-        """Initialize speech_buffer from confirmation_chunks.
+    def _initialize_speech_buffer_from_idle(self, chunks_from_idle: list) -> None:
+        """Initialize speech_buffer from chunks extracted from idle_buffer.
 
         Called when transitioning WAITING_CONFIRMATION → ACTIVE_SPEECH.
         Assigns chunk_ids and populates speech_buffer with first speech chunks.
         Sets speech_start_time to first chunk timestamp.
-        Clears confirmation_chunks after initialization.
+
+        Args:
+            chunks_from_idle: List of chunks extracted from end of idle_buffer
+                             (typically CONSECUTIVE_SPEECH_CHUNKS - 1 chunks)
         """
         self.speech_buffer = []
-        for chunk in self.confirmation_chunks:
+        for chunk in chunks_from_idle:
             # Assign chunk_id from counter
             chunk_with_id = {
                 'audio': chunk['audio'],
@@ -428,9 +429,6 @@ class SoundPreProcessor:
 
         if self.speech_buffer:
             self.speech_start_time = self.speech_buffer[0]['timestamp']
-
-        # Clear confirmation chunks after initialization
-        self.confirmation_chunks = []
 
     def _build_audio_segment(self, breakpoint_idx: int | None = None) -> AudioSegment:
         """Build AudioSegment from speech_buffer.
@@ -451,23 +449,25 @@ class SoundPreProcessor:
                        else np.array([], dtype=np.float32))
 
         if breakpoint_idx is None:
-            # Use entire buffer, trailing silence as right_context
-            data_chunks = [chunk['audio'] for chunk in self.speech_buffer
-                          if chunk.get('is_speech', True)]
+            # No breakpoint: take last 6 chunks as right_context
+            # This handles both: (1) hard cut with no silence, (2) normal finalization with trailing silence
+            if len(self.speech_buffer) > 6:
+                data_buffer = self.speech_buffer[:-6]
+                right_context_buffer = self.speech_buffer[-6:]
+            else:
+                # Buffer too small: all goes to data, no right_context
+                data_buffer = self.speech_buffer
+                right_context_buffer = []
+
+            data_chunks = [chunk['audio'] for chunk in data_buffer]
             data = np.concatenate(data_chunks) if data_chunks else np.array([], dtype=np.float32)
 
-            right_context_chunks = []
-            for chunk in reversed(self.speech_buffer):
-                if not chunk.get('is_speech', True):
-                    right_context_chunks.insert(0, chunk['audio'])
-                else:
-                    break
-
+            right_context_chunks = [chunk['audio'] for chunk in right_context_buffer]
             right_context = (np.concatenate(right_context_chunks)
                             if right_context_chunks
                             else np.array([], dtype=np.float32))
 
-            chunk_ids = [chunk['chunk_id'] for chunk in self.speech_buffer
+            chunk_ids = [chunk['chunk_id'] for chunk in data_buffer
                         if chunk['chunk_id'] is not None]
         else:
             # Breakpoint split: split at breakpoint_idx (inclusive)
