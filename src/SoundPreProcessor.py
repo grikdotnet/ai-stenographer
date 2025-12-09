@@ -598,11 +598,11 @@ class SoundPreProcessor:
         if self.is_speech_active and len(self.speech_buffer) > 0:
             segment = self._build_audio_segment(breakpoint_idx=None)
             self.speech_queue.put(segment)
-            self.windower.process_segment(segment)
+            self.windower.flush(segment)  # Process and flush in one call
             self._reset_segment_state()
             self.state = ProcessingState.IDLE
-
-        self.windower.flush()
+        else:
+            self.windower.flush()
 
         if self.verbose:
             logging.debug("SoundPreProcessor: flush()")

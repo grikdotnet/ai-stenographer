@@ -35,6 +35,7 @@ class AdaptiveWindower:
         self.window_start_time: float = 0.0
         self.last_window_time: float = 0.0
 
+        self.first_window_emitted: bool = False
 
     def process_segment(self, segment: AudioSegment) -> None:
         """Process incoming VAD segment and create windows when ready.
@@ -104,12 +105,18 @@ class AdaptiveWindower:
             chunk_ids.extend(seg.chunk_ids)
         unique_chunk_ids = sorted(set(chunk_ids))
 
+        # First window gets left_context from first segment, subsequent windows get empty
+        left_ctx = np.array([], dtype=np.float32)
+        if not self.first_window_emitted and self.segments:
+            left_ctx = self.segments[0].left_context
+            self.first_window_emitted = True
+
         # Create finalized AudioSegment
         window = AudioSegment(
             type='finalized',
             data=window_audio,
-            left_context=np.array([], dtype=np.float32),   # No context for windows
-            right_context=np.array([], dtype=np.float32),  # No context for windows
+            left_context=left_ctx,
+            right_context=np.array([], dtype=np.float32),  # No right context for non-flush windows
             start_time=actual_start,
             end_time=actual_end,
             chunk_ids=unique_chunk_ids
@@ -117,7 +124,8 @@ class AdaptiveWindower:
 
         if self.verbose:
             duration_ms = len(window_audio) / self.sample_rate * 1000
-            logging.debug(f"AdaptiveWindower: created window duration={duration_ms:.0f}ms, chunk_ids={unique_chunk_ids}, samples={len(window_audio)}")
+            logging.debug(f"AdaptiveWindower: created window duration={duration_ms:.0f}ms,"
+                          +f" chunk_ids={unique_chunk_ids}, samples={len(window_audio)}")
 
         self.speech_queue.put(window)
 
@@ -128,21 +136,28 @@ class AdaptiveWindower:
         self.last_window_time = self.window_start_time
         self.window_start_time = self.window_start_time + self.step_size
 
-        # Remove segments that are completely before the new window start
-        # Keep segments that might overlap with next window
+        # Remove segments that will never be needed again
         self.segments = [
             seg for seg in self.segments
             if seg.end_time > self.window_start_time
         ]
 
 
-    def flush(self) -> None:
+    def flush(self, final_segment: Optional[AudioSegment] = None) -> None:
         """Flush any remaining segments as a final window.
 
-        Called at end of stream to emit the last partial window
+        Called at a speech pause to emit the last partial window
         even if it doesn't reach the full 3-second duration.
+
+        Args:
+            final_segment: Optional final segment to process before flushing.
+                          If provided, appends it to segments and uses its right_context.
         """
+        if final_segment is not None:
+            self.segments.append(final_segment)
+
         if not self.segments:
+            self._reset_state()
             return
 
         # Emit remaining segments as final window
@@ -158,12 +173,19 @@ class AdaptiveWindower:
             chunk_ids.extend(seg.chunk_ids)
         unique_chunk_ids = sorted(set(chunk_ids))
 
+        # First window gets left_context, flush gets right_context from last segment
+        left_ctx = np.array([], dtype=np.float32)
+        if not self.first_window_emitted:
+            left_ctx = self.segments[0].left_context
+
+        right_ctx = self.segments[-1].right_context
+
         # Create flush AudioSegment
         window = AudioSegment(
             type='flush',
             data=window_audio,
-            left_context=np.array([], dtype=np.float32),   # No context for flush
-            right_context=np.array([], dtype=np.float32),  # No context for flush
+            left_context=left_ctx,
+            right_context=right_ctx,
             start_time=actual_start,
             end_time=actual_end,
             chunk_ids=unique_chunk_ids
@@ -174,5 +196,12 @@ class AdaptiveWindower:
         if self.verbose:
             logging.debug(f"AdaptiveWindower.flush(): put to queue (chunk_ids={unique_chunk_ids})")
 
-        # Clear segments
+        # Reset state for next speech sequence
+        self._reset_state()
+
+    def _reset_state(self) -> None:
+        """Reset windower state for next speech sequence."""
         self.segments = []
+        self.first_window_emitted = False
+        self.window_start_time = 0.0
+        self.last_window_time = 0.0

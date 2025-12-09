@@ -279,5 +279,177 @@ class TestAdaptiveWindower:
         windower.flush()
         windower.flush()
 
-        # Should not crash or emit anything
         assert speech_queue.empty()
+
+
+class TestAdaptiveWindowerContext:
+    """Tests for left/right context handling in AdaptiveWindower.
+
+    Context logic:
+    - First finalized window gets left_context from first preliminary segment
+    - Subsequent windows get empty left_context (duplicate data)
+    - Flush window gets right_context from last segment
+    """
+
+    @pytest.fixture
+    def config(self):
+        """Standard configuration for AdaptiveWindower."""
+        return {
+            'audio': {
+                'sample_rate': 16000
+            },
+            'windowing': {
+                'window_duration': 3.0,
+                'step_size': 1.0
+            }
+        }
+
+    @pytest.fixture
+    def sample_rate(self):
+        return 16000
+
+    def _create_segment(self, start_time: float, end_time: float, chunk_id: int,
+                        sample_rate: int = 16000,
+                        left_context: np.ndarray = None,
+                        right_context: np.ndarray = None) -> AudioSegment:
+        """Helper to create preliminary AudioSegment with context."""
+        duration = end_time - start_time
+        data = np.random.randn(int(duration * sample_rate)).astype(np.float32) * 0.1
+        return AudioSegment(
+            type='preliminary',
+            data=data,
+            left_context=left_context if left_context is not None else np.array([], dtype=np.float32),
+            right_context=right_context if right_context is not None else np.array([], dtype=np.float32),
+            start_time=start_time,
+            end_time=end_time,
+            chunk_ids=[chunk_id]
+        )
+
+    def test_subsequent_windows_left_context(self, config, sample_rate):
+        """Windows after the first should have empty left_context."""
+        speech_queue = queue.Queue()
+        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
+
+        left_context = np.random.randn(int(0.5 * sample_rate)).astype(np.float32) * 0.05
+
+        # Create segments spanning 6 seconds to trigger multiple windows
+        segments = [
+            self._create_segment(0.0, 1.0, 0, sample_rate, left_context=left_context),
+            self._create_segment(1.0, 2.0, 1, sample_rate, left_context=np.ones(100, dtype=np.float32)),
+            self._create_segment(2.0, 3.0, 2, sample_rate, left_context=np.ones(100, dtype=np.float32)),
+            self._create_segment(3.0, 4.0, 3, sample_rate, left_context=np.ones(100, dtype=np.float32)),
+            self._create_segment(4.0, 5.0, 4, sample_rate),
+            self._create_segment(5.0, 6.0, 5, sample_rate),
+        ]
+
+        for seg in segments:
+            windower.process_segment(seg)
+
+        windower.flush()
+
+        # Collect all windows
+        windows = []
+        while not speech_queue.empty():
+            windows.append(speech_queue.get())
+
+        assert len(windows) >= 2, f"Expected at least 2 windows, got {len(windows)}"
+
+        # First window should have left_context
+        assert windows[0].left_context.size > 0
+        assert np.array_equal(windows[0].left_context, left_context)
+
+        # Subsequent windows should have empty left_context
+        for i, window in enumerate(windows[1:], start=1):
+            assert window.left_context.size == 0, f"Window {i} should have empty left_context"
+
+    def test_flush_includes_right_context(self, config, sample_rate):
+        """Flush window should include right_context from last segment."""
+        speech_queue = queue.Queue()
+        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
+
+        right_context = np.random.randn(int(0.2 * sample_rate)).astype(np.float32) * 0.05
+
+        # Create segments (not enough to trigger window, so flush will emit)
+        segments = [
+            self._create_segment(0.0, 0.5, 0, sample_rate),
+            self._create_segment(0.5, 1.0, 1, sample_rate, right_context=right_context),
+        ]
+
+        for seg in segments:
+            windower.process_segment(seg)
+
+        windower.flush()
+
+        window = speech_queue.get()
+        assert window.type == 'flush'
+        assert window.right_context.size > 0
+        assert np.array_equal(window.right_context, right_context)
+
+    def test_flush_with_segment_processes_and_flushes(self, config, sample_rate):
+        """flush(segment) should process segment then flush."""
+        speech_queue = queue.Queue()
+        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
+
+        left_context = np.random.randn(int(0.3 * sample_rate)).astype(np.float32) * 0.05
+        right_context = np.random.randn(int(0.2 * sample_rate)).astype(np.float32) * 0.05
+
+        seg1 = self._create_segment(0.0, 0.5, 0, sample_rate, left_context=left_context)
+        windower.process_segment(seg1)
+
+        seg2 = self._create_segment(0.5, 1.0, 1, sample_rate, right_context=right_context)
+        windower.flush(seg2)
+
+        window = speech_queue.get()
+        assert window.type == 'flush'
+
+        assert np.array_equal(window.left_context, left_context)
+        assert np.array_equal(window.right_context, right_context)
+
+        assert 0 in window.chunk_ids
+        assert 1 in window.chunk_ids
+
+    def test_flush_resets_context_state(self, config, sample_rate):
+        """After flush, context state should be reset for next speech sequence."""
+        speech_queue = queue.Queue()
+        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
+
+        # First speech sequence
+        left_ctx_1 = np.ones(1000, dtype=np.float32) * 0.1
+        right_ctx_1 = np.ones(500, dtype=np.float32) * 0.2
+        seg1 = self._create_segment(0.0, 1.0, 0, sample_rate,
+                                    left_context=left_ctx_1, right_context=right_ctx_1)
+        windower.flush(seg1)
+
+        window1 = speech_queue.get()
+        assert np.array_equal(window1.left_context, left_ctx_1)
+        assert np.array_equal(window1.right_context, right_ctx_1)
+
+        # Second speech sequence - should use NEW contexts
+        left_ctx_2 = np.ones(800, dtype=np.float32) * 0.3
+        right_ctx_2 = np.ones(400, dtype=np.float32) * 0.4
+        seg2 = self._create_segment(5.0, 6.0, 1, sample_rate,
+                                    left_context=left_ctx_2, right_context=right_ctx_2)
+        windower.flush(seg2)
+
+        window2 = speech_queue.get()
+        # Should have new contexts, not old ones
+        assert np.array_equal(window2.left_context, left_ctx_2)
+        assert np.array_equal(window2.right_context, right_ctx_2)
+
+    def test_context_preserved_for_single_segment(self, config, sample_rate):
+        """Single segment flush should preserve both left and right contexts."""
+        speech_queue = queue.Queue()
+        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
+
+        left_context = np.random.randn(int(0.5 * sample_rate)).astype(np.float32) * 0.05
+        right_context = np.random.randn(int(0.2 * sample_rate)).astype(np.float32) * 0.05
+
+        segment = self._create_segment(0.0, 0.5, 0, sample_rate,
+                                       left_context=left_context,
+                                       right_context=right_context)
+        windower.flush(segment)
+
+        window = speech_queue.get()
+        assert window.type == 'flush'
+        assert np.array_equal(window.left_context, left_context)
+        assert np.array_equal(window.right_context, right_context)
