@@ -5,6 +5,7 @@ import numpy as np
 import time
 from unittest.mock import Mock
 from src.SoundPreProcessor import SoundPreProcessor
+from src.types import CONTEXT_BUFFER_SIZE
 
 
 class TestSoundPreProcessor:
@@ -248,7 +249,7 @@ class TestSoundPreProcessor:
 
         assert mock_windower.flush.called
 
-        assert len(preprocessor.speech_buffer) == 0
+        assert len(preprocessor.audio_state.speech_buffer) == 0
 
 
     def test_timestamp_accuracy(self, preprocessor_config, mock_windower):
@@ -357,7 +358,7 @@ class TestSoundPreProcessor:
             preprocessor._process_chunk(chunk)
 
         # Idle buffer should have 10 chunks
-        assert len(preprocessor.idle_buffer) == 10
+        assert len(preprocessor.audio_state.idle_buffer) == 10
 
 
     def test_left_context_extraction(self, preprocessor_config, mock_windower):
@@ -370,16 +371,15 @@ class TestSoundPreProcessor:
         speech_queue = queue.Queue()
 
         # Use constants dynamically to avoid fragility
-        buffer_size = SoundPreProcessor.CONTEXT_BUFFER_SIZE
-        consecutive_chunks = 3  # CONSECUTIVE_SPEECH_CHUNKS
+        consecutive_chunks = 3
 
         call_count = 0
         def vad_side_effect(audio):
             nonlocal call_count
             call_count += 1
-            if call_count <= buffer_size:
+            if call_count <= CONTEXT_BUFFER_SIZE:
                 return {'is_speech': False, 'speech_probability': 0.2}
-            elif call_count <= buffer_size + consecutive_chunks:
+            elif call_count <= CONTEXT_BUFFER_SIZE + consecutive_chunks:
                 return {'is_speech': True, 'speech_probability': 0.9}
             else:
                 return {'is_speech': False, 'speech_probability': 0.1}
@@ -397,7 +397,7 @@ class TestSoundPreProcessor:
         )
 
         # Feed buffer_size silence chunks to fill idle_buffer
-        for i in range(buffer_size):
+        for i in range(CONTEXT_BUFFER_SIZE):
             audio = np.random.randn(512).astype(np.float32) * 0.01
             chunk = {
                 'audio': audio,
@@ -410,7 +410,7 @@ class TestSoundPreProcessor:
             audio = np.random.randn(512).astype(np.float32) * 0.1
             chunk = {
                 'audio': audio,
-                'timestamp': 1.0 + (buffer_size + i) * 0.032,
+                'timestamp': 1.0 + (CONTEXT_BUFFER_SIZE + i) * 0.032,
             }
             preprocessor._process_chunk(chunk)
 
@@ -419,7 +419,7 @@ class TestSoundPreProcessor:
             audio = np.random.randn(512).astype(np.float32) * 0.01
             chunk = {
                 'audio': audio,
-                'timestamp': 1.0 + (buffer_size + consecutive_chunks + i) * 0.032,
+                'timestamp': 1.0 + (CONTEXT_BUFFER_SIZE + consecutive_chunks + i) * 0.032,
             }
             preprocessor._process_chunk(chunk)
 
@@ -429,7 +429,7 @@ class TestSoundPreProcessor:
         # Verify left_context contains idle_buffer minus chunks extracted to speech_buffer
         # When speech is confirmed, consecutive_chunks are extracted from idle_buffer
         # Remaining in idle_buffer = buffer_size - consecutive_chunks
-        expected_left_context_chunks = buffer_size - consecutive_chunks
+        expected_left_context_chunks = CONTEXT_BUFFER_SIZE - consecutive_chunks
         expected_samples = expected_left_context_chunks * 512
         assert len(segment.left_context) == expected_samples
 
@@ -539,7 +539,7 @@ class TestSoundPreProcessor:
         )
 
         # Verify idle_buffer is empty at startup
-        assert len(preprocessor.idle_buffer) == 0
+        assert len(preprocessor.audio_state.idle_buffer) == 0
 
         for i in range(3):
             audio = np.random.randn(512).astype(np.float32) * 0.1
@@ -614,13 +614,13 @@ class TestSoundPreProcessor:
             preprocessor._process_chunk(chunk)
 
         # Verify speech_buffer has 3 chunks (all from idle_buffer)
-        from src.SoundPreProcessor import ProcessingState
-        assert preprocessor.state == ProcessingState.ACTIVE_SPEECH
-        assert len(preprocessor.speech_buffer) == 3
+        from src.types import ProcessingState
+        assert preprocessor.audio_state.state == ProcessingState.ACTIVE_SPEECH
+        assert len(preprocessor.audio_state.speech_buffer) == 3
 
-        assert preprocessor.speech_buffer[0]['chunk_id'] == 0
-        assert preprocessor.speech_buffer[1]['chunk_id'] == 1
-        assert preprocessor.speech_buffer[2]['chunk_id'] == 2
+        assert preprocessor.audio_state.speech_buffer[0]['chunk_id'] == 0
+        assert preprocessor.audio_state.speech_buffer[1]['chunk_id'] == 1
+        assert preprocessor.audio_state.speech_buffer[2]['chunk_id'] == 2
 
 
     def test_waiting_confirmation_timeout_preserves_idle_buffer(self, preprocessor_config, mock_windower):
@@ -682,9 +682,9 @@ class TestSoundPreProcessor:
         preprocessor._process_chunk(chunk)
 
         # Verify state is IDLE and idle_buffer has all 11 chunks
-        from src.SoundPreProcessor import ProcessingState
-        assert preprocessor.state == ProcessingState.IDLE
-        assert len(preprocessor.idle_buffer) == 11
+        from src.types import ProcessingState
+        assert preprocessor.audio_state.state == ProcessingState.IDLE
+        assert len(preprocessor.audio_state.idle_buffer) == 11
 
 
     # Consecutive Speech Chunk Tests (False Positive Prevention)

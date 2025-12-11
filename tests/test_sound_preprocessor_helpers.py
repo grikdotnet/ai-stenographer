@@ -70,8 +70,8 @@ def test_append_to_idle_buffer(spp):
 
     spp._append_to_idle_buffer(audio, timestamp, is_speech)
 
-    assert len(spp.idle_buffer) == 1
-    chunk = spp.idle_buffer[0]
+    assert len(spp.audio_state.idle_buffer) == 1
+    chunk = spp.audio_state.idle_buffer[0]
     assert np.array_equal(chunk['audio'], audio)
     assert chunk['timestamp'] == timestamp
     assert chunk['is_speech'] == is_speech
@@ -87,8 +87,8 @@ def test_append_to_speech_buffer(spp):
 
     spp._append_to_speech_buffer(audio, timestamp, is_speech, chunk_id)
 
-    assert len(spp.speech_buffer) == 1
-    chunk = spp.speech_buffer[0]
+    assert len(spp.audio_state.speech_buffer) == 1
+    chunk = spp.audio_state.speech_buffer[0]
     assert np.array_equal(chunk['audio'], audio)
     assert chunk['timestamp'] == timestamp
     assert chunk['is_speech'] == is_speech
@@ -101,9 +101,9 @@ def test_append_to_speech_buffer(spp):
 
 def test_keep_remainder_after_breakpoint(spp):
     """Test _keep_remainder_after_breakpoint keeps remainder in buffer."""
-    spp.speech_start_time = 1.0
+    spp.audio_state.speech_start_time = 1.0
     for i in range(60):
-        spp.speech_buffer.append({
+        spp.audio_state.speech_buffer.append({
             'audio': make_audio(),
             'timestamp': 1.0 + i * 0.032,
             'chunk_id': i,
@@ -113,20 +113,20 @@ def test_keep_remainder_after_breakpoint(spp):
     spp._keep_remainder_after_breakpoint(40)
 
     # Verify remainder
-    assert len(spp.speech_buffer) == 19  # 60 - 41
-    assert spp.speech_start_time == 1.0 + 41 * 0.032
-    assert spp.silence_energy == 0.0
+    assert len(spp.audio_state.speech_buffer) == 19  # 60 - 41
+    assert spp.audio_state.speech_start_time == 1.0 + 41 * 0.032
+    assert spp.audio_state.silence_energy == 0.0
 
 
 def test_reset_segment_state(spp):
     """Test _reset_segment_state clears all segment state."""
-    spp.speech_buffer = [{'audio': make_audio(), 'timestamp': 1.0, 'chunk_id': 0, 'is_speech': True}]
-    spp.silence_energy = 1.0
-    spp.left_context_snapshot = [make_audio()]
+    spp.audio_state.speech_buffer = [{'audio': make_audio(), 'timestamp': 1.0, 'chunk_id': 0, 'is_speech': True}]
+    spp.audio_state.silence_energy = 1.0
+    spp.audio_state.left_context_snapshot = [make_audio()]
 
     spp._reset_segment_state()
 
     # Verify all cleared
-    assert len(spp.speech_buffer) == 0
-    assert spp.silence_energy == 0.0
-    assert spp.left_context_snapshot is None
+    assert len(spp.audio_state.speech_buffer) == 0
+    assert spp.audio_state.silence_energy == 0.0
+    assert spp.audio_state.left_context_snapshot is None

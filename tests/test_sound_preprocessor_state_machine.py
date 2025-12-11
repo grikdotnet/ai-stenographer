@@ -90,16 +90,16 @@ def test_state_idle_to_waiting_on_speech(spp, mock_vad):
         'speech_probability': 0.8
     }
 
-    from src.SoundPreProcessor import ProcessingState
+    from src.types import ProcessingState
     assert spp.state == ProcessingState.IDLE
-    assert spp.consecutive_speech_count == 0
+    assert spp.audio_state.consecutive_speech_count == 0
 
     chunk = make_speech_chunk(timestamp=0.0)
     spp._process_chunk(chunk)
 
     # Verify transition to WAITING_CONFIRMATION
     assert spp.state == ProcessingState.WAITING_CONFIRMATION
-    assert spp.consecutive_speech_count == 1
+    assert spp.audio_state.consecutive_speech_count == 1
 
 
 def test_state_idle_stays_idle_on_silence(spp, mock_vad):
@@ -109,7 +109,7 @@ def test_state_idle_stays_idle_on_silence(spp, mock_vad):
         'speech_probability': 0.1
     }
 
-    from src.SoundPreProcessor import ProcessingState
+    from src.types import ProcessingState
     assert spp.state == ProcessingState.IDLE
 
     # Feed silence chunks
@@ -118,7 +118,7 @@ def test_state_idle_stays_idle_on_silence(spp, mock_vad):
         spp._process_chunk(chunk)
 
     assert spp.state == ProcessingState.IDLE
-    assert spp.consecutive_speech_count == 0
+    assert spp.audio_state.consecutive_speech_count == 0
 
 
 # ============================================================================
@@ -132,20 +132,20 @@ def test_state_waiting_to_active_on_third_speech(spp, mock_vad):
         'speech_probability': 0.8
     }
 
-    from src.SoundPreProcessor import ProcessingState
+    from src.types import ProcessingState
 
     for i in range(3):
         chunk = make_speech_chunk(timestamp=i * 0.032)
         spp._process_chunk(chunk)
 
     assert spp.state == ProcessingState.ACTIVE_SPEECH
-    assert len(spp.speech_buffer) == 3
-    assert spp.left_context_snapshot is not None
+    assert len(spp.audio_state.speech_buffer) == 3
+    assert spp.audio_state.left_context_snapshot is not None
 
 
 def test_state_waiting_to_idle_on_silence(spp, mock_vad):
     """Test WAITING_CONFIRMATION -> IDLE on silence after partial speech."""
-    from src.SoundPreProcessor import ProcessingState
+    from src.types import ProcessingState
 
     # Feed 2 speech chunks
     mock_vad.process_frame.return_value = {
@@ -157,7 +157,7 @@ def test_state_waiting_to_idle_on_silence(spp, mock_vad):
         spp._process_chunk(chunk)
 
     assert spp.state == ProcessingState.WAITING_CONFIRMATION
-    assert spp.consecutive_speech_count == 2
+    assert spp.audio_state.consecutive_speech_count == 2
 
     # Feed silence chunk
     mock_vad.process_frame.return_value = {
@@ -169,7 +169,7 @@ def test_state_waiting_to_idle_on_silence(spp, mock_vad):
 
     # Verify transition back to IDLE
     assert spp.state == ProcessingState.IDLE
-    assert spp.consecutive_speech_count == 0
+    assert spp.audio_state.consecutive_speech_count == 0
 
 
 def test_state_waiting_continues_on_second_speech(spp, mock_vad):
@@ -179,7 +179,7 @@ def test_state_waiting_continues_on_second_speech(spp, mock_vad):
         'speech_probability': 0.8
     }
 
-    from src.SoundPreProcessor import ProcessingState
+    from src.types import ProcessingState
 
     for i in range(2):
         chunk = make_speech_chunk(timestamp=i * 0.032)
@@ -187,7 +187,7 @@ def test_state_waiting_continues_on_second_speech(spp, mock_vad):
 
     # Verify still WAITING_CONFIRMATION
     assert spp.state == ProcessingState.WAITING_CONFIRMATION
-    assert spp.consecutive_speech_count == 2
+    assert spp.audio_state.consecutive_speech_count == 2
 
 
 # ============================================================================
@@ -201,7 +201,7 @@ def test_state_active_stays_active_on_speech(spp, mock_vad):
         'speech_probability': 0.8
     }
 
-    from src.SoundPreProcessor import ProcessingState
+    from src.types import ProcessingState
 
     for i in range(10):
         chunk = make_speech_chunk(timestamp=i * 0.032)
@@ -209,12 +209,12 @@ def test_state_active_stays_active_on_speech(spp, mock_vad):
 
     # Verify still ACTIVE_SPEECH
     assert spp.state == ProcessingState.ACTIVE_SPEECH
-    assert len(spp.speech_buffer) == 10
+    assert len(spp.audio_state.speech_buffer) == 10
 
 
 def test_state_active_to_accumulating_on_silence(spp, mock_vad):
     """Test ACTIVE_SPEECH -> ACCUMULATING_SILENCE on silence."""
-    from src.SoundPreProcessor import ProcessingState
+    from src.types import ProcessingState
 
     # Feed 3 speech chunks to activate
     mock_vad.process_frame.return_value = {
@@ -237,12 +237,12 @@ def test_state_active_to_accumulating_on_silence(spp, mock_vad):
 
     # Verify transition to ACCUMULATING_SILENCE
     assert spp.state == ProcessingState.ACCUMULATING_SILENCE
-    assert spp.silence_energy > 0
+    assert spp.audio_state.silence_energy > 0
 
 
 def test_state_active_stays_active_on_max_duration(spp, mock_vad):
     """Test ACTIVE_SPEECH continues after max_duration with hard cut."""
-    from src.SoundPreProcessor import ProcessingState
+    from src.types import ProcessingState
 
     # Setup: Mock VAD to return speech (no silence, so hard cut will happen)
     mock_vad.process_frame.return_value = {
@@ -260,8 +260,8 @@ def test_state_active_stays_active_on_max_duration(spp, mock_vad):
     assert spp.state == ProcessingState.ACTIVE_SPEECH
     assert not spp.speech_queue.empty()
     # Verify hard cut happened and new segment started
-    assert len(spp.speech_buffer) == 1
-    assert spp.speech_buffer[0]['chunk_id'] == 94
+    assert len(spp.audio_state.speech_buffer) == 1
+    assert spp.audio_state.speech_buffer[0]['chunk_id'] == 94
     # Verify windower was called
     assert spp.windower.process_segment.called
 
@@ -272,7 +272,7 @@ def test_state_active_stays_active_on_max_duration(spp, mock_vad):
 
 def test_state_accumulating_to_active_on_speech_resume(spp, mock_vad):
     """Test ACCUMULATING_SILENCE -> ACTIVE_SPEECH on speech resumption."""
-    from src.SoundPreProcessor import ProcessingState
+    from src.types import ProcessingState
 
     # Activate speech
     mock_vad.process_frame.return_value = {
@@ -292,7 +292,7 @@ def test_state_accumulating_to_active_on_speech_resume(spp, mock_vad):
     spp._process_chunk(chunk)
 
     assert spp.state == ProcessingState.ACCUMULATING_SILENCE
-    silence_energy_before = spp.silence_energy
+    silence_energy_before = spp.audio_state.silence_energy
 
     # Resume speech
     mock_vad.process_frame.return_value = {
@@ -304,12 +304,12 @@ def test_state_accumulating_to_active_on_speech_resume(spp, mock_vad):
 
     # Verify transition back to ACTIVE_SPEECH
     assert spp.state == ProcessingState.ACTIVE_SPEECH
-    assert spp.silence_energy == 0.0
+    assert spp.audio_state.silence_energy == 0.0
 
 
 def test_state_accumulating_stays_accumulating(spp, mock_vad):
     """Test ACCUMULATING_SILENCE continues accumulating below threshold."""
-    from src.SoundPreProcessor import ProcessingState
+    from src.types import ProcessingState
 
     # Activate speech
     mock_vad.process_frame.return_value = {
@@ -333,7 +333,7 @@ def test_state_accumulating_stays_accumulating(spp, mock_vad):
 
 def test_state_accumulating_to_idle_on_threshold(spp, mock_vad):
     """Test ACCUMULATING_SILENCE -> IDLE when threshold exceeded."""
-    from src.SoundPreProcessor import ProcessingState
+    from src.types import ProcessingState
 
     # Activate speech
     mock_vad.process_frame.return_value = {
@@ -364,7 +364,7 @@ def test_state_accumulating_to_idle_on_threshold(spp, mock_vad):
 
 def test_state_property_is_speech_active(spp, mock_vad):
     """Test is_speech_active property reflects state correctly."""
-    from src.SoundPreProcessor import ProcessingState
+    from src.types import ProcessingState
 
     # IDLE -> is_speech_active == False
     assert spp.state == ProcessingState.IDLE
@@ -404,7 +404,7 @@ def test_state_property_is_speech_active(spp, mock_vad):
 
 def test_timeout_flush_in_idle_state(spp, mock_vad):
     """Test timeout flush triggers in IDLE state after segment finalization."""
-    from src.SoundPreProcessor import ProcessingState
+    from src.types import ProcessingState
 
     # Activate speech
     mock_vad.process_frame.return_value = {
@@ -416,8 +416,8 @@ def test_timeout_flush_in_idle_state(spp, mock_vad):
         spp._process_chunk(chunk)
 
     assert spp.state == ProcessingState.ACTIVE_SPEECH
-    assert spp.speech_before_silence == True
-    last_speech_time = spp.last_speech_timestamp
+    assert spp.audio_state.speech_before_silence == True
+    last_speech_time = spp.audio_state.last_speech_timestamp
 
     # Feed silence to finalize segment (3 chunks with prob=0.1 → 3 * 0.9 = 2.7 > 1.5 threshold)
     mock_vad.process_frame.return_value = {
@@ -430,7 +430,7 @@ def test_timeout_flush_in_idle_state(spp, mock_vad):
 
     # Should be in IDLE, speech_before_silence still True (not reset yet)
     assert spp.state == ProcessingState.IDLE
-    assert spp.speech_before_silence == True
+    assert spp.audio_state.speech_before_silence == True
     assert not spp.speech_queue.empty()  # Segment was emitted
 
     # Feed silence chunks until timeout is reached (silence_timeout = 2.0s from config)
@@ -442,5 +442,5 @@ def test_timeout_flush_in_idle_state(spp, mock_vad):
     # Windower flush should have been called
     assert spp.windower.flush.called
     # speech_before_silence should now be False
-    assert spp.speech_before_silence == False
+    assert spp.audio_state.speech_before_silence == False
 
