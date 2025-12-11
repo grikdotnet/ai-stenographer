@@ -564,6 +564,11 @@ class SoundPreProcessor:
             segment = self._build_audio_segment(breakpoint_idx=breakpoint_idx)
             self.speech_queue.put(segment)
             self.windower.process_segment(segment)
+
+            # Capture breakpoint chunk as left context for next segment
+            breakpoint_chunk = self.speech_buffer[breakpoint_idx]
+            self.left_context_snapshot = [breakpoint_chunk['audio']]
+
             self._keep_remainder_after_breakpoint(breakpoint_idx)
 
             if self.verbose:
@@ -588,7 +593,7 @@ class SoundPreProcessor:
             # Reset buffer but stay in ACTIVE_SPEECH (speech continues)
             self.speech_buffer = []
             self.speech_start_time = timestamp
-            # Don't reset left_context_snapshot
+            self.left_context_snapshot = None  # No context for hard cut
 
     def flush(self) -> None:
         """Emit pending segment and flush windower.
