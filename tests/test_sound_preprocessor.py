@@ -435,15 +435,19 @@ class TestSoundPreProcessor:
 
 
     def test_right_context_extraction(self, preprocessor_config, mock_windower):
-        """Verify right context is last 6 chunks when segment finalized.
+        """Verify right context contains trailing silence chunks when segment finalized.
 
         Logic: 10 speech chunks, then 3 silence chunks that finalize segment.
-        speech_buffer has 12 chunks total after confirmation and finalization trigger.
+        First 3 speech chunks trigger confirmation, so speech_buffer gets:
+        - 3 chunks from confirmation (chunk_ids 0-2)
+        - 7 more speech chunks (chunk_ids 3-9)
+        - 2 silence chunks before finalization (chunk_ids 10-11)
+        Note: 3rd silence chunk not processed because finalization triggers after 2nd.
 
-        Expected:
-        - data = chunks [0-5] (6 chunks, since 12 total - 6 = 6)
-        - right_context = chunks [6-11] (last 6 chunks: includes trailing speech + silence)
-        - chunk_ids = [0-5] (6 IDs)
+        With silence_start_idx tracking (silence_start_idx=10):
+        - data = chunks [0-10] (11 chunks: 10 speech + first silence at breakpoint)
+        - right_context = chunk [11] (1 silence chunk after breakpoint)
+        - chunk_ids = [0-10] (11 IDs)
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
@@ -492,19 +496,19 @@ class TestSoundPreProcessor:
         assert not speech_queue.empty()
         segment = speech_queue.get()
 
-        # Verify data: 12 - 6 = 6 chunks
-        assert len(segment.data) == 6 * 512, \
-            f"Expected data length {6 * 512}, got {len(segment.data)}"
+        # Verify data: 10 speech + 1 silence at breakpoint
+        assert len(segment.data) == 11 * 512, \
+            f"Expected data length {11 * 512}, got {len(segment.data)}"
 
-        # Verify right_context: last 6 chunks (includes trailing speech + silence)
-        assert len(segment.right_context) == 6 * 512, \
-            f"Expected right_context length {6 * 512}, got {len(segment.right_context)}"
+        # Verify right_context: 1 silence chunk after breakpoint
+        assert len(segment.right_context) == 1 * 512, \
+            f"Expected right_context length {1 * 512}, got {len(segment.right_context)}"
 
-        # Verify chunk_ids: [0-5] (6 IDs only)
-        assert len(segment.chunk_ids) == 6, \
-            f"Expected 6 chunk_ids, got {len(segment.chunk_ids)}"
-        assert segment.chunk_ids == list(range(6)), \
-            f"Expected chunk_ids [0-5], got {segment.chunk_ids}"
+        # Verify chunk_ids: [0-10] (11 IDs)
+        assert len(segment.chunk_ids) == 11, \
+            f"Expected 11 chunk_ids, got {len(segment.chunk_ids)}"
+        assert segment.chunk_ids == list(range(11)), \
+            f"Expected chunk_ids [0-10], got {segment.chunk_ids}"
 
 
     def test_no_left_context_at_startup(self, preprocessor_config, mock_windower):
@@ -831,16 +835,16 @@ class TestSoundPreProcessor:
 
 
     def test_hard_cut_no_breakpoint_found(self, preprocessor_config, mock_windower):
-        """When NO silence breakpoint found, use last 6 chunks as right_context.
+        """When NO silence breakpoint found, hard cut with empty right_context.
 
         Pattern: 94 chunks of continuous speech (no silence)
         Search range: chunks [0-90] (skips last 3: [91-93])
         Breakpoint found: None (no silence in searchable range)
 
-        Expected:
-        - data = chunks [0-87] (88 chunks, since 94 - 6 = 88)
-        - right_context = chunks [88-93] (last 6 chunks, all speech)
-        - chunk_ids = [0-87] (88 IDs, NO duplication)
+        Expected (hard cut = no natural boundary):
+        - data = all chunks [0-93] (94 chunks)
+        - right_context = empty (no silence boundary exists)
+        - chunk_ids = [0-93] (94 IDs)
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
@@ -876,41 +880,39 @@ class TestSoundPreProcessor:
         assert not speech_queue.empty()
         segment = speech_queue.get()
 
-        expected_data = np.concatenate(all_chunks_audio[:88])
+        # Hard cut: all data, no right_context
+        expected_data = np.concatenate(all_chunks_audio[:94])
         assert np.array_equal(segment.data, expected_data), \
-            "segment.data should contain exactly chunks 0-87 in order"
+            "segment.data should contain all chunks 0-93 in order (hard cut)"
 
-        # Verify right_context: last 6 chunks with audio content
-        expected_right_context = np.concatenate(all_chunks_audio[88:94])
-        assert np.array_equal(segment.right_context, expected_right_context), \
-            "right_context should contain exactly chunks 88-93 in order"
+        # Verify right_context: empty (no silence boundary)
+        assert len(segment.right_context) == 0, \
+            f"right_context should be empty for hard cut, got {len(segment.right_context)} samples"
 
-        assert len(segment.chunk_ids) == 88, \
-            f"Expected 88 chunk_ids, got {len(segment.chunk_ids)}"
-        assert segment.chunk_ids == list(range(88)), \
-            f"Expected chunk_ids [0-87], got {segment.chunk_ids[:5]}...{segment.chunk_ids[-5:]}"
-
-        for chunk_id in range(88, 94):
-            assert chunk_id not in segment.chunk_ids, \
-                f"chunk_id {chunk_id} should NOT be in segment.chunk_ids (belongs to right_context)"
+        assert len(segment.chunk_ids) == 94, \
+            f"Expected 94 chunk_ids, got {len(segment.chunk_ids)}"
+        assert segment.chunk_ids == list(range(94)), \
+            f"Expected chunk_ids [0-93], got {segment.chunk_ids[:5]}...{segment.chunk_ids[-5:]}"
 
 
     def test_normal_finalization_with_mixed_chunks(self, preprocessor_config, mock_windower):
         """Normal finalization: data includes both speech AND silence chunks.
 
         Pattern: 5 speech → 1 silence → 7 speech → 3 silence (total 16 chunks)
-        Last 3 silence chunks trigger finalization (energy=2.7 > 1.5).
+        Finalization triggers after 2nd final silence (energy=1.8 > 1.5).
 
-        Note: First 3 speech chunks go to idle_buffer. After 3rd speech chunk is appended,
-        speech_buffer is initialized from idle_buffer with all 3 chunks.
-        Then remaining chunks are added, totaling 15 chunks in speech_buffer
-        (the final silence chunk triggers finalization but isn't added).
+        Flow:
+        - chunks 0-2: confirm speech → speech_buffer initialized with chunk_ids 0-2
+        - chunks 3-4: speech → chunk_ids 3-4
+        - chunk 5: silence → ACCUMULATING_SILENCE, silence_start_idx=5, chunk_id 5
+        - chunks 6-12: speech → ACTIVE_SPEECH, silence_start_idx reset, chunk_ids 6-12
+        - chunk 13: silence → ACCUMULATING_SILENCE, silence_start_idx=13, chunk_id 13
+        - chunk 14: silence → energy=1.8 > 1.5 → FINALIZE (chunk 15 never processed)
 
-        Expected:
-        - data = chunks [0-8] (9 chunks: 5 speech + 1 silence + 3 speech)
-        - right_context = chunks [9-14] (last 6 chunks: 4 speech + 2 silence)
-        - chunk_ids = [0-8] (9 IDs)
-        - data includes silence chunk [5] proving silence is preserved in data
+        With silence_start_idx=13:
+        - data = chunks [0-13] (14 chunks: all up to and including breakpoint)
+        - right_context = chunk [14] (1 silence chunk after breakpoint)
+        - chunk_ids = [0-13] (14 IDs)
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
@@ -954,23 +956,22 @@ class TestSoundPreProcessor:
         assert not speech_queue.empty()
         segment = speech_queue.get()
 
-        # Verify data: 9 chunks (5 speech + 1 silence + 3 speech)
-        expected_data = np.concatenate(all_chunks_audio[:9])
+        # Verify data: 14 chunks (all up to and including breakpoint at chunk 13)
+        expected_data = np.concatenate(all_chunks_audio[:14])
         assert np.array_equal(segment.data, expected_data), \
-            "segment.data should contain exactly chunks 0-8 in order (including silence at chunk 5)"
+            "segment.data should contain exactly chunks 0-13 in order"
 
-        # Verify right_context: last 6 chunks (4 speech + 2 silence)
-        expected_right_context = np.concatenate(all_chunks_audio[9:15])
+        # Verify right_context: 1 silence chunk after breakpoint (chunk 14)
+        expected_right_context = all_chunks_audio[14]
         assert np.array_equal(segment.right_context, expected_right_context), \
-            "right_context should contain exactly chunks 9-14 in order"
+            "right_context should contain exactly chunk 14"
 
-        # Verify chunk_ids: [0-8] (9 IDs)
-        assert len(segment.chunk_ids) == 9, \
-            f"Expected 9 chunk_ids, got {len(segment.chunk_ids)}"
-        assert segment.chunk_ids == list(range(9)), \
-            f"Expected chunk_ids [0-8], got {segment.chunk_ids}"
+        # Verify chunk_ids: [0-13] (14 IDs)
+        assert len(segment.chunk_ids) == 14, \
+            f"Expected 14 chunk_ids, got {len(segment.chunk_ids)}"
+        assert segment.chunk_ids == list(range(14)), \
+            f"Expected chunk_ids [0-13], got {segment.chunk_ids}"
 
-        for chunk_id in range(9, 15):
-            assert chunk_id not in segment.chunk_ids, \
-                f"chunk_id {chunk_id} should NOT be in segment.chunk_ids (belongs to right_context)"
+        assert 14 not in segment.chunk_ids, \
+            "chunk_id 14 should NOT be in segment.chunk_ids (belongs to right_context)"
 

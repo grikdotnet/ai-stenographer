@@ -126,6 +126,7 @@ class SoundPreProcessor:
         self.speech_buffer: List[Dict[str, Any]] = []
         self.speech_start_time: float = 0.0
         self.silence_energy: float = 0.0
+        self.silence_start_idx: int | None = None
         self.last_speech_timestamp: float = 0.0
         self.speech_before_silence: bool = False
 
@@ -278,13 +279,13 @@ class SoundPreProcessor:
                     self._append_to_speech_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
                     self.chunk_id_counter += 1
 
-                    # Check max duration
                     current_duration_ms = len(self.speech_buffer) * self.frame_duration_ms
                     if current_duration_ms >= self.max_speech_duration_ms:
                         self._handle_max_duration_split(timestamp)
                 else:
                     # ACTIVE_SPEECH → ACCUMULATING_SILENCE
                     self.state = ProcessingState.ACCUMULATING_SILENCE
+                    self.silence_start_idx = len(self.speech_buffer)  # first silence chunk index
                     self.silence_energy += (1.0 - speech_prob)
 
                     self._append_to_speech_buffer(audio, timestamp, is_speech=False, chunk_id=self.chunk_id_counter)
@@ -299,6 +300,7 @@ class SoundPreProcessor:
                     # ACCUMULATING_SILENCE → ACTIVE_SPEECH
                     self.state = ProcessingState.ACTIVE_SPEECH
                     self.silence_energy = 0.0
+                    self.silence_start_idx = None  # Reset - silence interrupted
                     self.last_speech_timestamp = timestamp
 
                     self._append_to_speech_buffer(audio, timestamp, is_speech=True, chunk_id=self.chunk_id_counter)
@@ -315,7 +317,7 @@ class SoundPreProcessor:
 
                     if self.silence_energy >= self.silence_energy_threshold:
                         # ACCUMULATING_SILENCE → IDLE
-                        segment = self._build_audio_segment(breakpoint_idx=None)
+                        segment = self._build_audio_segment(breakpoint_idx=self.silence_start_idx)
                         self.speech_queue.put(segment)
                         self.windower.process_segment(segment)
                         self._reset_segment_state()
@@ -449,23 +451,13 @@ class SoundPreProcessor:
                        else np.array([], dtype=np.float32))
 
         if breakpoint_idx is None:
-            # No breakpoint: take last 6 chunks as right_context
-            # This handles both: (1) hard cut with no silence, (2) normal finalization with trailing silence
-            if len(self.speech_buffer) > 6:
-                data_buffer = self.speech_buffer[:-6]
-                right_context_buffer = self.speech_buffer[-6:]
-            else:
-                # Buffer too small: all goes to data, no right_context
-                data_buffer = self.speech_buffer
-                right_context_buffer = []
+            # Hard cut: all data, no right_context (no silence boundary exists)
+            data_buffer = self.speech_buffer
 
             data_chunks = [chunk['audio'] for chunk in data_buffer]
             data = np.concatenate(data_chunks) if data_chunks else np.array([], dtype=np.float32)
 
-            right_context_chunks = [chunk['audio'] for chunk in right_context_buffer]
-            right_context = (np.concatenate(right_context_chunks)
-                            if right_context_chunks
-                            else np.array([], dtype=np.float32))
+            right_context = np.array([], dtype=np.float32)
 
             chunk_ids = [chunk['chunk_id'] for chunk in data_buffer
                         if chunk['chunk_id'] is not None]
@@ -519,10 +511,12 @@ class SoundPreProcessor:
         Clears:
         - speech_buffer
         - silence_energy
+        - silence_start_idx
         - left_context_snapshot
         """
         self.speech_buffer = []
         self.silence_energy = 0.0
+        self.silence_start_idx = None
         self.left_context_snapshot = None
 
     def _handle_max_duration_split(self, timestamp: float) -> None:
