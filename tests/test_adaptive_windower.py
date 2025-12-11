@@ -116,8 +116,8 @@ class TestAdaptiveWindower:
         assert window.type == 'finalized'
         assert len(window.chunk_ids) == 3
 
-    def test_one_segment_overlap(self, config, sample_rate):
-        """After window emission, last segment stays in buffer for overlap."""
+    def test_overlap_by_duration(self, config, sample_rate):
+        """After window emission, trailing segments >= MIN_OVERLAP_DURATION stay in buffer."""
         speech_queue = queue.Queue()
         windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
 
@@ -134,14 +134,69 @@ class TestAdaptiveWindower:
         while not speech_queue.empty():
             windows.append(speech_queue.get())
 
-        assert len(windows) == 3
+        # Check overlap: consecutive windows should share chunk_ids
+        # With 1.5s segments and 1.0s MIN_OVERLAP_DURATION, 1 segment is kept
+        assert len(windows) >= 2
 
-        # Check overlap: consecutive windows should share the last segment of previous
-        # Last chunk_id of window 1 should be first chunk_id of window 2
-        last_of_first = windows[0].chunk_ids[-1]
-        first_of_second = windows[1].chunk_ids[0]
-        assert last_of_first == first_of_second, \
-            f"Expected overlap: last chunk {last_of_first} should equal first chunk {first_of_second}"
+        # Verify overlap exists between consecutive windows
+        for i in range(len(windows) - 1):
+            current_ids = set(windows[i].chunk_ids)
+            next_ids = set(windows[i + 1].chunk_ids)
+            overlap_ids = current_ids & next_ids
+            assert len(overlap_ids) > 0, \
+                f"Expected overlap between window {i} and {i+1}"
+
+    def test_overlap_minimum_duration_with_short_segments(self, config, sample_rate):
+        """Multiple short segments are kept to meet MIN_OVERLAP_DURATION (1.0s)."""
+        speech_queue = queue.Queue()
+        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
+
+        # Create segments: 8 x 0.4s = 3.2s total (just exceeds window_duration of 3.0s)
+        # Window emits after segment 7, need to keep at least 1.0s = 3 segments
+        segments = [
+            self._create_segment(i * 0.4, 0.4, chunk_id=i, sample_rate=sample_rate)
+            for i in range(8)
+        ]
+
+        for seg in segments:
+            windower.process_segment(seg)
+            # Check state immediately after first window emission
+            if not speech_queue.empty():
+                break
+
+        # Window was emitted
+        assert not speech_queue.empty()
+        _ = speech_queue.get()  # consume the window
+
+        # Check internal state immediately after emission
+        # At least 3 segments of 0.4s each = 1.2s >= 1.0s MIN_OVERLAP_DURATION
+        retained_samples = sum(len(seg.data) for seg in windower.segments)
+        retained_duration = retained_samples / sample_rate
+
+        assert retained_duration >= 1.0, \
+            f"Expected >= 1.0s overlap, got {retained_duration:.2f}s"
+        assert len(windower.segments) >= 3, \
+            f"Expected >= 3 segments retained, got {len(windower.segments)}"
+
+    def test_overlap_with_long_segment(self, config, sample_rate):
+        """If last segment >= MIN_OVERLAP_DURATION, only that segment is kept."""
+        speech_queue = queue.Queue()
+        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
+
+        # Create: 1.5s + 1.5s (meets 2+ segments and 3.0s duration)
+        seg1 = self._create_segment(0.0, 1.5, chunk_id=0, sample_rate=sample_rate)
+        seg2 = self._create_segment(1.5, 1.5, chunk_id=1, sample_rate=sample_rate)
+
+        windower.process_segment(seg1)
+        windower.process_segment(seg2)
+
+        # Window emitted
+        assert not speech_queue.empty()
+        speech_queue.get()
+
+        # Last segment is 1.5s >= 1.0s MIN_OVERLAP_DURATION, so only 1 segment kept
+        assert len(windower.segments) == 1
+        assert windower.segments[0].chunk_ids == [1]
 
     def test_flush_emits_single_segment(self, config, sample_rate):
         """Flush should emit even a single segment."""

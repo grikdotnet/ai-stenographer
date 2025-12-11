@@ -15,13 +15,15 @@ class AdaptiveWindower:
     Windowing Strategy:
     - Window requires 2+ segments to overlap with next window
     - Window total audio duration >= window_duration
-    - After emission, last segment stays in buffer (1-segment overlap)
+    - After emission, trailing segments >= MIN_OVERLAP_DURATION stay in buffer
     - Flush emits remaining segments regardless of count/duration
 
     Args:
         speech_queue: Queue to output recognition windows (finalized AudioSegments)
         config: Configuration dictionary with audio and windowing parameters
     """
+
+    MIN_OVERLAP_DURATION: float = 1.0  # seconds - minimum overlap for context continuity
 
     def __init__(self, speech_queue: queue.Queue, config: Dict[str, Any], verbose: bool = False):
         self.speech_queue: queue.Queue = speech_queue
@@ -104,8 +106,18 @@ class AdaptiveWindower:
         if self.verbose:
             logging.debug(f"AdaptiveWindower: put finalized window to queue (chunk_ids={unique_chunk_ids})")
 
-        # Keep last segment for overlap with next window
-        self.segments = [self.segments[-1]]
+        # Keep trailing segments with at least MIN_OVERLAP_DURATION for next window
+        overlap_segments = []
+        overlap_samples = 0
+        min_overlap_samples = int(self.MIN_OVERLAP_DURATION * self.sample_rate)
+
+        for seg in reversed(self.segments):
+            overlap_segments.insert(0, seg)
+            overlap_samples += len(seg.data)
+            if overlap_samples >= min_overlap_samples:
+                break
+
+        self.segments = overlap_segments
 
     def flush(self, final_segment: Optional[AudioSegment] = None) -> None:
         """Flush any remaining segments as a final window.
