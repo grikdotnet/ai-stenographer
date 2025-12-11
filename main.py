@@ -243,14 +243,11 @@ if __name__ == "__main__":
         setup_logging(LOGS_DIR, verbose=verbose, is_frozen=is_frozen)
 
         window_duration = 2.0  # Default: 2 seconds
-        step_duration = 1.0    # Default: 1 second (50% overlap)
         input_file = None      # Default: use microphone
 
         for arg in sys.argv:
             if arg.startswith("--window="):
                 window_duration = float(arg.split("=")[1])
-            elif arg.startswith("--step="):
-                step_duration = float(arg.split("=")[1])
             elif arg.startswith("--input-file="):
                 input_file = arg.split("=", 1)[1]
 
@@ -289,7 +286,6 @@ if __name__ == "__main__":
             config_path=str(get_config_path("stt_config.json", PATHS)),
             verbose=verbose,
             window_duration=window_duration,
-            step_duration=step_duration,
             input_file=input_file
         )
 

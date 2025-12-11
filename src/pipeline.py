@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     from onnx_asr.adapters import TimestampedResultsAsrAdapter
 
 class STTPipeline:
-    def __init__(self, model_path: str = "./models/parakeet", models_dir: Path = None, verbose: bool = False, window_duration: float = 2.0, step_duration: float = 1.0, config_path: str = "./config/stt_config.json", input_file: str = None) -> None:
+    def __init__(self, model_path: str = "./models/parakeet", models_dir: Path = None, verbose: bool = False, window_duration: float = 2.0, config_path: str = "./config/stt_config.json", input_file: str = None) -> None:
         """Initialize STT pipeline with hardware-accelerated recognition.
 
         Strategy pattern: GPU type detection selects optimal session configuration
@@ -36,7 +36,6 @@ class STTPipeline:
             models_dir: Path to models directory (for VAD)
             verbose: Enable verbose logging
             window_duration: Window duration for recognition (seconds)
-            step_duration: Step size for windowing (seconds)
             config_path: Path to configuration JSON file
             input_file: Optional path to WAV file for testing (instead of microphone)
         """

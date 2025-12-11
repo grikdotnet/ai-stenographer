@@ -40,7 +40,6 @@ class TestPreliminaryFinalizedIntegration:
             },
             'windowing': {
                 'window_duration': 3.0,
-                'step_size': 1.0,
                 'max_speech_duration_ms': 3000,
                 'silence_timeout': 0.5
             }
