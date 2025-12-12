@@ -4,8 +4,7 @@ import queue
 import numpy as np
 import time
 from unittest.mock import Mock
-from src.SoundPreProcessor import SoundPreProcessor
-from src.types import CONTEXT_BUFFER_SIZE
+from src.SoundPreProcessor import SoundPreProcessor, CONTEXT_BUFFER_SIZE
 
 
 class TestSoundPreProcessor:
@@ -614,8 +613,8 @@ class TestSoundPreProcessor:
             preprocessor._process_chunk(chunk)
 
         # Verify speech_buffer has 3 chunks (all from idle_buffer)
-        from src.types import ProcessingState
-        assert preprocessor.audio_state.state == ProcessingState.ACTIVE_SPEECH
+        from src.SoundPreProcessor import ProcessingStatesEnum
+        assert preprocessor.audio_state.state == ProcessingStatesEnum.ACTIVE_SPEECH
         assert len(preprocessor.audio_state.speech_buffer) == 3
 
         assert preprocessor.audio_state.speech_buffer[0]['chunk_id'] == 0
@@ -682,8 +681,8 @@ class TestSoundPreProcessor:
         preprocessor._process_chunk(chunk)
 
         # Verify state is IDLE and idle_buffer has all 11 chunks
-        from src.types import ProcessingState
-        assert preprocessor.audio_state.state == ProcessingState.IDLE
+        from src.SoundPreProcessor import ProcessingStatesEnum
+        assert preprocessor.audio_state.state == ProcessingStatesEnum.IDLE
         assert len(preprocessor.audio_state.idle_buffer) == 11
 
 

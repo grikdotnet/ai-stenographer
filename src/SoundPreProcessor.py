@@ -10,13 +10,101 @@ import queue
 import threading
 import numpy as np
 import logging
+from collections import deque
+from dataclasses import dataclass, field
+from enum import Enum, auto
 from typing import Dict, Any, TYPE_CHECKING
-from src.types import AudioSegment, AudioProcessingState, ProcessingState
+from src.types import AudioSegment
 
 if TYPE_CHECKING:
     from src.VoiceActivityDetector import VoiceActivityDetector
     from src.AdaptiveWindower import AdaptiveWindower
 
+
+# ========================================================================
+# Audio Processing State Machine (Internal Implementation Details)
+# ========================================================================
+
+# Buffer size constant for idle buffer (~640ms at 32ms/chunk)
+CONTEXT_BUFFER_SIZE = 20
+
+
+class ProcessingStatesEnum(Enum):
+    """State machine states for speech processing.
+
+    State Transitions:
+    - IDLE: No speech detected, waiting for activity
+    - WAITING_CONFIRMATION: several consecutive speech chunks detected (prevents false positives)
+    - ACTIVE_SPEECH: 3+ consecutive speech chunks, actively buffering segment
+    - ACCUMULATING_SILENCE: Speech ended, accumulating silence energy before finalization
+
+    Transition Rules:
+    IDLE → WAITING_CONFIRMATION: First speech chunk detected
+    WAITING_CONFIRMATION → ACTIVE_SPEECH: 3rd consecutive speech chunk
+    WAITING_CONFIRMATION → IDLE: Silence chunk (reset counter)
+    ACTIVE_SPEECH → ACCUMULATING_SILENCE: First silence chunk after speech
+    ACTIVE_SPEECH → ACTIVE_SPEECH: Continues on max_duration split
+    ACCUMULATING_SILENCE → ACTIVE_SPEECH: Speech resumes (reset energy)
+    ACCUMULATING_SILENCE → IDLE: Silence energy exceeds threshold
+    """
+    IDLE = auto()
+    WAITING_CONFIRMATION = auto()
+    ACTIVE_SPEECH = auto()
+    ACCUMULATING_SILENCE = auto()
+
+
+@dataclass
+class AudioProcessingState:
+    """State container for audio segment processing in SoundPreProcessor.
+
+    Groups all mutable state related to audio segment accumulation,
+    leaving SoundPreProcessor with logic and technical infrastructure.
+    """
+
+    # State machine
+    state: ProcessingStatesEnum = ProcessingStatesEnum.IDLE
+    consecutive_speech_count: int = 0
+    chunk_id_counter: int = 0
+
+    # Buffering - idle_buffer maxlen=20 (~640ms at 32ms/chunk)
+    speech_buffer: list[dict[str, Any]] = field(default_factory=list)
+    idle_buffer: deque = field(default_factory=lambda: deque(maxlen=CONTEXT_BUFFER_SIZE))
+
+    # Timing
+    speech_start_time: float = 0.0
+    last_speech_timestamp: float = 0.0
+    first_chunk_timestamp: float = 0.0
+
+    # Silence tracking
+    silence_energy: float = 0.0
+    silence_start_idx: int | None = None
+
+    # Context
+    left_context_snapshot: list[np.ndarray] | None = None
+
+    # Control flags
+    speech_before_silence: bool = False
+
+    def reset_segment(self) -> None:
+        """Reset state after segment finalization.
+
+        Clears buffer, energy, and context but preserves timing flags
+        (last_speech_timestamp, speech_before_silence) for timeout logic.
+        """
+        self.speech_buffer = []
+        self.silence_energy = 0.0
+        self.silence_start_idx = None
+        self.left_context_snapshot = None
+
+    def reset_silence_tracking(self) -> None:
+        """Reset silence tracking when speech resumes."""
+        self.silence_energy = 0.0
+        self.silence_start_idx = None
+
+
+# ========================================================================
+# Main Component
+# ========================================================================
 
 class SoundPreProcessor:
     """Processes raw audio chunks through VAD and buffering.
@@ -103,19 +191,19 @@ class SoundPreProcessor:
         self.verbose: bool = verbose
 
     @property
-    def state(self) -> ProcessingState:
+    def state(self) -> ProcessingStatesEnum:
         """Current processing state (delegated to audio_state)."""
         return self.audio_state.state
 
     @state.setter
-    def state(self, value: ProcessingState) -> None:
+    def state(self, value: ProcessingStatesEnum) -> None:
         """Set processing state (delegated to audio_state)."""
         self.audio_state.state = value
 
     @property
     def is_speech_active(self) -> bool:
         """Check if speech is currently active (ACTIVE_SPEECH or ACCUMULATING_SILENCE)."""
-        return self.audio_state.state in (ProcessingState.ACTIVE_SPEECH, ProcessingState.ACCUMULATING_SILENCE)
+        return self.audio_state.state in (ProcessingStatesEnum.ACTIVE_SPEECH, ProcessingStatesEnum.ACCUMULATING_SILENCE)
 
     def start(self) -> None:
         """Start processing thread"""
@@ -167,11 +255,11 @@ class SoundPreProcessor:
 
         # State machine
         match self.state:
-            case ProcessingState.IDLE:
+            case ProcessingStatesEnum.IDLE:
                 if is_speech:
                     # IDLE → WAITING_CONFIRMATION
                     s.consecutive_speech_count = 1
-                    self.state = ProcessingState.WAITING_CONFIRMATION
+                    self.state = ProcessingStatesEnum.WAITING_CONFIRMATION
                 self._append_to_idle_buffer(audio, timestamp, is_speech=is_speech)
 
                 # Flush windower if silence timeout exceeded after speech
@@ -183,7 +271,7 @@ class SoundPreProcessor:
                         self.windower.flush()
                         s.speech_before_silence = False
 
-            case ProcessingState.WAITING_CONFIRMATION:
+            case ProcessingStatesEnum.WAITING_CONFIRMATION:
                 self._append_to_idle_buffer(audio, timestamp, is_speech=is_speech)
 
                 if is_speech:
@@ -191,7 +279,7 @@ class SoundPreProcessor:
 
                     if s.consecutive_speech_count >= self.CONSECUTIVE_SPEECH_CHUNKS:
                         # WAITING_CONFIRMATION → ACTIVE_SPEECH
-                        self.state = ProcessingState.ACTIVE_SPEECH
+                        self.state = ProcessingStatesEnum.ACTIVE_SPEECH
 
                         # Extract confirmation chunks from idle_buffer
                         if len(s.idle_buffer) >= self.CONSECUTIVE_SPEECH_CHUNKS:
@@ -222,10 +310,10 @@ class SoundPreProcessor:
                             logging.debug(f"captured {len(s.left_context_snapshot)} left context chunks")
                 else:
                     # WAITING_CONFIRMATION → IDLE
-                    self.state = ProcessingState.IDLE
+                    self.state = ProcessingStatesEnum.IDLE
                     s.consecutive_speech_count = 0
 
-            case ProcessingState.ACTIVE_SPEECH:
+            case ProcessingStatesEnum.ACTIVE_SPEECH:
                 if is_speech:
                     # ACTIVE_SPEECH → ACTIVE_SPEECH
                     s.last_speech_timestamp = timestamp
@@ -238,7 +326,7 @@ class SoundPreProcessor:
                         self._handle_max_duration_split(timestamp)
                 else:
                     # ACTIVE_SPEECH → ACCUMULATING_SILENCE
-                    self.state = ProcessingState.ACCUMULATING_SILENCE
+                    self.state = ProcessingStatesEnum.ACCUMULATING_SILENCE
                     s.silence_start_idx = len(s.speech_buffer)  # first silence chunk index
                     s.silence_energy += (1.0 - speech_prob)
 
@@ -248,11 +336,11 @@ class SoundPreProcessor:
                     if self.verbose:
                         logging.debug(f"SoundPreProcessor: silence_energy={s.silence_energy:.2f}")
 
-            case ProcessingState.ACCUMULATING_SILENCE:
+            case ProcessingStatesEnum.ACCUMULATING_SILENCE:
                 # s.speech_before_silence is still True
                 if is_speech:
                     # ACCUMULATING_SILENCE → ACTIVE_SPEECH
-                    self.state = ProcessingState.ACTIVE_SPEECH
+                    self.state = ProcessingStatesEnum.ACTIVE_SPEECH
                     s.reset_silence_tracking()
                     s.last_speech_timestamp = timestamp
 
@@ -275,7 +363,7 @@ class SoundPreProcessor:
                         self.windower.process_segment(segment)
                         self._reset_segment_state()
 
-                        self.state = ProcessingState.IDLE
+                        self.state = ProcessingStatesEnum.IDLE
                         s.consecutive_speech_count = 0
 
                         if self.verbose:
@@ -554,7 +642,7 @@ class SoundPreProcessor:
             self.speech_queue.put(segment)
             self.windower.flush(segment)  # Process and flush in one call
             self._reset_segment_state()
-            self.state = ProcessingState.IDLE
+            self.state = ProcessingStatesEnum.IDLE
         else:
             self.windower.flush()
 
