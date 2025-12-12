@@ -52,14 +52,27 @@ Microphone Input (16kHz, mono)
 │    │     └─→ Detects speech vs silence (threshold: 0.5)                 │
 │    │         └─→ Segments speech at word boundaries                     │
 │    │                                                                      │
+│    ├─→ Context buffer management (circular buffer, 48 chunks = 1.536s) │
+│    │     ├─→ All chunks stored: speech + silence                       │
+│    │     ├─→ Left context: snapshot captured when speech starts        │
+│    │     └─→ Right context: extracted from trailing silence            │
+│    │                                                                      │
 │    ├─→ Speech buffering (_handle_speech_frame, _handle_silence_frame)   │
+│    │     ├─→ Consecutive speech logic: 3 chunks to start segment       │
 │    │     └─→ Accumulates chunks until finalization                      │
 │    │                                                                      │
 │    ├─→ _finalize_segment() [on silence threshold or max duration]       │
-│    │     ├─→ Creates preliminary AudioSegment                           │
+│    │     ├─→ Creates preliminary AudioSegment with context              │
 │    │     │     └─→ type='preliminary'                                    │
 │    │     │     └─→ chunk_ids=[id1, id2, ...]                            │
-│    │     │     └─→ data: np.ndarray (float32, -1.0 to 1.0)             │
+│    │     │     └─→ data: np.ndarray (speech only)                       │
+│    │     │     └─→ left_context: pre-speech audio                       │
+│    │     │     └─→ right_context: trailing silence                      │
+│    │     │                                                                │
+│    │     ├─→ Intelligent breakpoint splitting (max duration)            │
+│    │     │     ├─→ _find_silence_breakpoint(): backward search          │
+│    │     │     ├─→ Skips last 3 chunks for right_context                │
+│    │     │     └─→ Preserves buffer continuity with overlap             │
 │    │     │                                                                │
 │    │     ├─→ speech_queue.put(preliminary_segment)  [instant output]    │
 │    │     └─→ AdaptiveWindower.process_segment(segment) [sync call]      │
@@ -79,8 +92,10 @@ Microphone Input (16kHz, mono)
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  Queue: speech_queue (maxsize=200)                                       │
 │  Data Type: AudioSegment (dataclass)                                     │
-│    - type: 'preliminary' | 'finalized'                                   │
-│    - data: npt.NDArray[np.float32]                                       │
+│    - type: 'preliminary' | 'finalized' | 'flush'                         │
+│    - data: npt.NDArray[np.float32] (speech chunks only)                  │
+│    - left_context: npt.NDArray[np.float32] (pre-speech audio)            │
+│    - right_context: npt.NDArray[np.float32] (trailing silence)           │
 │    - start_time: float                                                   │
 │    - end_time: float                                                     │
 │    - chunk_ids: list[int]                                                │
@@ -95,13 +110,21 @@ Microphone Input (16kHz, mono)
 ├──────────────────────────────────────────────────────────────────────────┤
 │  Recognizer.process()                                                    │
 │    ├─→ speech_queue.get(timeout=0.1)                                    │
-│    ├─→ is_preliminary = (segment.type == 'preliminary')                 │
+│    ├─→ Context-aware recognition:                                       │
+│    │     ├─→ Concatenate: left_context + data + right_context           │
+│    │     ├─→ Recognize with timestamps (TimestampedResultsAsrAdapter)   │
+│    │     └─→ Filter tokens by timestamp (exclude context hallucinations)│
+│    │         └─→ Keep only tokens within data boundaries                │
+│    │         └─→ 0.3s tolerance for VAD warm-up delay                   │
+│    │                                                                      │
 │    ├─→ Parakeet ONNX Model (nemo-parakeet-tdt-0.6b-v3)                 │
-│    │     └─→ audio → text recognition                                   │
+│    │     └─→ audio + context → text recognition with timestamps         │
+│    │                                                                      │
 │    └─→ Creates RecognitionResult                                        │
-│          └─→ text: str                                                  │
-│          └─→ is_preliminary: bool                                       │
+│          └─→ text: str (filtered)                                       │
+│          └─→ status: 'preliminary' | 'final' | 'flush'                  │
 │          └─→ start_time, end_time: float                                │
+│          └─→ chunk_ids: list[int]                                       │
 └──────────────────────────────────────────────────────────────────────────┘
         │
         ├─ RecognitionResult (dataclass)
@@ -112,7 +135,8 @@ Microphone Input (16kHz, mono)
 │    - text: str                                                           │
 │    - start_time: float                                                   │
 │    - end_time: float                                                     │
-│    - is_preliminary: bool                                                │
+│    - status: 'preliminary' | 'final' | 'flush'                           │
+│    - chunk_ids: list[int]                                                │
 └──────────────────────────────────────────────────────────────────────────┘
         │
         ↓
@@ -122,23 +146,27 @@ Microphone Input (16kHz, mono)
 ├──────────────────────────────────────────────────────────────────────────┤
 │  TextMatcher.process()                                                   │
 │    ├─→ text_queue.get(timeout=0.1)                                      │
-│    ├─→ Routes based on is_preliminary flag:                             │
+│    ├─→ Routes based on status field:                                    │
 │    │                                                                      │
-│    ├─ PRELIMINARY PATH (word-level VAD results):                        │
+│    ├─ PRELIMINARY PATH (silence-bounded segments with context):         │
 │    │   └─→ process_preliminary()                                        │
 │    │       └─→ gui_window.update_partial(text)  [direct, no overlap]   │
 │    │           └─→ root.after() → GUI main thread                       │
 │    │                                                                      │
-│    └─ FINALIZED PATH (3s sliding windows):                              │
-│        └─→ process_finalized()                                          │
-│            ├─→ Duplicate detection (time + normalized text)             │
-│            ├─→ resolve_overlap() - handles windowed text overlaps       │
-│            │     └─→ Uses TextNormalizer for fuzzy matching             │
-│            │     └─→ Finds longest common subsequence                   │
-│            ├─→ gui_window.finalize_text(finalized_part)                 │
-│            │     └─→ root.after() → GUI main thread                     │
-│            └─→ gui_window.update_partial(remaining_part)                │
-│                └─→ root.after() → GUI main thread                       │
+│    ├─ FINAL PATH (3s sliding windows):                                  │
+│    │   └─→ process_finalized()                                          │
+│    │       ├─→ Duplicate detection (time + normalized text)             │
+│    │       ├─→ resolve_overlap() - handles windowed text overlaps       │
+│    │       │     └─→ Uses TextNormalizer for fuzzy matching             │
+│    │       │     └─→ Finds longest common subsequence                   │
+│    │       ├─→ gui_window.finalize_text(finalized_part)                 │
+│    │       │     └─→ root.after() → GUI main thread                     │
+│    │       └─→ gui_window.update_partial(remaining_part)                │
+│    │           └─→ root.after() → GUI main thread                       │
+│    │                                                                      │
+│    └─ FLUSH PATH (end of speech segment):                               │
+│        └─→ process_flush()                                              │
+│            └─→ Finalize pending partial text                            │
 │                                                                           │
 │  TextMatcher.finalize_pending()                                          │
 │    └─→ Called by Pipeline.stop() to flush remaining partial text        │
@@ -243,23 +271,27 @@ Main Thread        AudioSource Thread    SoundPreProcessor Thread    Recognizer 
 ```python
 @dataclass
 class AudioSegment:
-    """Unified type for both preliminary and finalized audio segments"""
-    type: Literal['preliminary', 'finalized']  # Discriminator
-    data: npt.NDArray[np.float32]              # Audio samples [-1.0, 1.0]
-    start_time: float                           # Segment start (seconds)
-    end_time: float                             # Segment end (seconds)
+    """Unified type for preliminary/finalized audio segments + flush signals"""
+    type: Literal['preliminary', 'finalized', 'flush']  # Discriminator
+    data: npt.NDArray[np.float32]              # Audio samples [-1.0, 1.0], speech only
+    left_context: npt.NDArray[np.float32]      # Pre-speech context audio
+    right_context: npt.NDArray[np.float32]     # Post-speech context audio
+    start_time: float                           # Segment start (seconds, data only)
+    end_time: float                             # Segment end (seconds, data only)
     chunk_ids: list[int]                        # Tracking IDs
 
-    # preliminary: chunk_ids = [single_id]
-    # finalized:   chunk_ids = [id1, id2, id3, ...]
+    # preliminary: chunk_ids = [id1, id2, ...]  (silence-bounded segments)
+    # finalized:   chunk_ids = [id1, id2, id3, ...]  (aggregated windows)
+    # flush:       chunk_ids = []  (end-of-segment signal)
 
 @dataclass
 class RecognitionResult:
-    """Speech recognition output with timing"""
-    text: str                    # Recognized text
+    """Speech recognition output with timing and context-filtered text"""
+    text: str                    # Recognized text (tokens filtered by timestamp)
     start_time: float            # Recognition start
     end_time: float              # Recognition end
-    is_preliminary: bool         # True=instant, False=high-quality
+    status: Literal['preliminary', 'final', 'flush']  # Type discriminator
+    chunk_ids: list[int]         # Tracking IDs from AudioSegment
 ```
 
 ### Data Transformation Flow
@@ -278,13 +310,19 @@ Raw Audio Frame (32ms) - AudioSource
 SoundPreProcessor Processing
   ├─→ RMS Normalization (for VAD input)
   ├─→ VAD Processing (Silero)
+  ├─→ Circular Context Buffer (48 chunks = 1.536s)
+  │     ├─→ left_context: snapshot before speech starts
+  │     └─→ right_context: trailing silence extraction
+  ├─→ Consecutive Speech Logic (3 chunks to start)
   └─→ Speech Buffering
         │
-        ↓ Segment Finalization
+        ↓ Segment Finalization (silence-bounded or max duration)
         │
 AudioSegment (preliminary)
   └─→ type='preliminary'
-  └─→ data: np.ndarray (variable length, 64ms-3000ms)
+  └─→ data: np.ndarray (speech only, 64ms-3000ms)
+  └─→ left_context: np.ndarray (pre-speech audio)
+  └─→ right_context: np.ndarray (trailing silence)
   └─→ start_time: 1.234
   └─→ end_time: 1.456
   └─→ chunk_ids: [42, 43, 44]  ← accumulated chunk IDs
@@ -298,23 +336,33 @@ AudioSegment (preliminary)
         AudioSegment (finalized)
           └─→ type='finalized'
           └─→ data: np.ndarray (48000 samples = 3s @ 16kHz)
+          └─→ left_context: np.ndarray (empty for finalized)
+          └─→ right_context: np.ndarray (empty for finalized)
           └─→ start_time: 1.000
           └─→ end_time: 4.000
           └─→ chunk_ids: [42, 43, 44, 45, 46, 47, ...]  ← merged IDs
                 │
                 ↓ speech_queue (quality path)
                 │
-        RecognitionResult (preliminary OR finalized)
-          └─→ text: "hello world"
+        Recognizer (Context-Aware Recognition)
+          ├─→ Concatenate: left_context + data + right_context
+          ├─→ Recognize with timestamps (TimestampedResultsAsrAdapter)
+          └─→ Filter tokens by timestamp (exclude context)
+                │
+                ↓
+        RecognitionResult (preliminary OR final OR flush)
+          └─→ text: "hello world" (context-filtered)
           └─→ start_time: 1.234
           └─→ end_time: 1.456
-          └─→ is_preliminary: True/False
+          └─→ status: 'preliminary' | 'final' | 'flush'
+          └─→ chunk_ids: [42, 43, 44]
                 │
                 ↓ text_queue
                 │
-        TextMatcher (routes by is_preliminary)
+        TextMatcher (routes by status)
           ├─→ Preliminary: gui_window.update_partial()
-          └─→ Finalized: resolve_overlap() → gui_window.finalize_text() + update_partial()
+          ├─→ Final: resolve_overlap() → gui_window.finalize_text() + update_partial()
+          └─→ Flush: finalize pending partial text
                 │
                 ↓ root.after() → GUI main thread
                 │
@@ -359,7 +407,7 @@ The system uses a **Strategy Pattern** for hardware-specific optimizations:
 }
 ```
 
-**Fallback Chain:** DirectML GPU → CPU (guaranteed to run on all systems)
+**Fallback Chain:** DirectML GPU → CPU
 
 ---
 
@@ -386,9 +434,9 @@ The system uses a **Strategy Pattern** for hardware-specific optimizations:
 
 **Design:** Non-blocking callback prevents buffer overflows
 
-### 2. SoundPreProcessor (NEW)
+### 2. SoundPreProcessor
 
-**Responsibility:** VAD processing, RMS normalization, speech buffering, windower orchestration
+**Responsibility:** VAD processing, RMS normalization, context-aware speech buffering, windower orchestration
 
 **Configuration:**
 ```json
@@ -396,15 +444,16 @@ The system uses a **Strategy Pattern** for hardware-specific optimizations:
   "audio": {
     "sample_rate": 16000,
     "rms_normalization": {
-      "target_rms": 0.05,
+      "target_rms": 0.07,               // Boosted for better VAD response
       "silence_threshold": 0.001,
-      "gain_smoothing": 0.1
-    }
+      "gain_smoothing": 0.7             // Faster gain ramp-up
+    },
+    "silence_energy_threshold": 3.0     // Higher threshold for more trailing silence
   },
   "vad": {
-    "threshold": 0.5,                   // 50% speech probability
-    "max_speech_duration_ms": 3000,     // 3s maximum
-    "silence_energy_threshold": 1.5     // Cumulative silence probability
+    "threshold": 0.55,                  // Tuned for confident speech detection
+    "max_speech_duration_ms": 1500,     // 1.5s maximum
+    "frame_duration_ms": 32
   },
   "windowing": {
     "silence_timeout": 0.5              // Trigger windower.flush()
@@ -414,17 +463,43 @@ The system uses a **Strategy Pattern** for hardware-specific optimizations:
 
 **Key Methods:**
 - `process()` - Main loop reading from chunk_queue
-- `_process_chunk(chunk_data)` - Process single raw chunk
-- `_normalize_rms(audio)` - Apply RMS normalization
-- `_handle_speech_frame(audio, timestamp, chunk_id)` - Buffer speech
-- `_handle_silence_frame(audio, timestamp, chunk_id)` - Handle silence
-- `_finalize_segment()` - Emit preliminary AudioSegment and call windower
+- `_process_chunk(chunk_data)` - Process single raw chunk (dual-path: normalized→VAD, raw→STT)
+- `_normalize_rms(audio)` - Apply RMS normalization with temporal smoothing (AGC)
+- `_handle_speech_frame(audio, timestamp, speech_prob)` - Buffer speech with consecutive logic
+- `_handle_silence_frame(audio, timestamp)` - Handle silence, buffer trailing context
+- `_find_silence_breakpoint()` - **NEW:** Backward search for natural split points
+- `_finalize_segment(breakpoint_idx)` - **ENHANCED:** Emit AudioSegment with context + intelligent splitting
 - `flush()` - Emit pending segment and flush windower
 - `start()` - Start processing thread
 - `stop()` - Stop thread and flush
 
+**Context Buffer Strategy:**
+- Circular buffer: 48 chunks (1.536s @ 32ms/chunk)
+- `left_context_snapshot`: Captured when speech starts (immune to wraparound)
+- `right_context`: Extracted from trailing silence chunks (reverse iteration)
+- Enables better STT quality for short words (<100ms)
+- Prevents hallucinations from silence padding
+
+**Consecutive Speech Logic:**
+- Requires 3 consecutive speech chunks to start segment
+- Prevents false positives from transient noise
+- Chunks 1-3: Buffered in context_buffer as unconfirmed
+- Chunk 3: Triggers segment start, extracts last 3 chunks
+
+**Intelligent Breakpoint Splitting:**
+- When max_speech_duration_ms reached, search backward for last silence chunk
+- Skips last 3 chunks to preserve right_context
+- Splits at natural silence boundaries (no mid-word cuts)
+- Preserves buffer continuity with 6-chunk overlap
+- Fallback to hard cut if no silence found
+
+**Chunk Structure:**
+- All chunks: `{'audio', 'timestamp', 'chunk_id', 'is_speech'}`
+- chunk_id: Sequential for segment chunks, None for non-segment silence
+- is_speech: Reflects VAD result (True/False), not placement logic
+
 **Input:** Raw audio dicts from `chunk_queue`
-**Output:** Preliminary AudioSegments to `speech_queue`
+**Output:** Preliminary AudioSegments with context to `speech_queue`
 **Side Effect:** Calls `windower.process_segment()` synchronously
 
 **Design:** Dedicated thread prevents blocking audio capture callback
@@ -462,11 +537,12 @@ Overlap:  [0s-1s] [1s-2s] [2s-3s] [3s-4s] [4s-5s]
 
 **Output:** Finalized AudioSegments with `chunk_ids=[id1, id2, ...]` to `speech_queue`
 
-### 4. Recognizer
+### 4. Recognizer (Enhanced with Context-Aware Recognition)
 
-**Responsibility:** Convert audio to text using STT model with hardware-accelerated inference
+**Responsibility:** Convert audio to text using STT model with hardware-accelerated inference and timestamped token filtering
 
 **Model:** Parakeet ONNX (nemo-parakeet-tdt-0.6b-v3, FP16 quantized)
+**Adapter:** `TimestampedResultsAsrAdapter` with `.with_timestamps()` support
 
 **Hardware Acceleration:**
 - **DirectML GPU** (default on Windows): Automatic GPU selection and optimization
@@ -489,26 +565,59 @@ Overlap:  [0s-1s] [1s-2s] [2s-3s] [3s-4s] [4s-5s]
 - Skipped for CPU mode (no shader compilation needed)
 
 **Key Methods:**
-- `recognize_window(segment, is_preliminary)` - Run STT inference
+- `recognize_window(segment)` - **ENHANCED:** Context-aware STT with timestamp filtering
+- `_filter_tokens_by_timestamp()` - **NEW:** Filter hallucinated context tokens
 - `process()` - Main loop reading from speech_queue
 
-**Processing:**
+**Context-Aware Recognition Algorithm:**
 ```python
 segment = speech_queue.get(timeout=0.1)
-is_preliminary = (segment.type == 'preliminary')
-text = model.recognize(segment.data)
+
+# Step 1: Concatenate context for recognition
+full_audio = left_context + data + right_context
+
+# Step 2: Recognize with timestamps
+result: TimestampedResult = model.recognize(full_audio)
+# Returns: {text, tokens, timestamps}
+
+# Step 3: Calculate data boundaries
+data_start = len(left_context) / sample_rate
+data_end = data_start + len(data) / sample_rate
+
+# Step 4: Filter tokens by timestamp
+filtered_text = _filter_tokens_by_timestamp(
+    result.text, result.tokens, result.timestamps,
+    data_start, data_end
+)
+# Includes 0.3s tolerance for VAD warm-up delay
+# Removes hallucinations like "yeah", "mm-hmm" from silence
+
+# Step 5: Map AudioSegment.type to RecognitionResult.status
+status_map = {
+    'preliminary': 'preliminary',
+    'finalized': 'final',
+    'flush': 'flush'
+}
 
 result = RecognitionResult(
-    text=text,
+    text=filtered_text,
     start_time=segment.start_time,
     end_time=segment.end_time,
-    is_preliminary=is_preliminary
+    status=status_map[segment.type],
+    chunk_ids=segment.chunk_ids
 )
 text_queue.put(result)
 ```
 
-**Input:** AudioSegments from `speech_queue`
-**Output:** RecognitionResults with `is_preliminary` flag to `text_queue`
+**Benefits:**
+- Better recognition for short words (50-128ms) due to acoustic context
+- Eliminates hallucinations from silence padding via timestamp filtering
+- Preserves original timing (data region only, not context)
+- Fallback to full text when timestamps unavailable
+- Maintains backward compatibility with empty contexts
+
+**Input:** AudioSegments with context from `speech_queue`
+**Output:** RecognitionResults with `status` field to `text_queue`
 
 ### 5. TextMatcher
 
@@ -628,39 +737,59 @@ Output:
 
 ---
 
-## Performance Characteristics
+## Configuration Tuning
 
-### Latency Breakdown
+The system configuration has been tuned through iterative testing to optimize preliminary segment quality, reduce false positives, and improve short-word recognition.
 
-| Stage | Latency | Type |
-|-------|---------|------|
-| Audio capture (32ms frame) | <1ms | Fixed (non-blocking callback) |
-| Queue transfer (chunk_queue) | <1ms | Fixed |
-| SoundPreProcessor: RMS + VAD | <5ms | Variable |
-| SoundPreProcessor: buffering | <1ms | Fixed |
-| Queue transfer (speech_queue) | <1ms | Fixed |
-| Preliminary recognition | ~100-200ms | Variable (model) |
-| Finalized recognition (3s window) | ~300-500ms | Variable (model) |
-| Text processing | <10ms | Variable |
-| GUI update | <5ms | Variable |
-| **Total (preliminary path)** | **~150-250ms** | End-to-end |
-| **Total (finalized path)** | **~350-550ms** | End-to-end |
+### Configuration Parameters (`config/stt_config.json`)
 
-**Key Improvement:** Audio callback now completes in <1ms (was 5-10ms with VAD), preventing buffer overflows.
+```json
+{
+  "audio": {
+    "sample_rate": 16000,
+    "chunk_duration": 0.032,
+    "silence_energy_threshold": 3.0,
+    "rms_normalization": {
+      "target_rms": 0.07,
+      "silence_threshold": 0.0001,
+      "gain_smoothing": 0.7
+    }
+  },
+  "vad": {
+    "frame_duration_ms": 32,
+    "threshold": 0.55
+  },
+  "windowing": {
+    "window_duration": 3.0,
+    "step_size": 1.0,
+    "max_speech_duration_ms": 1500,
+    "silence_timeout": 0.5
+  },
+  "recognition": {
+    "model_name": "parakeet",
+    "inference": "auto"
+  }
+}
+```
 
-### Memory Usage
+### Parameter Reference
 
-| Component | Memory | Notes |
-|-----------|--------|-------|
-| Parakeet model (FP16) | ~600MB | ONNX model in RAM/VRAM |
-| Silero VAD model | ~5MB | Quantized FP16 model |
-| Audio buffers | ~50KB | Ring buffers, queues |
-| GUI | ~20MB | Tkinter overhead |
-| GPU memory (discrete) | Variable | Model loaded to VRAM (additional ~600MB) |
-| GPU memory (integrated) | 0 | Shared system RAM (no additional) |
-| **Total (integrated GPU)** | **~700MB** | System RAM only |
-| **Total (discrete GPU)** | **~700MB RAM + ~600MB VRAM** | Separate pools |
-| **Total (CPU)** | **~700MB** | System RAM only |
+| Parameter | Value | Purpose | Tuning Notes |
+|-----------|-------|---------|--------------|
+| **VAD** ||||
+| `threshold` | 0.55 | Speech probability threshold | Higher = fewer false positives, may miss soft speech |
+| `frame_duration_ms` | 32 | Silero VAD optimal frame size | Fixed by model requirements |
+| **Audio Processing** ||||
+| `silence_energy_threshold` | 3.0 | Cumulative silence for finalization | Higher = more trailing silence (better right_context) |
+| `target_rms` | 0.07 | RMS normalization target | Higher = better VAD response, may boost noise |
+| `gain_smoothing` | 0.7 | Temporal smoothing factor (α) | Lower = faster gain ramp-up, may cause artifacts |
+| **Windowing** ||||
+| `window_duration` | 3.0 | Recognition window size (s) | Trade-off: context vs latency |
+| `step_size` | 1.0 | Window step (overlap) | Smaller = more overlap, higher quality |
+| `max_speech_duration_ms` | 1500 | Force split threshold | Triggers intelligent breakpoint search |
+| `silence_timeout` | 0.5 | Windower flush timeout (s) | Finalizes pending text after silence |
+| **Recognition** ||||
+| `inference` | "auto" | Hardware selection | "auto" \| "directml" \| "cpu" |
 
 ---
 
@@ -721,83 +850,24 @@ Strategy Pattern for hardware-specific optimizations:
 
 ---
 
-## Future Enhancements
-
-### SilenceObserver (Planned)
-
-```python
-class SilenceObserver:
-    """Monitor VAD activity for phrase-level silence detection.
-
-    Observes chunk_queue activity and triggers text finalization
-    when no segments received for timeout period.
-    """
-
-    def __init__(self, chunk_queue, text_matcher, timeout=2.0):
-        self.chunk_queue = chunk_queue
-        self.text_matcher = text_matcher
-        self.timeout = timeout
-
-    def monitor(self):
-        last_segment_time = time.time()
-        while self.is_running:
-            if not self.chunk_queue.empty():
-                last_segment_time = time.time()
-            elif time.time() - last_segment_time > self.timeout:
-                # Trigger finalization
-                self.text_matcher.finalize_pending()
-                last_segment_time = time.time()
-            time.sleep(0.1)
-```
-
-This can be added without modifying AudioSource, SoundPreProcessor, Recognizer, or TextMatcher (OCP compliance).
-
-**Note:** With the new architecture, SilenceObserver would monitor `chunk_queue` activity instead, as speech activity is now processed in SoundPreProcessor thread.
-
----
-
 ## Testing Strategy
 
 ### Test Pyramid
 
 ```
                     ┌───────────────┐
-                    │  Integration  │  5 tests
+                    │  Integration  │
                     │     Tests     │
                     └───────────────┘
                    ┌─────────────────┐
-                   │  Component      │  20 tests
+                   │  Component      │
                    │  Integration    │
                    └─────────────────┘
                   ┌───────────────────┐
-                  │   Unit Tests      │  20 tests
+                  │   Unit Tests      │
                   │   (Mocked deps)   │
                   └───────────────────┘
 ```
-
-### Test Coverage
-
-| Component | Unit Tests | Integration Tests | Total |
-|-----------|------------|-------------------|-------|
-| VoiceActivityDetector | 3 | - | 3 |
-| AudioSource + VAD | - | 5 | 5 |
-| AdaptiveWindower | 6 | - | 6 |
-| Recognizer | 5 | - | 5 |
-| TextMatcher | 10 | - | 10 |
-| TextNormalizer | 2 | - | 2 |
-| TwoStageDisplay | - | 6 | 6 |
-| Full Pipeline | - | 5 | 5 |
-| Enhanced Duplicate | - | 3 | 3 |
-| **Total** | **26** | **19** | **45** |
-
-### Test Data
-
-- Real audio samples from Silero VAD (en.wav)
-- No synthetic audio in tests
-- Deterministic values (no random data)
-- Type-safe dataclasses throughout
-
----
 
 ## Conclusion
 
@@ -805,13 +875,42 @@ This architecture provides:
 
 ✅ **Real-time performance** - Sub-250ms latency for preliminary results
 ✅ **High accuracy** - 3s windows for quality results
+✅ **Context-aware recognition** - Circular buffer strategy improves short-word quality
+✅ **Intelligent segmentation** - Silence-based breakpoint splitting preserves speech integrity
+✅ **Hallucination prevention** - Timestamped token filtering eliminates context artifacts
 ✅ **Hardware acceleration** - Automatic GPU detection with CPU fallback
 ✅ **Smart GPU selection** - Multi-GPU support with discrete GPU preference
 ✅ **Memory optimization** - Hardware-specific session configurations (UMA vs PCIe)
 ✅ **Clean separation** - Each component has single responsibility
 ✅ **Type safety** - Strongly-typed dataclasses throughout
 ✅ **Extensibility** - Open for enhancement without modification
-✅ **Testability** - 45 tests covering all major paths
+✅ **Testability** - tests covering all major paths
 ✅ **Maintainability** - Clear architecture, well-documented
+✅ **Tunable configuration** - Iteratively optimized parameters with trade-off guidance
 
-The dual-path design (preliminary + finalized) balances responsiveness with accuracy, while the Strategy Pattern for hardware abstraction ensures optimal performance across different GPU architectures and CPU-only systems.
+### Key Innovations
+
+**Context Buffer Strategy:**
+- 48-chunk circular buffer (1.536s) captures pre/post-speech audio
+- Left context snapshot immune to wraparound
+- Right context extraction from trailing silence
+- Enables better STT for short words (<100ms) without hallucinations
+
+**Intelligent Breakpoint Splitting:**
+- Backward search for natural silence boundaries
+- Skips last 3 chunks to preserve right_context
+- 6-chunk overlap maintains buffer continuity
+- Eliminates mid-word cuts from max_speech_duration
+
+**Timestamped Token Filtering:**
+- Context concatenation: left_context + data + right_context
+- Token-level timestamp alignment from TimestampedResultsAsrAdapter
+- 0.3s tolerance for VAD warm-up delay
+- Removes hallucinations ("yeah", "mm-hmm") from silence padding
+
+**Consecutive Speech Logic:**
+- 3-chunk confirmation prevents false positives
+- Reduces transient noise triggering
+- Preserves responsiveness while improving accuracy
+
+The dual-path design (preliminary + finalized) balances responsiveness with accuracy, while the Strategy Pattern for hardware abstraction ensures optimal performance across different GPU architectures and CPU-only systems. The context-aware recognition improvements deliver better short-word quality and eliminate hallucinations without sacrificing real-time performance.

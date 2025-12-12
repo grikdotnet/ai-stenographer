@@ -6,11 +6,12 @@ import onnx_asr
 import onnxruntime as rt
 import json
 from pathlib import Path
-from typing import List, Any, Dict
+from typing import List, Any, Dict, TYPE_CHECKING
 import tkinter as tk
 from tkinter import scrolledtext
 
 from .AudioSource import AudioSource
+from .FileAudioSource import FileAudioSource
 from .SoundPreProcessor import SoundPreProcessor
 from .AdaptiveWindower import AdaptiveWindower
 from .Recognizer import Recognizer
@@ -20,12 +21,23 @@ from .VoiceActivityDetector import VoiceActivityDetector
 from .ExecutionProviderManager import ExecutionProviderManager
 from .SessionOptionsFactory import SessionOptionsFactory
 
+if TYPE_CHECKING:
+    from onnx_asr.adapters import TimestampedResultsAsrAdapter
+
 class STTPipeline:
-    def __init__(self, model_path: str = "./models/parakeet", models_dir: Path = None, verbose: bool = False, window_duration: float = 2.0, step_duration: float = 1.0, config_path: str = "./config/stt_config.json") -> None:
+    def __init__(self, model_path: str = "./models/parakeet", models_dir: Path = None, verbose: bool = False, window_duration: float = 2.0, config_path: str = "./config/stt_config.json", input_file: str = None) -> None:
         """Initialize STT pipeline with hardware-accelerated recognition.
 
         Strategy pattern: GPU type detection selects optimal session configuration
         (integrated GPU, discrete GPU, or CPU) with hardware-specific optimizations.
+
+        Args:
+            model_path: Path to Parakeet model directory
+            models_dir: Path to models directory (for VAD)
+            verbose: Enable verbose logging
+            window_duration: Window duration for recognition (seconds)
+            config_path: Path to configuration JSON file
+            input_file: Optional path to WAV file for testing (instead of microphone)
         """
         self.config: Dict = self._load_config(config_path)
         self._is_stopped: bool = False
@@ -47,7 +59,7 @@ class STTPipeline:
         strategy.configure_session_options(sess_options)
 
         logging.info("Loading FP16 Parakeet models...")
-        self.model: Any = onnx_asr.load_model(
+        base_model = onnx_asr.load_model(
             "nemo-parakeet-tdt-0.6b-v3",
             model_path,
             quantization='fp16',
@@ -55,7 +67,8 @@ class STTPipeline:
             sess_options=sess_options,
             cpu_preprocessing=False
         )
-        logging.info("FP16 models loaded successfully")
+        self.model: TimestampedResultsAsrAdapter = base_model.with_timestamps()
+        logging.info("FP16 models loaded successfully (timestamped mode)")
 
         self.root: tk.Tk
         self.text_widget: scrolledtext.ScrolledText
@@ -91,18 +104,30 @@ class STTPipeline:
             verbose=verbose
         )
 
-        # Create simplified AudioSource
-        self.audio_source: AudioSource = AudioSource(
-            chunk_queue=self.chunk_queue,
-            config=self.config,
-            verbose=verbose
-        )
+        # Create AudioSource (microphone or file)
+        if input_file:
+            logging.info(f"Using file input: {input_file}")
+            self.audio_source: FileAudioSource = FileAudioSource(
+                chunk_queue=self.chunk_queue,
+                config=self.config,
+                file_path=input_file,
+                verbose=verbose
+            )
+        else:
+            logging.info("Using microphone input")
+            self.audio_source: AudioSource = AudioSource(
+                chunk_queue=self.chunk_queue,
+                config=self.config,
+                verbose=verbose
+            )
 
         # Create Recognizer (renamed queue)
+        sample_rate = self.config['audio']['sample_rate']
         self.recognizer: Recognizer = Recognizer(
             speech_queue=self.speech_queue,
             text_queue=self.text_queue,
             model=self.model,
+            sample_rate=sample_rate,
             verbose=verbose
         )
 

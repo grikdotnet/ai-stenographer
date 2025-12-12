@@ -33,8 +33,8 @@ class VoiceActivityDetector:
         self.frame_size: int = int(self.sample_rate * self.frame_duration_ms / 1000)
 
         # Load Silero VAD ONNX model
-        self.model: Optional[onnxruntime.InferenceSession] = None
-        self.model_state: Optional[np.ndarray] = None
+        self.model: onnxruntime.InferenceSession = None
+        self.model_state: np.ndarray = None
         self._load_model()
 
         # State tracking for segment detection

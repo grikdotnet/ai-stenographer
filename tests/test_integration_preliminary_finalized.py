@@ -8,6 +8,7 @@ from src.SoundPreProcessor import SoundPreProcessor
 from src.AdaptiveWindower import AdaptiveWindower
 from src.Recognizer import Recognizer
 from src.types import AudioSegment, RecognitionResult
+from onnx_asr.asr import TimestampedResult
 
 
 class TestPreliminaryFinalizedIntegration:
@@ -39,7 +40,6 @@ class TestPreliminaryFinalizedIntegration:
             },
             'windowing': {
                 'window_duration': 3.0,
-                'step_size': 1.0,
                 'max_speech_duration_ms': 3000,
                 'silence_timeout': 0.5
             }
@@ -110,6 +110,8 @@ class TestPreliminaryFinalizedIntegration:
             segment = AudioSegment(
                 type='preliminary',
                 data=np.random.randn(int(0.15 * 16000)).astype(np.float32) * 0.1,
+                left_context=np.array([], dtype=np.float32),
+                right_context=np.array([], dtype=np.float32),
                 start_time=start,
                 end_time=end,
                 chunk_ids=[i]
@@ -129,14 +131,19 @@ class TestPreliminaryFinalizedIntegration:
     def test_recognizer_handles_both_types(self):
         """Recognizer should handle both preliminary and finalized segments correctly."""
         mock_model = Mock()
-        mock_model.recognize.side_effect = ["instant result", "quality result"]
+        mock_model.recognize.side_effect = [
+            TimestampedResult(text="instant result", tokens=None, timestamps=None),
+            TimestampedResult(text="quality result", tokens=None, timestamps=None)
+        ]
 
-        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model)
+        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000)
 
         # Create preliminary and finalized segments
         preliminary = AudioSegment(
             type='preliminary',
             data=np.random.randn(3200).astype(np.float32) * 0.1,
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=0.0,
             end_time=0.2,
             chunk_ids=[0]
@@ -144,6 +151,8 @@ class TestPreliminaryFinalizedIntegration:
         finalized = AudioSegment(
             type='finalized',
             data=np.random.randn(48000).astype(np.float32) * 0.1,
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=0.0,
             end_time=3.0,
             chunk_ids=[0, 1, 2, 3, 4]
@@ -197,8 +206,12 @@ class TestPreliminaryFinalizedIntegration:
 
         # Set up recognizer with mock model
         mock_model = Mock()
-        mock_model.recognize.return_value = "recognized text"
-        recognizer = Recognizer(speech_queue, text_queue, mock_model)
+        mock_model.recognize.return_value = TimestampedResult(
+            text="recognized text",
+            tokens=None,
+            timestamps=None
+        )
+        recognizer = Recognizer(speech_queue, text_queue, mock_model, sample_rate=16000)
 
         # Feed raw audio chunks - use 4 seconds to ensure finalized window
         chunk_size = 512
@@ -251,14 +264,20 @@ class TestPreliminaryFinalizedIntegration:
     def test_timing_preservation_through_pipeline(self, config):
         """Timing information should be preserved through entire pipeline."""
         mock_model = Mock()
-        mock_model.recognize.return_value = "test"
+        mock_model.recognize.return_value = TimestampedResult(
+            text="test",
+            tokens=None,
+            timestamps=None
+        )
 
-        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model)
+        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000)
 
         # Create segment with specific timing
         segment = AudioSegment(
             type='finalized',
             data=np.random.randn(48000).astype(np.float32) * 0.1,
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
             start_time=1.234,
             end_time=4.567,
             chunk_ids=[0, 1, 2]

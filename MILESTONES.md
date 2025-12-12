@@ -1,30 +1,3 @@
-## **Milestone 1: Performance & Hardware Acceleration (Critical - Q1)**
-
-**Goal:** Fix CPU overload on battery-powered devices using NPU/GPU acceleration
-
-### Tasks
-
-#### 1.2 Design execution provider abstraction layer
-
-- Create ExecutionProviderManager class
-- Define fallback chain: NPU → GPU → CPU
-- Update ModelManager to support multiple providers
-
-#### 1.3 Implement OpenVINO execution provider
-
-- Enable OpenVINOExecutionProvider in ONNX Runtime (not a replacement)
-- Add device detection (Intel NPU, iGPU) via openvino.Core()
-- No model conversion needed (ONNX Runtime handles it internally)
-
-#### 1.4 Test and optimize on target hardware
-
-- Benchmark on Intel Core 135U (NPU + iGPU)
-- Measure CPU usage (target: <20% on battery)
-- Work around for buffer overflows
-- Validate recognition accuracy
-
----
-
 ## **Milestone 2: Text Quality Improvements (High Priority - Q1)**
 
 **Goal:** Make recognized text readable with paragraphs and confidence-based selection
@@ -52,6 +25,12 @@
 - **Approach C:** Pattern detection in RecognitionResult
 - **Approach D:** Configurable word blacklist in config JSON
 - Research which approach works best, may combine multiple
+
+2.4 Evaluate TEN VAD vs Silero
+https://huggingface.co/TEN-framework/ten-vad
+
+2.5 Evaluate canary-1b-v2
+https://huggingface.co/nvidia/canary-1b-v2
 
 ### Details
 
