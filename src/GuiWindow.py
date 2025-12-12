@@ -153,6 +153,23 @@ class GuiWindow:
 
         self.text_widget.see(tk.END)
 
+    def add_paragraph_break(self) -> None:
+        """Insert paragraph separator (two newlines) to finalized text.
+
+        Called when silence timeout is reached to create visual paragraph separation.
+        Thread-safe: uses root.after() if called from background thread.
+        """
+        if self.root and not self._is_main_thread():
+            self.root.after(0, self._add_paragraph_break_safe)
+        else:
+            self._add_paragraph_break_safe()
+
+    def _add_paragraph_break_safe(self) -> None:
+        """Thread-safe implementation of paragraph break insertion."""
+        self.finalized_text += "\n\n"
+        self._rerender_all()
+        self.text_widget.see(tk.END)
+
     def _rerender_all(self) -> None:
         """Re-render all text: finalized (black) + remaining preliminary (gray).
 

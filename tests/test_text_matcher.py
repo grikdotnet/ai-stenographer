@@ -364,6 +364,8 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_process_flush_finalizes_pending(self):
         """Flush result with empty text should trigger finalize_pending()"""
+        # Add add_paragraph_break to mock spec
+        self.mock_gui = Mock(spec=['update_partial', 'finalize_text', 'add_paragraph_break'])
         text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         # 1. Process final text (gets stored in previous_finalized_text)
@@ -387,6 +389,8 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_process_flush_with_text(self):
         """Flush result with text should process as final, then finalize pending"""
+        # Add add_paragraph_break to mock spec
+        self.mock_gui = Mock(spec=['update_partial', 'finalize_text', 'add_paragraph_break'])
         text_matcher = TextMatcher(self.text_queue, self.mock_gui)
 
         # Process flush result with text (from flushed audio segment)
@@ -400,6 +404,43 @@ class TestTextMatcher(unittest.TestCase):
         self.assertEqual(finalized.text, 'hello world')
         # State should be cleared after finalize
         self.assertEqual(text_matcher.previous_finalized_text, '')
+
+    def test_process_flush_calls_paragraph_break(self):
+        """Test that process_flush() calls add_paragraph_break() on GUI"""
+        # Add add_paragraph_break to mock spec
+        self.mock_gui = Mock(spec=['update_partial', 'finalize_text', 'add_paragraph_break'])
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+
+        # Process flush result (empty or with text)
+        flush_text = RecognitionResult('', 2.0, 2.0, status='flush', chunk_ids=[])
+        text_matcher.process_text(flush_text)
+
+        # Verify add_paragraph_break() was called
+        self.mock_gui.add_paragraph_break.assert_called_once()
+
+    def test_process_flush_with_text_then_paragraph(self):
+        """Test that process_flush() calls methods in correct order: finalize text, then paragraph break"""
+        # Track call order
+        call_order = []
+
+        def track_finalize(result):
+            call_order.append('finalize_text')
+
+        def track_paragraph():
+            call_order.append('add_paragraph_break')
+
+        self.mock_gui = Mock(spec=['update_partial', 'finalize_text', 'add_paragraph_break'])
+        self.mock_gui.finalize_text.side_effect = track_finalize
+        self.mock_gui.add_paragraph_break.side_effect = track_paragraph
+
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+
+        # Process flush with text
+        flush_text = RecognitionResult('hello world', 1.0, 2.0, status='flush', chunk_ids=[1, 2])
+        text_matcher.process_text(flush_text)
+
+        # Verify correct order: finalize_text called first, then add_paragraph_break
+        self.assertEqual(call_order, ['finalize_text', 'add_paragraph_break'])
 
 
 if __name__ == '__main__':
