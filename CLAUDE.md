@@ -124,10 +124,7 @@ Located in `config/stt_config.json` in section "vad".
 
 **Windowing Parameters:**
 
-- `window_duration` - duration of overlapping recognition windows to provide sufficient context
-- `step_size` - step duration creating an overlap
-
-E.g. "window_duration": 3.0 and "step_size": 1.0 create windows for final recognition with 33% overlap
+- `window_duration` - duration of aggregation windows for recognition (3.0 seconds creates 3-second windows with automatic overlap based on trailing segment duration, MIN_OVERLAP_DURATION = 1.0s)
 
 **Design Rationale:**
 
