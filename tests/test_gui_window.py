@@ -474,6 +474,67 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
 
 
 @unittest.skipUnless(TKINTER_AVAILABLE, "tkinter not available or properly configured")
+class TestGuiWindowParagraphBreaks(unittest.TestCase):
+    """Tests for GuiWindow paragraph break functionality."""
+
+    def setUp(self) -> None:
+        """Set up GUI window for testing."""
+        try:
+            self.root, self.text_widget = create_stt_window()
+            self.root.withdraw()
+            self.gui = GuiWindow(self.text_widget, self.root)
+        except Exception as e:
+            self.skipTest(f"Could not initialize tkinter GUI: {e}")
+
+    def tearDown(self) -> None:
+        """Clean up GUI window."""
+        if hasattr(self, 'root'):
+            try:
+                self.root.destroy()
+            except:
+                pass
+
+    def get_widget_content(self) -> str:
+        """Get complete text content of the widget."""
+        return self.text_widget.get("1.0", tk.END).rstrip('\n')
+
+    def test_add_paragraph_break_adds_newlines(self) -> None:
+        """Test that add_paragraph_break() adds two newlines to finalized text."""
+        # Add some finalized text first
+        result = RecognitionResult(
+            text="Hello world",
+            start_time=0.0,
+            end_time=1.0,
+            status='final',
+            chunk_ids=[1, 2]
+        )
+        self.gui.finalize_text(result)
+
+        # Add paragraph break
+        self.gui.add_paragraph_break()
+
+        # Check that finalized_text ends with \n\n
+        self.assertTrue(self.gui.finalized_text.endswith("\n\n"))
+
+        # Display should show the paragraph break
+        content = self.get_widget_content()
+        self.assertIn("\n\n", content)
+
+    def test_add_paragraph_break_empty_text(self) -> None:
+        """Test that add_paragraph_break() doesn't crash on empty text."""
+        # Call on empty GuiWindow
+        self.gui.add_paragraph_break()
+
+        # Should add \n\n to empty string
+        self.assertEqual(self.gui.finalized_text, "\n\n")
+
+        # Should not crash during render
+        # Note: _rerender_all adds a space after finalized text (line 166: finalized_text + " ")
+        content = self.get_widget_content()
+        self.assertEqual(content, "\n\n ")
+
+
+@unittest.skipUnless(TKINTER_AVAILABLE, "tkinter not available or properly configured")
 class TestCreateSttWindow(unittest.TestCase):
     """Tests for create_stt_window() factory function."""
 
