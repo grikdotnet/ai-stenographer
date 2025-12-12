@@ -52,7 +52,7 @@ Microphone Input (16kHz, mono)
 │    │     └─→ Detects speech vs silence (threshold: 0.5)                 │
 │    │         └─→ Segments speech at word boundaries                     │
 │    │                                                                      │
-│    ├─→ Context buffer management (circular buffer, 48 chunks = 1.536s) │
+│    ├─→ Context buffer management (circular buffer, 20 chunks = 640ms) │
 │    │     ├─→ All chunks stored: speech + silence                       │
 │    │     ├─→ Left context: snapshot captured when speech starts        │
 │    │     └─→ Right context: extracted from trailing silence            │
@@ -71,7 +71,7 @@ Microphone Input (16kHz, mono)
 │    │     │                                                                │
 │    │     ├─→ Intelligent breakpoint splitting (max duration)            │
 │    │     │     ├─→ _find_silence_breakpoint(): backward search          │
-│    │     │     ├─→ Skips last 3 chunks for right_context                │
+│    │     │     ├─→ Skips last 6 chunks for right_context                │
 │    │     │     └─→ Preserves buffer continuity with overlap             │
 │    │     │                                                                │
 │    │     ├─→ speech_queue.put(preliminary_segment)  [instant output]    │
@@ -115,7 +115,7 @@ Microphone Input (16kHz, mono)
 │    │     ├─→ Recognize with timestamps (TimestampedResultsAsrAdapter)   │
 │    │     └─→ Filter tokens by timestamp (exclude context hallucinations)│
 │    │         └─→ Keep only tokens within data boundaries                │
-│    │         └─→ 0.3s tolerance for VAD warm-up delay                   │
+│    │         └─→ 0.37s tolerance for VAD warm-up delay                  │
 │    │                                                                      │
 │    ├─→ Parakeet ONNX Model (nemo-parakeet-tdt-0.6b-v3)                 │
 │    │     └─→ audio + context → text recognition with timestamps         │
@@ -282,7 +282,9 @@ class AudioSegment:
 
     # preliminary: chunk_ids = [id1, id2, ...]  (silence-bounded segments)
     # finalized:   chunk_ids = [id1, id2, id3, ...]  (aggregated windows)
-    # flush:       chunk_ids = []  (end-of-segment signal)
+    # flush:       chunk_ids = [last_id]  (end-of-segment signal with final chunk ID)
+
+    # Note: AudioSegment.__post_init__ validates len(chunk_ids) >= 1
 
 @dataclass
 class RecognitionResult:
@@ -310,7 +312,7 @@ Raw Audio Frame (32ms) - AudioSource
 SoundPreProcessor Processing
   ├─→ RMS Normalization (for VAD input)
   ├─→ VAD Processing (Silero)
-  ├─→ Circular Context Buffer (48 chunks = 1.536s)
+  ├─→ Circular Context Buffer (20 chunks = 640ms)
   │     ├─→ left_context: snapshot before speech starts
   │     └─→ right_context: trailing silence extraction
   ├─→ Consecutive Speech Logic (3 chunks to start)
@@ -474,7 +476,7 @@ The system uses a **Strategy Pattern** for hardware-specific optimizations:
 - `stop()` - Stop thread and flush
 
 **Context Buffer Strategy:**
-- Circular buffer: 48 chunks (1.536s @ 32ms/chunk)
+- Circular buffer: 20 chunks (640ms @ 32ms/chunk)
 - `left_context_snapshot`: Captured when speech starts (immune to wraparound)
 - `right_context`: Extracted from trailing silence chunks (reverse iteration)
 - Enables better STT quality for short words (<100ms)
@@ -488,7 +490,7 @@ The system uses a **Strategy Pattern** for hardware-specific optimizations:
 
 **Intelligent Breakpoint Splitting:**
 - When max_speech_duration_ms reached, search backward for last silence chunk
-- Skips last 3 chunks to preserve right_context
+- Skips last 6 chunks to preserve right_context
 - Splits at natural silence boundaries (no mid-word cuts)
 - Preserves buffer continuity with 6-chunk overlap
 - Fallback to hard cut if no silence found
@@ -512,28 +514,42 @@ The system uses a **Strategy Pattern** for hardware-specific optimizations:
 ```json
 {
   "windowing": {
-    "window_duration": 3.0,  // 3 second windows
-    "step_size": 1.0         // 1 second step = 33% overlap
+    "window_duration": 3.0  // 3 second aggregation windows
   }
 }
 ```
 
+**Internal Constants (not configurable):**
+- `MIN_OVERLAP_DURATION = 1.0s` - Minimum duration for trailing segments to be kept for next window
+
 **Key Methods:**
 - `process_segment(segment: AudioSegment)` - Add segment to buffer
-- `flush()` - Emit final partial window
+- `flush(final_segment: Optional[AudioSegment] = None)` - Emit final partial window
 
-**Windowing Logic:**
+**Windowing Logic (Segment-Based Aggregation):**
+
+Strategy:
+- Accumulates preliminary segments until total duration >= window_duration (3s)
+- Emits finalized window when threshold reached
+- Preserves trailing segments with at least MIN_OVERLAP_DURATION (1.0s) for next window
+- Requires 2+ segments to create overlap between windows
+
+Example:
 ```
-Time: 0s        1s        2s        3s        4s        5s
-      |---------|---------|---------|---------|---------|
+Segment A: [0.0s - 0.8s] (800ms)
+Segment B: [0.9s - 2.1s] (1200ms)
+Segment C: [2.2s - 3.5s] (1300ms)
 
-Window 1: [0s ──────────────────── 3s]
-Window 2:       [1s ──────────────────── 4s]
-Window 3:             [2s ──────────────────── 5s]
+Window 1: [A + B + C] → 3.3s total → emit finalized
+  - Trailing segments with ≥1s: B (1.2s) + C (1.3s) → kept for Window 2
 
-Overlap:  [0s-1s] [1s-2s] [2s-3s] [3s-4s] [4s-5s]
-          └─w1──┘ └─w1,w2┘ └─w1,w2,w3┘ └─w2,w3┘ └─w3──┘
+Segment D: [3.6s - 4.2s] (600ms)
+Segment E: [4.3s - 5.1s] (800ms)
+
+Window 2: [B + C + D + E] → 3.9s total → emit finalized
 ```
+
+Note: Window overlap is automatic based on MIN_OVERLAP_DURATION, not manually configured via step_size
 
 **Output:** Finalized AudioSegments with `chunk_ids=[id1, id2, ...]` to `speech_queue`
 
@@ -589,7 +605,7 @@ filtered_text = _filter_tokens_by_timestamp(
     result.text, result.tokens, result.timestamps,
     data_start, data_end
 )
-# Includes 0.3s tolerance for VAD warm-up delay
+# Includes 0.37s tolerance for VAD warm-up delay
 # Removes hallucinations like "yeah", "mm-hmm" from silence
 
 # Step 5: Map AudioSegment.type to RecognitionResult.status
@@ -761,7 +777,6 @@ The system configuration has been tuned through iterative testing to optimize pr
   },
   "windowing": {
     "window_duration": 3.0,
-    "step_size": 1.0,
     "max_speech_duration_ms": 1500,
     "silence_timeout": 0.5
   },
@@ -785,7 +800,6 @@ The system configuration has been tuned through iterative testing to optimize pr
 | `gain_smoothing` | 0.7 | Temporal smoothing factor (α) | Lower = faster gain ramp-up, may cause artifacts |
 | **Windowing** ||||
 | `window_duration` | 3.0 | Recognition window size (s) | Trade-off: context vs latency |
-| `step_size` | 1.0 | Window step (overlap) | Smaller = more overlap, higher quality |
 | `max_speech_duration_ms` | 1500 | Force split threshold | Triggers intelligent breakpoint search |
 | `silence_timeout` | 0.5 | Windower flush timeout (s) | Finalizes pending text after silence |
 | **Recognition** ||||
@@ -891,21 +905,21 @@ This architecture provides:
 ### Key Innovations
 
 **Context Buffer Strategy:**
-- 48-chunk circular buffer (1.536s) captures pre/post-speech audio
+- 20-chunk circular buffer (640ms) captures pre/post-speech audio
 - Left context snapshot immune to wraparound
 - Right context extraction from trailing silence
 - Enables better STT for short words (<100ms) without hallucinations
 
 **Intelligent Breakpoint Splitting:**
 - Backward search for natural silence boundaries
-- Skips last 3 chunks to preserve right_context
+- Skips last 6 chunks to preserve right_context
 - 6-chunk overlap maintains buffer continuity
 - Eliminates mid-word cuts from max_speech_duration
 
 **Timestamped Token Filtering:**
 - Context concatenation: left_context + data + right_context
 - Token-level timestamp alignment from TimestampedResultsAsrAdapter
-- 0.3s tolerance for VAD warm-up delay
+- 0.37s tolerance for VAD warm-up delay
 - Removes hallucinations ("yeah", "mm-hmm") from silence padding
 
 **Consecutive Speech Logic:**
