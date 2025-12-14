@@ -1,6 +1,6 @@
 sounddevice
 numpy
 onnxruntime-directml
-onnx-asr
+onnx-asr==0.9.1
 Pillow
 huggingface_hub[hf_xet]
