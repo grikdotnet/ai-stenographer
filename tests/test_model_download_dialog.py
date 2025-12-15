@@ -44,16 +44,17 @@ class TestModelDownloadDialog:
 
     @patch('src.ModelDownloadDialog.ModelManager.download_models')
     def test_progress_callback_updates_ui(self, mock_download):
-        """Text-only status updates from callback data (no animated progress bars)."""
+        """Progress callback receives 5 parameters and updates UI with progress bars."""
         # Track callback calls
         callback_ref = {'callback': None}
 
         def capture_callback(progress_callback=None, **kwargs):
             callback_ref['callback'] = progress_callback
             if progress_callback:
-                # Simulate progress updates (text-only)
-                progress_callback('parakeet', 0.5, 'downloading')
-                progress_callback('parakeet', 1.0, 'complete')
+                # Simulate progress updates with 5 parameters
+                progress_callback('parakeet', 0.0, 'downloading', 0, 1000000000)
+                progress_callback('parakeet', 0.5, 'downloading', 500000000, 1000000000)
+                progress_callback('parakeet', 1.0, 'complete', 1000000000, 1000000000)
             return True
 
         mock_download.side_effect = capture_callback
@@ -61,10 +62,10 @@ class TestModelDownloadDialog:
         root = tk.Tk()
         root.withdraw()
 
-        # Test that callback can be called for text status updates
+        # Test that callback can be called with 5 parameters
         callback_ref['callback'] = MagicMock()
-        callback_ref['callback']('parakeet', 0.5, 'downloading')
-        callback_ref['callback'].assert_called_with('parakeet', 0.5, 'downloading')
+        callback_ref['callback']('parakeet', 0.5, 'downloading', 500000000, 1000000000)
+        callback_ref['callback'].assert_called_with('parakeet', 0.5, 'downloading', 500000000, 1000000000)
 
         root.destroy()
 

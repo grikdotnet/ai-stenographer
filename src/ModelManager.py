@@ -5,8 +5,9 @@ import logging
 from pathlib import Path
 from typing import List, Callable, Optional
 from huggingface_hub import snapshot_download, hf_hub_download
-from huggingface_hub.utils import disable_progress_bars
+from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
 import shutil
+from src.DownloadProgressReporter import create_bound_progress_reporter, ProgressAggregator
 
 # Disable tqdm progress bars to prevent freezing with pythonw.exe (no console)
 disable_progress_bars()
@@ -51,16 +52,20 @@ class ModelManager:
         return missing
 
     @staticmethod
-    def download_models(model_dir: Optional[Path] = None, progress_callback: Optional[Callable[[str, float, str], None]] = None) -> bool:
+    def download_models(model_dir: Optional[Path] = None, progress_callback: Optional[Callable[[str, float, str, int, int], None]] = None) -> bool:
         """
-        Downloads FP16 Parakeet models (1.25GB)
+        Downloads FP16 Parakeet models (1.25GB) and Silero VAD model.
 
         Args:
             model_dir: Directory to download models to (defaults to ./models)
             progress_callback: Callback function with signature:
-                def callback(model_name: str, progress: float, status: str):
+                def callback(model_name: str, progress: float, status: str,
+                           downloaded_bytes: int, total_bytes: int):
+                    # model_name: 'parakeet' | 'silero_vad'
                     # progress: 0.0 to 1.0
                     # status: 'downloading' | 'complete' | 'error'
+                    # downloaded_bytes: cumulative bytes downloaded
+                    # total_bytes: total bytes to download
 
         Returns:
             True if all downloads succeeded, False otherwise
@@ -73,15 +78,15 @@ class ModelManager:
         try:
             for model_name in missing:
                 if progress_callback:
-                    progress_callback(model_name, 0.0, 'downloading')
+                    progress_callback(model_name, 0.0, 'downloading', 0, 0)
 
                 if model_name == 'parakeet':
-                    ModelManager._download_parakeet(model_dir)
+                    ModelManager._download_parakeet(model_dir, progress_callback)
                 elif model_name == 'silero_vad':
-                    ModelManager._download_silero(model_dir)
+                    ModelManager._download_silero(model_dir, progress_callback)
 
                 if progress_callback:
-                    progress_callback(model_name, 1.0, 'complete')
+                    progress_callback(model_name, 1.0, 'complete', 0, 0)
 
             return True
 
@@ -91,7 +96,7 @@ class ModelManager:
             logging.error(traceback.format_exc())
 
             if progress_callback:
-                progress_callback(model_name if 'model_name' in locals() else 'unknown', 0.0, 'error')
+                progress_callback(model_name if 'model_name' in locals() else 'unknown', 0.0, 'error', 0, 0)
 
             ModelManager._cleanup_partial_files(model_dir)
             return False
@@ -127,32 +132,57 @@ class ModelManager:
         return True
 
     @staticmethod
-    def _download_parakeet(model_dir: Path):
+    def _download_parakeet(
+        model_dir: Path,
+        progress_callback: Optional[Callable[[str, float, str, int, int], None]] = None
+    ):
         """
         Downloads FP16 Parakeet STT model from HuggingFace.
 
         Downloads FP16 models (1.25GB) which are 50% smaller and faster on GPU
         compared to FP32 models.
 
-        Progress bars are disabled globally via disable_progress_bars() to
-        prevent freezing when running with pythonw.exe (no console attached).
-
         Args:
             model_dir: Directory to download model to
+            progress_callback: Optional callback with signature:
+                callback(model_name, progress, status, downloaded_bytes, total_bytes)
         """
         parakeet_dir = model_dir / "parakeet"
         parakeet_dir.mkdir(parents=True, exist_ok=True)
 
         logging.info("Downloading FP16 Parakeet models (1.25GB)...")
-        snapshot_download(
-            repo_id=PARAKEET_REPO,
-            local_dir=str(parakeet_dir),
-            ignore_patterns=["README.md", "LICENSE", "*.md"]
-        )
+
+        # Create progress tracking infrastructure if callback provided
+        tqdm_class = None
+        if progress_callback:
+            aggregator = ProgressAggregator()
+            tqdm_class = create_bound_progress_reporter(
+                callback=progress_callback,
+                model_name='parakeet',
+                aggregator=aggregator
+            )
+            # Temporarily enable progress bars to allow tqdm_class to work
+            enable_progress_bars()
+
+        try:
+            snapshot_download(
+                repo_id=PARAKEET_REPO,
+                local_dir=str(parakeet_dir),
+                ignore_patterns=["README.md", "LICENSE", "*.md"],
+                tqdm_class=tqdm_class
+            )
+        finally:
+            # Re-disable progress bars for pythonw.exe compatibility
+            if progress_callback:
+                disable_progress_bars()
+
         logging.info("FP16 models downloaded successfully")
 
     @staticmethod
-    def _download_silero(model_dir: Path):
+    def _download_silero(
+        model_dir: Path,
+        progress_callback: Optional[Callable[[str, float, str, int, int], None]] = None
+    ):
         """
         Downloads Silero VAD model from HuggingFace.
 
@@ -160,20 +190,37 @@ class ModelManager:
         silero_vad.onnx at the root. This method copies the file and removes
         the onnx directory to save disk space.
 
-        Progress bars are disabled globally via disable_progress_bars() to
-        prevent freezing when running with pythonw.exe (no console attached).
-
         Args:
             model_dir: Directory to download model to
+            progress_callback: Optional callback with signature:
+                callback(model_name, progress, status, downloaded_bytes, total_bytes)
         """
         silero_dir = model_dir / "silero_vad"
         silero_dir.mkdir(parents=True, exist_ok=True)
 
-        hf_hub_download(
-            repo_id=SILERO_REPO,
-            filename=SILERO_FILE,
-            local_dir=str(silero_dir)
-        )
+        # Create progress tracking infrastructure if callback provided
+        tqdm_class = None
+        if progress_callback:
+            aggregator = ProgressAggregator()
+            tqdm_class = create_bound_progress_reporter(
+                callback=progress_callback,
+                model_name='silero_vad',
+                aggregator=aggregator
+            )
+            # Temporarily enable progress bars to allow tqdm_class to work
+            enable_progress_bars()
+
+        try:
+            hf_hub_download(
+                repo_id=SILERO_REPO,
+                filename=SILERO_FILE,
+                local_dir=str(silero_dir),
+                tqdm_class=tqdm_class
+            )
+        finally:
+            # Re-disable progress bars for pythonw.exe compatibility
+            if progress_callback:
+                disable_progress_bars()
 
         source_path = silero_dir / SILERO_FILE
         target_path = silero_dir / "silero_vad.onnx"

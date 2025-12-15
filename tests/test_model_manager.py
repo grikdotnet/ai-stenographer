@@ -109,17 +109,18 @@ class TestModelManager:
     @patch('src.ModelManager.snapshot_download')
     @patch('src.ModelManager.hf_hub_download')
     def test_download_with_progress_callback(self, mock_hf, mock_snapshot, tmp_path):
-        """Verifies progress callback receives updates during download."""
+        """Verifies progress callback receives 5-parameter updates during download."""
         callback_calls = []
 
-        def progress_callback(model_name: str, progress: float, status: str):
-            callback_calls.append((model_name, progress, status))
+        def progress_callback(model_name: str, progress: float, status: str,
+                            downloaded_bytes: int, total_bytes: int):
+            callback_calls.append((model_name, progress, status, downloaded_bytes, total_bytes))
 
         # Setup mocks to create files
         def create_parakeet(*args, **kwargs):
             local_dir = Path(kwargs.get('local_dir', ''))
             local_dir.mkdir(parents=True, exist_ok=True)
-            (local_dir / "encoder-model.onnx").write_text("mock")
+            (local_dir / "encoder-model.fp16.onnx").write_text("mock")
             return str(local_dir)
 
         def create_silero(*args, **kwargs):
@@ -139,8 +140,17 @@ class TestModelManager:
         with patch('src.ModelManager.MODEL_DIR', tmp_path):
             ModelManager.download_models(progress_callback=progress_callback)
 
-            # Check callback was called with expected parameters
+            # Check callback was called with 5 parameters
             assert len(callback_calls) > 0
+            for call in callback_calls:
+                assert len(call) == 5  # 5 parameters
+                model_name, progress, status, downloaded_bytes, total_bytes = call
+                assert isinstance(model_name, str)
+                assert isinstance(progress, float)
+                assert isinstance(status, str)
+                assert isinstance(downloaded_bytes, int)
+                assert isinstance(total_bytes, int)
+
             # Check for 'complete' status
             complete_calls = [c for c in callback_calls if c[2] == 'complete']
             assert len(complete_calls) > 0
