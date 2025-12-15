@@ -51,9 +51,17 @@ class RecognitionResult:
         end_time: Recognition end time in seconds
         status: Status discriminator - 'preliminary' for instant results, 'final' for high-quality results, 'flush' for end-of-segment signal
         chunk_ids: List of chunk IDs that contributed to this recognition result
+        confidence: Average confidence score for the segment (0.0-1.0 range, 0.0 = no confidence data)
+        token_confidences: Per-token confidence scores (parallel to tokens, empty if not available)
+        audio_rms: RMS energy of the audio data region (0.0 = no data or silent)
+        confidence_variance: Variance of token confidence scores (0.0 = uniform confidence or no data)
     """
     text: str
     start_time: float
     end_time: float
     status: Literal['preliminary', 'final', 'flush']
     chunk_ids: list[int] = field(default_factory=list)
+    confidence: float = 0.0
+    token_confidences: list[float] = field(default_factory=list)
+    audio_rms: float = 0.0
+    confidence_variance: float = 0.0

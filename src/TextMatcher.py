@@ -6,7 +6,7 @@ from typing import Dict, Any, Optional, Union
 from .TextNormalizer import TextNormalizer
 from .GuiWindow import GuiWindow
 from .types import RecognitionResult
-
+from dataclasses import replace
 
 class TextMatcher:
     """Matches overlapping speech recognition results from sliding windows.
@@ -42,8 +42,7 @@ class TextMatcher:
 
         # State only needed for final/flush paths (overlap resolution)
         # Preliminary path has no state - VAD guarantees distinct segments
-        self.previous_finalized_text: str = ""
-        self.previous_finalized_timestamp: float = 0.0
+        self.previous_result: Optional[RecognitionResult] = None
 
     def find_word_overlap(self, words1: list[str], words2: list[str]) -> tuple[int, int, int]:
         """Find longest overlapping word sequence between two word lists.
@@ -109,6 +108,7 @@ class TextMatcher:
         )
 
         if common_length == 0:
+            # will be caught in process_finalized()
             raise Exception("No overlap found between windows")
 
         # Extract finalized part using original words (preserve formatting)
@@ -149,86 +149,66 @@ class TextMatcher:
         finalize the reliable parts while discarding boundary errors.
 
         Args:
-            result: RecognitionResult with finalized text and chunk_ids
+            result: RecognitionResult with finalized text, chunk_ids, and confidence
         """
         current_text: str = result.text
 
         if self.verbose:
             logging.debug(f"TextMatcher.process_finalized() received '{current_text}'")
             logging.debug(f"  chunk_ids={result.chunk_ids}")
-            logging.debug(f"  previous_text: '{self.previous_finalized_text}'")
+            logging.debug(f"  confidence={result.confidence:.3f}")
+            logging.debug(f"  previous_text: '{self.previous_result.text if self.previous_result else None}'")
 
         # Enhanced duplicate detection using text normalization
         # This handles punctuation variants ("Hello." vs "Hello?") while preventing
         # false positives when user says the same word multiple times
-        if self.previous_finalized_text and self.previous_finalized_timestamp > 0:
+        if self.previous_result:
             # Normalize both texts for comparison
             current_normalized = self.text_normalizer.normalize_text(current_text)
-            previous_normalized = self.text_normalizer.normalize_text(self.previous_finalized_text)
-            time_diff = abs(result.start_time - self.previous_finalized_timestamp)
+            previous_normalized = self.text_normalizer.normalize_text(self.previous_result.text)
+            time_diff = abs(result.start_time - self.previous_result.start_time)
 
             if (current_normalized == previous_normalized and
                 time_diff < self.time_threshold):
                 if self.verbose:
                     logging.debug(f"  duplicate within {time_diff:.3f}s detected, skipping: '{current_text}'")
-                    logging.debug(f"  Original: '{self.previous_finalized_text}' → Normalized: '{previous_normalized}'")
+                    logging.debug(f"  Original: '{self.previous_result.text}' → Normalized: '{previous_normalized}'")
                     logging.debug(f"  Current: '{current_text}' → Normalized: '{current_normalized}'")
                 # Skip normalized duplicate - it's likely from overlapping windows
                 return
 
         # Process windows in pairs using the overlap resolution algorithm
-        if self.previous_finalized_text:
-            window1: tuple[str, float] = (self.previous_finalized_text, result.start_time)
+        if self.previous_result:
+            window1: tuple[str, float] = (self.previous_result.text, result.start_time)
             window2: tuple[str, float] = (current_text, result.start_time)
 
             try:
                 # Resolve overlap between windows
                 finalized_text, remaining_window = self.resolve_overlap(window1, window2)
 
-                # Send finalized text to GUI - create RecognitionResult with resolved text but preserve chunk_ids
+                # Send finalized text to GUI - create RecognitionResult with resolved text from previous window
                 if finalized_text.strip():
                     if self.verbose:
-                        logging.debug(f"  finalize_text('{finalized_text}') chunk_ids={result.chunk_ids}")
+                        logging.debug(f"  finalize_text('{finalized_text}') chunk_ids={self.previous_result.chunk_ids}")
 
-                    # Create new RecognitionResult with resolved text but same chunk_ids
-                    finalized_result = RecognitionResult(
-                        text=finalized_text,
-                        start_time=result.start_time,
-                        end_time=result.end_time,
-                        status='final',
-                        chunk_ids=result.chunk_ids
-                    )
+                    finalized_result = replace(self.previous_result,text=finalized_text)
                     self.gui_window.finalize_text(finalized_result)
 
-                # Update state with remaining window text (not displayed until next overlap)
-                self.previous_finalized_text = remaining_window[0]
-                self.previous_finalized_timestamp = result.start_time
-
+                self.previous_result = replace(result,text=remaining_window[0])
+                
             except Exception:
-                # No overlap found - finalize previous and start new
+                # No overlap found. This is a poor recognition result, just show the previous result as is.
                 if self.verbose:
-                    logging.debug(f"  no overlap, finalize_text('{self.previous_finalized_text}')")
+                    logging.debug(f"  no overlap, finalize_text('{self.previous_result.text}')")
 
-                # Create RecognitionResult for previous finalized text
-                # Note: We don't have chunk_ids for previous text, so create empty list
-                previous_result = RecognitionResult(
-                    text=self.previous_finalized_text,
-                    start_time=self.previous_finalized_timestamp,
-                    end_time=result.start_time,
-                    status='final',
-                    chunk_ids=[]  # Previous text chunk_ids not stored
-                )
-                self.gui_window.finalize_text(previous_result)
+                self.gui_window.finalize_text(self.previous_result)
+                self.previous_result = result
 
-                # Current text stored for next overlap resolution
-                self.previous_finalized_text = current_text
-                self.previous_finalized_timestamp = result.start_time
         else:
-            # First text - store for overlap resolution
+            # First segment - store for overlap resolution
             if self.verbose:
                 logging.debug(f"  first text, storing '{current_text}'")
-            self.previous_finalized_text = current_text
-            self.previous_finalized_timestamp = result.start_time
+            self.previous_result = result
 
     def process(self) -> None:
         """Read texts from queue and process them continuously.
@@ -256,60 +236,30 @@ class TextMatcher:
 
     def finalize_pending(self) -> None:
         """Finalize any remaining partial finalized text.
-
-        Called explicitly by Pipeline.stop() or external observers
-        to flush pending partial text to GUI as final.
-
-        This implements explicit finalization control, allowing
-        external components to trigger finalization without
-        TextMatcher managing its own timeout logic (SRP).
+        Called explicitly by Pipeline.stop() or self.process_flush().
         """
-        if self.previous_finalized_text:
+        if self.previous_result:
             if self.verbose:
-                logging.debug(f"TextMatcher.finalize_pending() previous finalized text: '{self.previous_finalized_text}'")
+                logging.debug(f"TextMatcher.finalize_pending() previous finalized text: '{self.previous_result.text}'")
 
-            # Create RecognitionResult for pending text
-            pending_result = RecognitionResult(
-                text=self.previous_finalized_text,
-                start_time=self.previous_finalized_timestamp,
-                end_time=self.previous_finalized_timestamp,
-                status='final',
-                chunk_ids=[]  # Pending text chunk_ids not stored
-            )
-            self.gui_window.finalize_text(pending_result)
-            self.previous_finalized_text = ""
-            self.previous_finalized_timestamp = 0.0
+            # Finalize the pending result directly
+            self.gui_window.finalize_text(self.previous_result)
+            self.previous_result = None
 
     def process_flush(self, result: RecognitionResult) -> None:
         """Process flush signal by finalizing any pending text.
-
         Flush signals indicate end of speech segment (e.g., silence timeout).
-        The flush result may contain recognized text from the flushed audio.
-
-        Processing:
-        1. If flush has text: process it as final (overlap resolution)
-        2. Call finalize_pending() to flush any buffered text to GUI
-        3. Call add_paragraph_break() to insert paragraph separator
 
         Args:
             result: RecognitionResult with status='flush'
         """
         if self.verbose:
-            logging.debug(f"TextMatcher.process_flush() received text='{result.text}', pending='{self.previous_finalized_text}'")
+            logging.debug(f"TextMatcher.process_flush() text='{result.text}', pending='{self.previous_result.text if self.previous_result else None}'")
 
-        # If flush contains text, process it as final first
         if result.text and result.text.strip():
-            # Create a final status result to use existing finalized logic
-            final_result = RecognitionResult(
-                text=result.text,
-                start_time=result.start_time,
-                end_time=result.end_time,
-                status='final',
-                chunk_ids=result.chunk_ids
-            )
+            final_result = replace(result, status='final')
             self.process_finalized(final_result)
 
-        # Then finalize any pending text
         self.finalize_pending()
 
         # Add paragraph break (unconditional)

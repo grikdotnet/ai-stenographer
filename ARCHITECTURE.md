@@ -581,8 +581,8 @@ Note: Window overlap is automatic based on MIN_OVERLAP_DURATION, not manually co
 - Skipped for CPU mode (no shader compilation needed)
 
 **Key Methods:**
-- `recognize_window(segment)` - **ENHANCED:** Context-aware STT with timestamp filtering
-- `_filter_tokens_by_timestamp()` - **NEW:** Filter hallucinated context tokens
+- `recognize_window(segment)` - **ENHANCED:** Context-aware STT with timestamp filtering and confidence extraction
+- `_filter_tokens_with_confidence()` - **NEW:** Filter hallucinated context tokens and extract confidence scores
 - `process()` - Main loop reading from speech_queue
 
 **Context-Aware Recognition Algorithm:**
@@ -600,13 +600,14 @@ result: TimestampedResult = model.recognize(full_audio)
 data_start = len(left_context) / sample_rate
 data_end = data_start + len(data) / sample_rate
 
-# Step 4: Filter tokens by timestamp
-filtered_text = _filter_tokens_by_timestamp(
+# Step 4: Filter tokens by timestamp and extract confidences
+filtered_text, filtered_confidences = _filter_tokens_with_confidence(
     result.text, result.tokens, result.timestamps,
-    data_start, data_end
+    token_confidences, data_start, data_end
 )
 # Includes 0.37s tolerance for VAD warm-up delay
 # Removes hallucinations like "yeah", "mm-hmm" from silence
+# Returns filtered text and corresponding confidence scores
 
 # Step 5: Map AudioSegment.type to RecognitionResult.status
 status_map = {

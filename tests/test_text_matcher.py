@@ -226,7 +226,8 @@ class TestTextMatcher(unittest.TestCase):
         # First finalized text is stored but not displayed (awaiting overlap resolution)
         self.mock_gui.update_partial.assert_not_called()
         self.mock_gui.finalize_text.assert_not_called()
-        self.assertEqual(text_matcher.previous_finalized_text, 'hello world')
+        self.assertIsNotNone(text_matcher.previous_result)
+        self.assertEqual(text_matcher.previous_result.text, 'hello world')
 
     def test_process_finalized_texts_with_overlap(self):
         """Test processing sequential finalized texts with word overlap through process_text()"""
@@ -268,7 +269,8 @@ class TestTextMatcher(unittest.TestCase):
         # Process first text
         text_matcher.process_text(text1)
         self.mock_gui.finalize_text.assert_not_called()
-        self.assertEqual(text_matcher.previous_finalized_text, 'hello world')
+        self.assertIsNotNone(text_matcher.previous_result)
+        self.assertEqual(text_matcher.previous_result.text, 'hello world')
 
         # Process second text - no overlap, should finalize first and store second
         text_matcher.process_text(text2)
@@ -276,7 +278,8 @@ class TestTextMatcher(unittest.TestCase):
         finalized = self.mock_gui.finalize_text.call_args[0][0]
         self.assertIsInstance(finalized, RecognitionResult)
         self.assertEqual(finalized.text, 'hello world')
-        self.assertEqual(text_matcher.previous_finalized_text, 'completely different')
+        self.assertIsNotNone(text_matcher.previous_result)
+        self.assertEqual(text_matcher.previous_result.text, 'completely different')
 
         # Verify update_partial never called
         self.mock_gui.update_partial.assert_not_called()
@@ -303,7 +306,7 @@ class TestTextMatcher(unittest.TestCase):
         self.assertEqual(finalized.text, 'hello world')
 
         # State should be reset
-        self.assertEqual(text_matcher.previous_finalized_text, "")
+        self.assertIsNone(text_matcher.previous_result)
 
     def test_finalize_pending_when_empty(self):
         """Test finalize_pending() with no pending text does nothing"""
@@ -373,7 +376,8 @@ class TestTextMatcher(unittest.TestCase):
         text_matcher.process_text(final_text)
 
         # Verify stored but not finalized
-        self.assertEqual(text_matcher.previous_finalized_text, 'hello world')
+        self.assertIsNotNone(text_matcher.previous_result)
+        self.assertEqual(text_matcher.previous_result.text, 'hello world')
         self.mock_gui.finalize_text.assert_not_called()
 
         # 2. Process flush result with empty text
@@ -385,7 +389,7 @@ class TestTextMatcher(unittest.TestCase):
         finalized = self.mock_gui.finalize_text.call_args[0][0]
         self.assertIsInstance(finalized, RecognitionResult)
         self.assertEqual(finalized.text, 'hello world')
-        self.assertEqual(text_matcher.previous_finalized_text, '')
+        self.assertIsNone(text_matcher.previous_result)
 
     def test_process_flush_with_text(self):
         """Flush result with text should process as final, then finalize pending"""
@@ -403,7 +407,7 @@ class TestTextMatcher(unittest.TestCase):
         finalized = self.mock_gui.finalize_text.call_args[0][0]
         self.assertEqual(finalized.text, 'hello world')
         # State should be cleared after finalize
-        self.assertEqual(text_matcher.previous_finalized_text, '')
+        self.assertIsNone(text_matcher.previous_result)
 
     def test_process_flush_calls_paragraph_break(self):
         """Test that process_flush() calls add_paragraph_break() on GUI"""

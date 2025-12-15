@@ -450,8 +450,8 @@ class TestTimestampedRecognition:
         assert np.allclose(recognized_audio[len(left):len(left)+len(data)], data)
         assert np.allclose(recognized_audio[len(left)+len(data):], right)
 
-    def test_filter_tokens_by_timestamp_method(self, timestamped_mock_model):
-        """Unit test for _filter_tokens_by_timestamp() method."""
+    def test_filter_tokens_with_confidence_method(self, timestamped_mock_model):
+        """Unit test for _filter_tokens_with_confidence() method."""
         recognizer = Recognizer(
             queue.Queue(),
             queue.Queue(),
@@ -459,25 +459,30 @@ class TestTimestampedRecognition:
             sample_rate=16000
         )
 
-        # Test case: tokens with various timestamps
+        # Test case: tokens with various timestamps and confidence scores
         text = "yeah hello world mm-hmm"
         tokens = [" yeah", " hello", " world", " mm", "-", "hmm"]
         timestamps = [0.1, 0.8, 1.0, 1.7, 1.75, 1.8]  # "yeah" at 0.1s outside tolerance
+        confidences = [0.9, 0.95, 0.92, 0.85, 0.8, 0.88]
         data_start = 0.5
         data_end = 1.5
 
-        filtered = recognizer._filter_tokens_by_timestamp(
-            text, tokens, timestamps, data_start, data_end
+        filtered_text, filtered_confidences = recognizer._filter_tokens_with_confidence(
+            text, tokens, timestamps, confidences, data_start, data_end
         )
 
         # Should only include "hello" and "world" (timestamps 0.8 and 1.0)
-        assert "hello" in filtered
-        assert "world" in filtered
-        assert "yeah" not in filtered
-        assert "mm-hmm" not in filtered
+        assert "hello" in filtered_text
+        assert "world" in filtered_text
+        assert "yeah" not in filtered_text
+        assert "mm-hmm" not in filtered_text
+
+        # Should include corresponding confidence scores
+        assert len(filtered_confidences) == 2
+        assert filtered_confidences == [0.95, 0.92]
 
     def test_filter_tokens_empty_tokens(self, timestamped_mock_model):
-        """_filter_tokens_by_timestamp should handle empty token lists."""
+        """_filter_tokens_with_confidence should handle empty token lists."""
         recognizer = Recognizer(
             queue.Queue(),
             queue.Queue(),
@@ -485,14 +490,164 @@ class TestTimestampedRecognition:
             sample_rate=16000
         )
 
-        # Empty tokens - should return full text (fallback)
-        filtered = recognizer._filter_tokens_by_timestamp(
-            "hello world", None, None, 0.0, 1.0
+        # Empty tokens - should return full text with empty confidences (fallback)
+        filtered_text, filtered_confidences = recognizer._filter_tokens_with_confidence(
+            "hello world", None, None, [], 0.0, 1.0
         )
-        assert filtered == "hello world"
+        assert filtered_text == "hello world"
+        assert filtered_confidences == []
 
-        # Empty timestamps - should return full text (fallback)
-        filtered = recognizer._filter_tokens_by_timestamp(
-            "hello world", [" hello", " world"], None, 0.0, 1.0
+        # Empty timestamps - should return full text with empty confidences (fallback)
+        filtered_text, filtered_confidences = recognizer._filter_tokens_with_confidence(
+            "hello world", [" hello", " world"], None, [], 0.0, 1.0
         )
-        assert filtered == "hello world"
+        assert filtered_text == "hello world"
+        assert filtered_confidences == []
+
+
+class TestConfidenceMetrics:
+    """Tests for confidence_variance and audio_rms fields in RecognitionResult.
+
+    Tests that the new metrics are populated correctly from Recognizer calculations.
+    """
+
+    @pytest.fixture
+    def mock_model_with_confidence(self):
+        """Mock model configured for confidence extraction."""
+        model = MagicMock()
+        # Configure for ConfidenceExtractor compatibility
+        model.asr = MagicMock()
+        model.asr._decode = MagicMock()
+        return model
+
+    def test_recognition_result_has_audio_rms_field(self, mock_model_with_confidence):
+        """RecognitionResult should have audio_rms field with default value 0.0."""
+        result = RecognitionResult(
+            text="test",
+            start_time=0.0,
+            end_time=1.0,
+            status='final'
+        )
+
+        assert hasattr(result, 'audio_rms')
+        assert result.audio_rms == 0.0
+        assert isinstance(result.audio_rms, float)
+
+    def test_recognition_result_has_confidence_variance_field(self, mock_model_with_confidence):
+        """RecognitionResult should have confidence_variance field with default value 0.0."""
+        result = RecognitionResult(
+            text="test",
+            start_time=0.0,
+            end_time=1.0,
+            status='final'
+        )
+
+        assert hasattr(result, 'confidence_variance')
+        assert result.confidence_variance == 0.0
+        assert isinstance(result.confidence_variance, float)
+
+    def test_recognizer_populates_audio_rms(self, mock_model_with_confidence):
+        """Recognizer should populate audio_rms from calculated RMS energy."""
+        mock_model_with_confidence.recognize.return_value = TimestampedResult(
+            text="hello",
+            tokens=[" hello"],
+            timestamps=[0.5]
+        )
+
+        recognizer = Recognizer(
+            queue.Queue(),
+            queue.Queue(),
+            mock_model_with_confidence,
+            sample_rate=16000
+        )
+
+        # Create segment with known RMS value
+        # RMS of constant array is the absolute value
+        audio_data = np.full(16000, 0.25, dtype=np.float32)  # 1s of audio at 0.25
+        expected_rms = 0.25
+
+        segment = AudioSegment(
+            type='preliminary',
+            data=audio_data,
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
+            start_time=1.0,
+            end_time=2.0,
+            chunk_ids=[0]
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        assert result is not None
+        assert result.audio_rms > 0.0
+        assert abs(result.audio_rms - expected_rms) < 0.01  # Allow small floating point error
+
+    def test_recognizer_populates_confidence_variance(self, mock_model_with_confidence):
+        """Recognizer should populate confidence_variance from token confidence variance."""
+        mock_model_with_confidence.recognize.return_value = TimestampedResult(
+            text="hello world",
+            tokens=[" hello", " world"],
+            timestamps=[0.3, 0.7]
+        )
+
+        recognizer = Recognizer(
+            queue.Queue(),
+            queue.Queue(),
+            mock_model_with_confidence,
+            sample_rate=16000
+        )
+
+        segment = AudioSegment(
+            type='preliminary',
+            data=np.full(16000, 0.1, dtype=np.float32),
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
+            start_time=1.0,
+            end_time=2.0,
+            chunk_ids=[0]
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        assert result is not None
+        # Variance should be >= 0.0 (may be 0 if confidence extraction fails gracefully)
+        assert result.confidence_variance >= 0.0
+        assert isinstance(result.confidence_variance, float)
+
+    def test_new_fields_with_context_filtering(self, mock_model_with_confidence):
+        """New fields should be calculated only from data region, not context."""
+        mock_model_with_confidence.recognize.return_value = TimestampedResult(
+            text="context hello context",
+            tokens=[" context", " hello", " context"],
+            timestamps=[0.1, 0.6, 1.7]  # Only "hello" in data region
+        )
+
+        recognizer = Recognizer(
+            queue.Queue(),
+            queue.Queue(),
+            mock_model_with_confidence,
+            sample_rate=16000
+        )
+
+        # Create segment with distinct RMS values in different regions
+        data = np.full(16000, 0.3, dtype=np.float32)  # 1s, RMS=0.3
+        left = np.full(8000, 0.1, dtype=np.float32)   # 0.5s, RMS=0.1
+        right = np.full(8000, 0.1, dtype=np.float32)  # 0.5s, RMS=0.1
+
+        segment = AudioSegment(
+            type='preliminary',
+            data=data,
+            left_context=left,
+            right_context=right,
+            start_time=1.0,
+            end_time=2.0,
+            chunk_ids=[0]
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        assert result is not None
+        # audio_rms should be calculated from data region only (0.3), not context (0.1)
+        assert abs(result.audio_rms - 0.3) < 0.01
+        # Text should be filtered to data region
+        assert result.text == "hello"

@@ -5,6 +5,7 @@ import logging
 import numpy as np
 from typing import Any, Optional, TYPE_CHECKING
 from src.types import ChunkQueueItem, RecognitionResult
+from src.ConfidenceExtractor import ConfidenceExtractor
 
 if TYPE_CHECKING:
     from onnx_asr.adapters import TimestampedResultsAsrAdapter
@@ -44,10 +45,12 @@ class Recognizer:
 
         Algorithm:
         1. Concatenate left_context + data + right_context for recognition
-        2. Recognize with timestamps using TimestampedResultsAsrAdapter
-        3. Calculate data region boundaries in seconds
-        4. Filter tokens to only include those within data region
-        5. Return RecognitionResult with filtered text and original timing
+        2. Setup confidence extractor (monkey-patch model)
+        3. Recognize with timestamps using TimestampedResultsAsrAdapter
+        4. Extract confidence scores from captured probabilities
+        5. Calculate data region boundaries in seconds
+        6. Filter tokens and confidences to only include those within data region
+        7. Return RecognitionResult with filtered text, original timing, and confidence
 
         Maps AudioSegment.type to RecognitionResult.status:
         - 'preliminary' → 'preliminary'
@@ -78,9 +81,15 @@ class Recognizer:
         }
         status = status_map[window_data.type]
 
+        # Setup confidence extractor to capture probabilities during recognition
+        confidence_extractor = ConfidenceExtractor(self.model)
+
         # Recognize with timestamps
         result: TimestampedResult = self.model.recognize(full_audio)
         duration_with_context = len(full_audio) / self.sample_rate
+
+        # Get captured confidence scores
+        token_confidences = confidence_extractor.get_clear_confidences()
 
         # Calculate context boundaries in seconds
         data_start = len(window_data.left_context) / self.sample_rate
@@ -97,81 +106,105 @@ class Recognizer:
             logging.debug(f"  text: '{result.text}'")
             logging.debug(f"  tokens: {result.tokens}")
             logging.debug(f"  timestamps: {result.timestamps}")
+            logging.debug(f"  token_confidences: {token_confidences}")
 
         if not result.text or not result.text.strip():
             return None
 
-        # Filter tokens within data region
-        filtered_text = self._filter_tokens_by_timestamp(
+        # Filter tokens and confidences within data region
+        filtered_text, filtered_confidences = self._filter_tokens_with_confidence(
             result.text,
             result.tokens,
             result.timestamps,
+            token_confidences,
             data_start,
             data_end
         )
 
-        if self.verbose:
-            logging.debug(f"  filtered text: '{filtered_text}'")
-
         if not filtered_text or not filtered_text.strip():
             return None
 
-        # Create RecognitionResult with filtered text, original timing
+        # Compute segment-level confidence statistics
+        avg_confidence = float(np.mean(filtered_confidences)) if filtered_confidences else 0.0
+        audio_rms = float(np.sqrt(np.mean(window_data.data ** 2)))
+        confidence_variance = float(np.var(filtered_confidences)) if len(filtered_confidences) > 1 else 0.0
+
+        if self.verbose:
+            logging.debug(f"  filtered text: '{filtered_text}'")
+            logging.debug(f"  avg confidence: {avg_confidence:.3f}")
+            logging.debug(f"  confidence variance: {confidence_variance :.3f}")
+            logging.debug(f"  audio_rms: {audio_rms:.3f}")
+
         recognition_result = RecognitionResult(
             text=filtered_text,
             start_time=window_data.start_time,
             end_time=window_data.end_time,
             status=status,
-            chunk_ids=window_data.chunk_ids
+            chunk_ids=window_data.chunk_ids,
+            confidence=avg_confidence,
+            token_confidences=filtered_confidences,
+            audio_rms=audio_rms,
+            confidence_variance=confidence_variance
         )
         self.text_queue.put(recognition_result)
         return recognition_result
 
-    def _filter_tokens_by_timestamp(self,
-                                     text: str,
-                                     tokens: Optional[list[str]],
-                                     timestamps: Optional[list[float]],
-                                     data_start: float,
-                                     data_end: float) -> str:
-        """Filter tokens to only those within data region (exclude context).
+    def _filter_tokens_with_confidence(self,
+                                        text: str,
+                                        tokens: Optional[list[str]],
+                                        timestamps: Optional[list[float]],
+                                        confidences: list[float],
+                                        data_start: float,
+                                        data_end: float) -> tuple[str, list[float]]:
+        """Filter tokens and their confidences to only those within data region (exclude context).
 
         Algorithm:
-        1. If no timestamps available, return full text (fallback)
+        1. If no timestamps available, return full text with empty confidences (fallback)
         2. Filter tokens where (data_start - tolerance) <= timestamp <= data_end
            - Tolerance accounts for VAD warm-up delay that may place first speech chunk in left_context
-        3. Reconstruct text from filtered tokens (tokens use space prefix for word boundaries)
-        4. Strip and return
+        3. Keep corresponding confidence scores for filtered tokens
+        4. Reconstruct text from filtered tokens (tokens use space prefix for word boundaries)
+        5. Strip and return (text, confidences)
 
         Args:
             text: Full recognized text
             tokens: Token list from TimestampedResult (subword units with space prefix)
             timestamps: Timestamp list (in seconds, relative to audio start)
+            confidences: Confidence scores parallel to tokens
             data_start: Start of data region in seconds
             data_end: End of data region in seconds
 
         Returns:
-            Filtered text containing only tokens from data region
+            tuple: (filtered_text, filtered_confidences)
         """
         if not tokens or not timestamps:
-            # No timestamps available - return full text (fallback)
-            return text
+            # No timestamps available - return full text with empty confidences (fallback)
+            return text, []
 
         # Filter tokens within data boundaries
         # Include tokens slightly before data_start to account for VAD RMS normalization delay
         boundary_tolerance = 0.37
         filtered_tokens = []
-        for token, ts in zip(tokens, timestamps):
+        filtered_confidences = []
+
+        # Handle case where confidences list doesn't match tokens length
+        # (e.g., if confidence extraction failed)
+        has_confidences = len(confidences) == len(tokens)
+
+        for i, (token, ts) in enumerate(zip(tokens, timestamps)):
             if (data_start - boundary_tolerance) <= ts <= data_end:
                 filtered_tokens.append(token)
+                if has_confidences:
+                    filtered_confidences.append(confidences[i])
 
         if not filtered_tokens:
-            return ""
+            return "", []
 
         # Reconstruct text from filtered tokens
         reconstructed = ''.join(filtered_tokens)
         reconstructed = reconstructed.strip()
 
-        return reconstructed
+        return reconstructed, filtered_confidences
 
     def process(self) -> None:
         """Process AudioSegments from queue continuously.
