@@ -260,19 +260,15 @@ if __name__ == "__main__":
         missing_models = ModelManager.get_missing_models(MODELS_DIR)
 
         if missing_models:
-            # Close loading window before showing download dialog
-            loading_window.close()
-            loading_window = None
-
-            # Show download dialog (creates its own window)
-            success = show_download_dialog(None, missing_models, MODELS_DIR)
+            # Transform loading window to download dialog (keeps window alive, no lag)
+            success = loading_window.transform_to_download_dialog(missing_models, MODELS_DIR)
 
             if not success:
                 logging.info("Model download cancelled. Exiting.")
                 sys.exit(1)
 
-            # Re-create loading window after download
-            loading_window = LoadingWindow(image_path, "Models downloaded successfully")
+            # Transform back to loading screen after successful download
+            loading_window.transform_back_to_loading("Models downloaded successfully")
 
         # Import pipeline only after models are confirmed present
         loading_window.update_message("Loading Parakeet ...")
