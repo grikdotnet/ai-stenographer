@@ -19,230 +19,6 @@ except Exception:
 
 
 @unittest.skipUnless(TKINTER_AVAILABLE, "tkinter not available or properly configured")
-class TestGuiWindow(unittest.TestCase):
-    """
-    Tests for GuiWindow class.
-
-    Tests preliminary/final text display, position tracking, text styling,
-    and deduplication behavior.
-    """
-
-    def setUp(self) -> None:
-        """Set up GUI window for testing."""
-        try:
-            self.root, self.text_widget = create_stt_window()
-            self.root.withdraw()  # Hide window during tests
-            self.gui = GuiWindow(self.text_widget, self.root)
-        except Exception as e:
-            self.skipTest(f"Could not initialize tkinter GUI: {e}")
-
-    def tearDown(self) -> None:
-        """Clean up GUI window."""
-        if hasattr(self, 'root'):
-            try:
-                self.root.destroy()
-            except:
-                pass
-
-    def get_widget_content(self) -> str:
-        """Get complete text content of the widget."""
-        return self.text_widget.get("1.0", tk.END).rstrip('\n')
-
-    def test_update_partial_displays_text(self) -> None:
-        """Test that update_partial() displays preliminary text."""
-        self.gui.update_partial("hello")
-        content = self.get_widget_content()
-        self.assertEqual(content, "hello")
-
-    def test_update_partial_appends_to_previous_partial(self) -> None:
-        """Test that update_partial() appends to previous preliminary text."""
-        self.gui.update_partial("hello")
-        self.gui.update_partial("world")
-        content = self.get_widget_content()
-        self.assertEqual(content, "hello world")
-
-    def test_finalize_text_without_preliminary(self) -> None:
-        """Test that finalize_text() works when no preliminary text exists."""
-        self.gui.finalize_text("hello")
-        content = self.get_widget_content()
-        self.assertEqual(content, "hello ")
-
-    def test_preliminary_finalize_cycles(self) -> None:
-        """Test multiple cycles of preliminary → final text."""
-        # First cycle
-        self.gui.update_partial("hello")
-        self.gui.finalize_text("hello")
-
-        # Second cycle
-        self.gui.update_partial("world")
-        self.gui.finalize_text("world")
-
-        content = self.get_widget_content()
-        self.assertEqual(content, "hello world ")
-
-    def test_finalize_prevents_duplicate_finalization(self) -> None:
-        """Test that finalize_text() prevents duplicate finalization."""
-        self.gui.update_partial("hello")
-        self.gui.finalize_text("hello")
-        self.gui.finalize_text("hello")  # Duplicate call
-
-        content = self.get_widget_content()
-        self.assertEqual(content, "hello ")  # Should not duplicate
-
-    def test_update_partial_after_finalize(self) -> None:
-        """Test that update_partial() works correctly after finalization."""
-        self.gui.update_partial("hello")
-        self.gui.finalize_text("hello")
-        self.gui.update_partial("world")
-
-        content = self.get_widget_content()
-        self.assertEqual(content, "hello world")
-
-    def test_preliminary_text_has_preliminary_tag(self) -> None:
-        """Test that preliminary text has correct styling tag."""
-        self.gui.update_partial("preliminary")
-
-        # Get tags at the start of the text
-        tags = self.text_widget.tag_names("1.0")
-        self.assertIn("preliminary", tags)
-
-    def test_final_text_has_final_tag(self) -> None:
-        """Test that finalized text has correct styling tag."""
-        self.gui.update_partial("text")
-        self.gui.finalize_text("text")
-
-        # Get tags at the start of the text
-        tags = self.text_widget.tag_names("1.0")
-        self.assertIn("final", tags)
-
-    def test_empty_partial_text(self) -> None:
-        """Test handling of empty preliminary text."""
-        self.gui.update_partial("")
-        content = self.get_widget_content()
-        self.assertEqual(content, "")
-
-    def test_finalize_replaces_accumulated_preliminary(self) -> None:
-        """Test finalization replaces all accumulated preliminary text."""
-        self.gui.update_partial("hello")
-        self.gui.update_partial("world")
-        self.gui.update_partial("how")
-        self.gui.finalize_text("hello world")
-
-        content = self.get_widget_content()
-        self.assertEqual(content, "hello world ")
-
-    def test_position_tracking_after_multiple_operations(self) -> None:
-        """Test that position tracking remains correct after multiple operations."""
-        self.gui.update_partial("first")
-        self.gui.finalize_text("first")
-        self.gui.update_partial("second")
-        self.gui.finalize_text("second")
-        self.gui.update_partial("third")
-
-        content = self.get_widget_content()
-        self.assertEqual(content, "first second third")
-
-    def test_partial_finalization_preserves_remaining_preliminary(self) -> None:
-        """
-        Legacy test: Without chunk_ids, finalize_text() clears all preliminary text.
-
-        NOTE: For proper partial finalization with remaining preliminary text preserved,
-        see TestGuiWindowWithChunkIds which uses chunk-ID tracking.
-
-        This test documents the old behavior where partial finalization was not possible
-        without chunk-IDs - all preliminary text gets cleared on finalization.
-        """
-        # Simulate preliminary chunks arriving
-        self.gui.update_partial("hello")
-        self.gui.update_partial("world")
-        self.gui.update_partial("how")
-        self.gui.update_partial("are")
-        self.gui.update_partial("you")
-
-        # All preliminary: "hello world how are you"
-        content = self.get_widget_content()
-        self.assertEqual(content, "hello world how are you")
-
-        # Window 1 finalized - without chunk_ids, all preliminary is cleared
-        self.gui.finalize_text("hello world how")
-
-        # Legacy behavior: all preliminary cleared, only finalized text remains
-        content = self.get_widget_content()
-        self.assertEqual(content, "hello world how ")
-
-        # Check that "hello world how" is finalized (has "final" tag)
-        tags_at_hello = self.text_widget.tag_names("1.0")
-        self.assertIn("final", tags_at_hello)
-
-    def test_overlapping_window_workflow(self) -> None:
-        """
-        Legacy test: Without chunk_ids, overlapping window workflow clears preliminary on finalize.
-
-        NOTE: For proper overlapping window workflow with preliminary text preserved,
-        see TestGuiWindowWithChunkIds.test_overlapping_window_workflow_with_chunk_ids
-
-        This test documents legacy behavior where preliminary text is cleared on each finalization.
-        """
-        # First batch of chunks (belong to Window 1 + overlap)
-        self.gui.update_partial("hello")
-        self.gui.update_partial("world")
-        self.gui.update_partial("how")
-
-        # Window 1 finalized - without chunk_ids, all preliminary is cleared
-        self.gui.finalize_text("hello world")
-
-        content = self.get_widget_content()
-        self.assertEqual(content, "hello world ")
-
-        # More chunks arrive (belong to Window 2)
-        self.gui.update_partial("are")
-        self.gui.update_partial("you")
-
-        content = self.get_widget_content()
-        self.assertEqual(content, "hello world are you")
-
-        # Window 2 finalized - again, all preliminary cleared
-        self.gui.finalize_text("how are")
-
-        content = self.get_widget_content()
-        self.assertEqual(content, "hello world how are ")
-
-        # Check final text
-        tags_at_start = self.text_widget.tag_names("1.0")
-        self.assertIn("final", tags_at_start)
-
-    def test_finalize_portion_of_accumulated_preliminary(self) -> None:
-        """
-        Legacy test: Without chunk_ids, finalize_text() cannot preserve partial preliminary.
-
-        NOTE: For proper partial finalization with remaining preliminary text preserved,
-        see TestGuiWindowWithChunkIds which uses chunk-ID tracking.
-
-        This test documents the old behavior where partial finalization was not possible.
-        """
-        self.gui.update_partial("one")
-        self.gui.update_partial("two")
-        self.gui.update_partial("three")
-        self.gui.update_partial("four")
-        self.gui.update_partial("five")
-
-        # All preliminary
-        content = self.get_widget_content()
-        self.assertEqual(content, "one two three four five")
-
-        # Finalize only first three words - but without chunk_ids, all preliminary is cleared
-        self.gui.finalize_text("one two three")
-
-        # Legacy behavior: all preliminary cleared
-        content = self.get_widget_content()
-        self.assertEqual(content, "one two three ")
-
-        # "one two three" should be final
-        tags_at_one = self.text_widget.tag_names("1.0")
-        self.assertIn("final", tags_at_one)
-
-
-@unittest.skipUnless(TKINTER_AVAILABLE, "tkinter not available or properly configured")
 class TestGuiWindowWithChunkIds(unittest.TestCase):
     """
     Tests for GuiWindow with chunk-ID-based partial finalization.
@@ -471,6 +247,77 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
         self.assertEqual(self.gui.preliminary_results[1].text, "world")
         self.assertEqual(self.gui.preliminary_results[0].chunk_ids, [1])
         self.assertEqual(self.gui.preliminary_results[1].chunk_ids, [2])
+
+    def test_finalize_text_without_preliminary(self) -> None:
+        """Test that finalize_text() works when no preliminary text exists."""
+        result = RecognitionResult(
+            text="hello",
+            start_time=0.0,
+            end_time=0.5,
+            status='final',
+            chunk_ids=[1]
+        )
+        self.gui.finalize_text(result)
+
+        content = self.get_widget_content()
+        self.assertEqual(content, "hello ")
+
+    def test_finalize_prevents_duplicate_finalization(self) -> None:
+        """Test that finalize_text() prevents duplicate finalization."""
+        # Preliminary
+        prelim = RecognitionResult(
+            text="hello",
+            start_time=0.0,
+            end_time=0.5,
+            status='preliminary',
+            chunk_ids=[1]
+        )
+        self.gui.update_partial(prelim)
+
+        # Finalize once
+        final = RecognitionResult(
+            text="hello",
+            start_time=0.0,
+            end_time=0.5,
+            status='final',
+            chunk_ids=[1]
+        )
+        self.gui.finalize_text(final)
+
+        # Try to finalize again with same text (duplicate call)
+        self.gui.finalize_text(final)
+
+        content = self.get_widget_content()
+        self.assertEqual(content, "hello ")  # Should not duplicate
+
+    def test_preliminary_text_has_preliminary_tag(self) -> None:
+        """Test that preliminary text has correct styling tag."""
+        result = RecognitionResult(
+            text="preliminary",
+            start_time=0.0,
+            end_time=0.5,
+            status='preliminary',
+            chunk_ids=[1]
+        )
+        self.gui.update_partial(result)
+
+        # Get tags at the start of the text
+        tags = self.text_widget.tag_names("1.0")
+        self.assertIn("preliminary", tags)
+
+    def test_empty_partial_text(self) -> None:
+        """Test handling of empty preliminary text."""
+        result = RecognitionResult(
+            text="",
+            start_time=0.0,
+            end_time=0.0,
+            status='preliminary',
+            chunk_ids=[]
+        )
+        self.gui.update_partial(result)
+
+        content = self.get_widget_content()
+        self.assertEqual(content, "")
 
 
 @unittest.skipUnless(TKINTER_AVAILABLE, "tkinter not available or properly configured")

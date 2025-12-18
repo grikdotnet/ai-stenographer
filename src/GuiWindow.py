@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import scrolledtext
-from typing import Tuple, List, Set, Union
+from typing import Tuple, List, Set
 from src.types import RecognitionResult
 from src.GuiFactory import GuiFactory
 
@@ -36,7 +36,7 @@ class GuiWindow:
         self.text_widget.tag_configure("preliminary", foreground="gray", font=("TkDefaultFont", 10, "italic"))
         self.text_widget.tag_configure("final", foreground="black", font=("TkDefaultFont", 10, "normal"))
 
-    def update_partial(self, result: Union[str, RecognitionResult]) -> None:
+    def update_partial(self, result: RecognitionResult) -> None:
         """Append new preliminary text to existing preliminary text.
 
         Appends new recognition results to the preliminary text region
@@ -44,18 +44,8 @@ class GuiWindow:
         in gray/italic styling to indicate it may change.
 
         Args:
-            result: RecognitionResult object with chunk_ids, or str for backward compatibility
+            result: RecognitionResult object with chunk_ids
         """
-        # Convert str to RecognitionResult for backward compatibility with old tests
-        if isinstance(result, str):
-            result = RecognitionResult(
-                text=result,
-                start_time=0.0,
-                end_time=0.0,
-                status='preliminary',
-                chunk_ids=[]
-            )
-
         if self.root and not self._is_main_thread():
             # Schedule GUI update on main thread when called from background thread
             self.root.after(0, self._update_partial_safe, result)
@@ -97,25 +87,15 @@ class GuiWindow:
 
         self.text_widget.see(tk.END)
 
-    def finalize_text(self, result: Union[str, RecognitionResult]) -> None:
+    def finalize_text(self, result: RecognitionResult) -> None:
         """Convert preliminary text to final permanent text.
 
         Uses chunk-ID tracking to finalize only matched chunks and preserve
         unmatched preliminary text. Re-renders finalized + remaining preliminary.
 
         Args:
-            result: RecognitionResult with chunk_ids, or str for backward compatibility
+            result: RecognitionResult with chunk_ids
         """
-        # Convert str to RecognitionResult for backward compatibility with old tests
-        if isinstance(result, str):
-            result = RecognitionResult(
-                text=result,
-                start_time=0.0,
-                end_time=0.0,
-                status='final',
-                chunk_ids=[]
-            )
-
         if self.root and not self._is_main_thread():
             # Schedule GUI update on main thread when called from background thread
             self.root.after(0, self._finalize_text_safe, result)
@@ -132,12 +112,8 @@ class GuiWindow:
         if result.text == self.last_finalized_text:
             return
 
-        # Mark chunks as finalized (if chunk_ids provided)
-        if result.chunk_ids:
-            self.finalized_chunk_ids.update(result.chunk_ids)
-        else:
-            # Old behavior: clear all preliminary when no chunk_ids (backward compatibility)
-            self.preliminary_results = []
+        # Mark chunks as finalized
+        self.finalized_chunk_ids.update(result.chunk_ids)
 
         # Append to finalized text
         if self.finalized_text:
@@ -185,17 +161,11 @@ class GuiWindow:
         # Update preliminary_start_pos to end of finalized text
         self.preliminary_start_pos = self.text_widget.index("end-1c")
 
-        # Find preliminary results with unfinalized chunks
-        # Handle backward compatibility: if chunk_ids are empty (old tests), filter by matching text
-        if self.finalized_chunk_ids:
-            # New behavior: filter by chunk_ids
-            remaining = [
-                r for r in self.preliminary_results
-                if not any(cid in self.finalized_chunk_ids for cid in r.chunk_ids)
-            ]
-        else:
-            # Old behavior: clear all preliminary when finalizing (no chunk tracking)
-            remaining = []
+        # Filter out preliminary results whose chunks have been finalized
+        remaining = [
+            r for r in self.preliminary_results
+            if not any(cid in self.finalized_chunk_ids for cid in r.chunk_ids)
+        ]
 
         # Add remaining preliminary text (gray)
         for i, r in enumerate(remaining):
