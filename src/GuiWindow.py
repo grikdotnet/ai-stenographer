@@ -1,4 +1,5 @@
 import tkinter as tk
+import logging
 from tkinter import scrolledtext
 from typing import Tuple, List, Set
 from src.types import RecognitionResult
@@ -12,12 +13,14 @@ class GuiWindow:
     preliminary (gray/italic) and final (black/normal) text in a tkinter widget.
     Uses chunk-ID tracking for accurate partial finalization.
     """
+    PARAGRAPH_PAUSE_THRESHOLD: float = 2.0  # seconds
 
     def __init__(self, text_widget: scrolledtext.ScrolledText, root: tk.Tk = None) -> None:
         self.text_widget: scrolledtext.ScrolledText = text_widget
         self.root: tk.Tk = root
         self.preliminary_start_pos: str = "1.0"
         self.last_finalized_text: str = ""
+        self.last_finalized_end_time: float = 0.0
 
         # Chunk-ID-based tracking
         self.preliminary_results: List[RecognitionResult] = [] 
@@ -37,11 +40,7 @@ class GuiWindow:
         self.text_widget.tag_configure("final", foreground="black", font=("TkDefaultFont", 10, "normal"))
 
     def update_partial(self, result: RecognitionResult) -> None:
-        """Append new preliminary text to existing preliminary text.
-
-        Appends new recognition results to the preliminary text region
-        while preserving all finalized text. The preliminary text appears
-        in gray/italic styling to indicate it may change.
+        """Append new preliminary text.
 
         Args:
             result: RecognitionResult object with chunk_ids
@@ -57,15 +56,26 @@ class GuiWindow:
         """Thread-safe implementation of preliminary text update.
 
         Stores RecognitionResult object and appends text to widget.
+        Detects audio pauses and inserts paragraph breaks when pause exceeds threshold.
         """
         # Store RecognitionResult object for chunk-ID tracking
         self.preliminary_results.append(result)
+        
+        if (self.last_finalized_end_time != 0
+            and (result.start_time - self.last_finalized_end_time) >= self.PARAGRAPH_PAUSE_THRESHOLD
+            and self.last_finalized_text != ""
+            and self.finalized_text and not self.finalized_text.endswith('\n')):
+                # Pause detected - insert paragraph break and re-render
+                self.finalized_text += "\n\n"
+                self._rerender_all()
+                self.text_widget.see(tk.END)
+                return
 
         # Verify preliminary_start_pos is valid, reset if corrupted
         try:
             self.text_widget.index(self.preliminary_start_pos)
         except tk.TclError:
-            # Position is invalid, reset to end of final text
+            # Position is invalid, reset to end of text
             self.preliminary_start_pos = self.text_widget.index("end-1c")
 
         # Get current end position to check if there's existing preliminary text
@@ -73,7 +83,6 @@ class GuiWindow:
 
         # Check if there's existing preliminary text
         if self.text_widget.compare(self.preliminary_start_pos, "!=", current_end):
-            # Append with space separator
             text_to_insert = " " + result.text
         else:
             # No existing preliminary text, insert without space
@@ -126,24 +135,8 @@ class GuiWindow:
 
         # Update last finalized tracker
         self.last_finalized_text = result.text
+        self.last_finalized_end_time = result.end_time  # Track timing for pause detection
 
-        self.text_widget.see(tk.END)
-
-    def add_paragraph_break(self) -> None:
-        """Insert paragraph separator (two newlines) to finalized text.
-
-        Called when silence timeout is reached to create visual paragraph separation.
-        Thread-safe: uses root.after() if called from background thread.
-        """
-        if self.root and not self._is_main_thread():
-            self.root.after(0, self._add_paragraph_break_safe)
-        else:
-            self._add_paragraph_break_safe()
-
-    def _add_paragraph_break_safe(self) -> None:
-        """Thread-safe implementation of paragraph break insertion."""
-        self.finalized_text += "\n\n"
-        self._rerender_all()
         self.text_widget.see(tk.END)
 
     def _rerender_all(self) -> None:

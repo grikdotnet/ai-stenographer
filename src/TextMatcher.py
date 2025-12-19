@@ -262,9 +262,6 @@ class TextMatcher:
 
         self.finalize_pending()
 
-        # Add paragraph break (unconditional)
-        self.gui_window.add_paragraph_break()
-
     def stop(self) -> None:
         """Stop the background processing thread.
 

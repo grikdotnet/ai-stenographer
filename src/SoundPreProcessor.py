@@ -333,9 +333,6 @@ class SoundPreProcessor:
                     self._append_to_speech_buffer(audio, timestamp, is_speech=False, chunk_id=s.chunk_id_counter)
                     s.chunk_id_counter += 1
 
-                    if self.verbose:
-                        logging.debug(f"SoundPreProcessor: silence_energy={s.silence_energy:.2f}")
-
             case ProcessingStatesEnum.ACCUMULATING_SILENCE:
                 # s.speech_before_silence is still True
                 if is_speech:

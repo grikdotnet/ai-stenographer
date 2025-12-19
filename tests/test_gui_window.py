@@ -321,8 +321,14 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
 
 
 @unittest.skipUnless(TKINTER_AVAILABLE, "tkinter not available or properly configured")
-class TestGuiWindowParagraphBreaks(unittest.TestCase):
-    """Tests for GuiWindow paragraph break functionality."""
+class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
+    """
+    Tests for automatic paragraph breaks based on audio timing pauses.
+
+    Tests the feature where GuiWindow automatically inserts paragraph breaks
+    when there's a pause >= PARAGRAPH_PAUSE_THRESHOLD (2.5s) between a finalized
+    segment's end and the next preliminary segment's start.
+    """
 
     def setUp(self) -> None:
         """Set up GUI window for testing."""
@@ -345,40 +351,269 @@ class TestGuiWindowParagraphBreaks(unittest.TestCase):
         """Get complete text content of the widget."""
         return self.text_widget.get("1.0", tk.END).rstrip('\n')
 
-    def test_add_paragraph_break_adds_newlines(self) -> None:
-        """Test that add_paragraph_break() adds two newlines to finalized text."""
-        # Add some finalized text first
-        result = RecognitionResult(
-            text="Hello world",
+    def test_pause_detection_inserts_paragraph_break(self) -> None:
+        """
+        Test that a pause >= 2.5s between finalized and preliminary inserts paragraph break.
+
+        Scenario:
+        - Finalize "hello world" (end_time=1.0)
+        - Pause for 3 seconds
+        - Preliminary "how" arrives (start_time=4.0)
+        - Expected: paragraph break inserted automatically
+        """
+        # Finalize "hello world"
+        final_result = RecognitionResult(
+            text="hello world",
             start_time=0.0,
             end_time=1.0,
             status='final',
             chunk_ids=[1, 2]
         )
-        self.gui.finalize_text(result)
+        self.gui.finalize_text(final_result)
 
-        # Add paragraph break
-        self.gui.add_paragraph_break()
+        # Verify initial state
+        self.assertEqual(self.gui.finalized_text, "hello world")
+        self.assertEqual(self.gui.last_finalized_end_time, 1.0)
 
-        # Check that finalized_text ends with \n\n
+        # Preliminary after 3-second pause
+        prelim_result = RecognitionResult(
+            text="how",
+            start_time=4.0,  # 3.0s pause (4.0 - 1.0)
+            end_time=4.5,
+            status='preliminary',
+            chunk_ids=[3]
+        )
+        self.gui.update_partial(prelim_result)
+
+        # Paragraph break should be inserted
         self.assertTrue(self.gui.finalized_text.endswith("\n\n"))
+        self.assertEqual(self.gui.finalized_text, "hello world\n\n")
 
-        # Display should show the paragraph break
+        # Widget should show the paragraph break
         content = self.get_widget_content()
         self.assertIn("\n\n", content)
+        self.assertIn("how", content)
 
-    def test_add_paragraph_break_empty_text(self) -> None:
-        """Test that add_paragraph_break() doesn't crash on empty text."""
-        # Call on empty GuiWindow
-        self.gui.add_paragraph_break()
+    def test_short_pause_no_paragraph_break(self) -> None:
+        """
+        Test that a pause < 2.5s does NOT insert paragraph break.
 
-        # Should add \n\n to empty string
-        self.assertEqual(self.gui.finalized_text, "\n\n")
+        Scenario:
+        - Finalize "hello" (end_time=1.0)
+        - Pause for 1 second (< 2.5s threshold)
+        - Preliminary "world" arrives (start_time=2.0)
+        - Expected: NO paragraph break
+        """
+        # Finalize "hello"
+        final_result = RecognitionResult(
+            text="hello",
+            start_time=0.0,
+            end_time=1.0,
+            status='final',
+            chunk_ids=[1]
+        )
+        self.gui.finalize_text(final_result)
 
-        # Should not crash during render
-        # Note: _rerender_all adds a space after finalized text (line 166: finalized_text + " ")
+        # Preliminary after 1-second pause (too short)
+        prelim_result = RecognitionResult(
+            text="world",
+            start_time=2.0,  # 1.0s pause (2.0 - 1.0) < 2.5s
+            end_time=2.5,
+            status='preliminary',
+            chunk_ids=[2]
+        )
+        self.gui.update_partial(prelim_result)
+
+        # No paragraph break should be inserted
+        self.assertFalse(self.gui.finalized_text.endswith("\n\n"))
+        self.assertEqual(self.gui.finalized_text, "hello")
+
+        # Widget should show text without paragraph break
         content = self.get_widget_content()
-        self.assertEqual(content, "\n\n ")
+        self.assertNotIn("\n\n", content)
+        self.assertIn("hello", content)
+        self.assertIn("world", content)
+
+    def test_no_duplicate_paragraph_breaks(self) -> None:
+        """
+        Test that multiple preliminaries after a pause don't create duplicate breaks.
+
+        Scenario:
+        - Finalize "hello" (end_time=1.0)
+        - Preliminary "how" arrives (start_time=4.0) → inserts break
+        - Preliminary "are" arrives (start_time=4.5) → should NOT insert duplicate
+        - Expected: Only one paragraph break
+        """
+        # Finalize "hello"
+        final_result = RecognitionResult(
+            text="hello",
+            start_time=0.0,
+            end_time=1.0,
+            status='final',
+            chunk_ids=[1]
+        )
+        self.gui.finalize_text(final_result)
+
+        # First preliminary after pause (inserts break)
+        prelim1 = RecognitionResult(
+            text="how",
+            start_time=4.0,  # 3.0s pause
+            end_time=4.5,
+            status='preliminary',
+            chunk_ids=[2]
+        )
+        self.gui.update_partial(prelim1)
+
+        # Verify paragraph break inserted
+        self.assertEqual(self.gui.finalized_text, "hello\n\n")
+
+        # Second preliminary after same pause (should NOT insert duplicate)
+        prelim2 = RecognitionResult(
+            text="are",
+            start_time=4.5,  # Still 3.5s from finalized end (4.5 - 1.0)
+            end_time=5.0,
+            status='preliminary',
+            chunk_ids=[3]
+        )
+        self.gui.update_partial(prelim2)
+
+        # Should still have only one paragraph break
+        self.assertEqual(self.gui.finalized_text, "hello\n\n")
+        self.assertEqual(self.gui.finalized_text.count("\n\n"), 1)
+
+        # Widget should show both preliminaries without duplicate break
+        content = self.get_widget_content()
+        self.assertIn("how", content)
+        self.assertIn("are", content)
+
+    def test_no_pause_detection_without_finalization(self) -> None:
+        """
+        Test that pause detection doesn't trigger without prior finalization.
+
+        Scenario:
+        - No finalized text yet (last_finalized_end_time = 0)
+        - Preliminary arrives
+        - Expected: NO paragraph break (check skipped)
+        """
+        # Verify initial state
+        self.assertEqual(self.gui.last_finalized_end_time, 0.0)
+        self.assertEqual(self.gui.finalized_text, "")
+
+        # Preliminary without any prior finalization
+        prelim_result = RecognitionResult(
+            text="hello",
+            start_time=5.0,  # Large start time doesn't matter
+            end_time=5.5,
+            status='preliminary',
+            chunk_ids=[1]
+        )
+        self.gui.update_partial(prelim_result)
+
+        # No paragraph break should be inserted
+        self.assertEqual(self.gui.finalized_text, "")
+
+        # Widget should just show the preliminary text
+        content = self.get_widget_content()
+        self.assertEqual(content, "hello")
+        self.assertNotIn("\n\n", content)
+
+    def test_multiple_pauses_multiple_breaks(self) -> None:
+        """
+        Test that multiple pauses across different finalization cycles each insert breaks.
+
+        Scenario:
+        - Finalize "one" (end_time=1.0)
+        - Preliminary "two" (start_time=4.0) → first break
+        - Finalize "two three" (end_time=7.0)
+        - Preliminary "four" (start_time=10.0) → second break
+        - Expected: Two paragraph breaks in finalized text
+        """
+        # First finalization
+        final1 = RecognitionResult(
+            text="one",
+            start_time=0.0,
+            end_time=1.0,
+            status='final',
+            chunk_ids=[1]
+        )
+        self.gui.finalize_text(final1)
+        self.assertEqual(self.gui.finalized_text, "one")
+
+        # First pause - preliminary triggers first break
+        prelim1 = RecognitionResult(
+            text="two",
+            start_time=4.0,  # 3.0s pause
+            end_time=5.0,
+            status='preliminary',
+            chunk_ids=[2]
+        )
+        self.gui.update_partial(prelim1)
+        self.assertEqual(self.gui.finalized_text, "one\n\n")
+
+        # Second finalization (includes "two" from preliminary)
+        final2 = RecognitionResult(
+            text="two three",
+            start_time=4.0,
+            end_time=7.0,
+            status='final',
+            chunk_ids=[2, 3]
+        )
+        self.gui.finalize_text(final2)
+        # finalized_text should be "one\n\n" + " " + "two three"
+        self.assertEqual(self.gui.finalized_text, "one\n\n two three")
+        self.assertEqual(self.gui.last_finalized_end_time, 7.0)
+
+        # Second pause - preliminary triggers second break
+        prelim2 = RecognitionResult(
+            text="four",
+            start_time=10.0,  # 3.0s pause (10.0 - 7.0)
+            end_time=10.5,
+            status='preliminary',
+            chunk_ids=[4]
+        )
+        self.gui.update_partial(prelim2)
+
+        # Should have two paragraph breaks now
+        self.assertTrue(self.gui.finalized_text.endswith("\n\n"))
+        self.assertEqual(self.gui.finalized_text, "one\n\n two three\n\n")
+
+        # Widget should show all text with both breaks
+        content = self.get_widget_content()
+        self.assertIn("one", content)
+        self.assertIn("two three", content)
+        self.assertIn("four", content)
+
+    def test_paragraph_break_with_empty_finalized_text(self) -> None:
+        """
+        Test edge case: pause detection with empty finalized_text doesn't crash.
+
+        Scenario:
+        - finalized_text is empty (edge case)
+        - Preliminary arrives with large pause
+        - Expected: No crash, no paragraph break (guard: self.finalized_text and ...)
+        """
+        # Artificially set last_finalized_end_time without finalized text (edge case)
+        self.gui.last_finalized_end_time = 1.0
+        self.assertEqual(self.gui.finalized_text, "")
+
+        # Preliminary with pause
+        prelim_result = RecognitionResult(
+            text="hello",
+            start_time=4.0,  # 3.0s pause
+            end_time=4.5,
+            status='preliminary',
+            chunk_ids=[1]
+        )
+
+        # Should not crash
+        self.gui.update_partial(prelim_result)
+
+        # No paragraph break inserted (empty finalized_text guard)
+        self.assertEqual(self.gui.finalized_text, "")
+
+        # Widget should show preliminary text only
+        content = self.get_widget_content()
+        self.assertEqual(content, "hello")
 
 
 @unittest.skipUnless(TKINTER_AVAILABLE, "tkinter not available or properly configured")
