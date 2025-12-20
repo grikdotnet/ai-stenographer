@@ -40,6 +40,10 @@ class Recognizer:
         self.thread: Optional[threading.Thread] = None
         self.verbose: bool = verbose
 
+        # Create single ConfidenceExtractor instance to reuse across all recognitions
+        # (avoids repeated patch/unpatch overhead and log spam)
+        self.confidence_extractor: ConfidenceExtractor = ConfidenceExtractor(self.model)
+
     def recognize_window(self, window_data: ChunkQueueItem) -> Optional[RecognitionResult]:
         """Recognize audio with context and filter tokens by timestamp.
 
@@ -81,15 +85,12 @@ class Recognizer:
         }
         status = status_map[window_data.type]
 
-        # Setup confidence extractor to capture probabilities during recognition
-        confidence_extractor = ConfidenceExtractor(self.model)
-
-        # Recognize with timestamps
+        # Recognize with timestamps (using pre-patched confidence extractor)
         result: TimestampedResult = self.model.recognize(full_audio)
         duration_with_context = len(full_audio) / self.sample_rate
 
-        # Get captured confidence scores
-        token_confidences = confidence_extractor.get_clear_confidences()
+        # Get captured confidence scores from reused extractor
+        token_confidences = self.confidence_extractor.get_clear_confidences()
 
         # Calculate context boundaries in seconds
         data_start = len(window_data.left_context) / self.sample_rate
@@ -231,9 +232,12 @@ class Recognizer:
         self.thread.start()
 
     def stop(self) -> None:
-        """Stop the background processing thread.
+        """Stop the background processing thread and cleanup resources.
 
         Sets the running flag to False, causing the background thread
-        to exit its processing loop.
+        to exit its processing loop. Also unpatches the confidence extractor
+        to restore the model to its original state.
         """
         self.is_running = False
+        # Explicitly unpatch the model (single cleanup instead of per-segment GC)
+        self.confidence_extractor.unpatch()
