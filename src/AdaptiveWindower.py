@@ -6,6 +6,9 @@ from typing import Dict, List, Any, Optional
 from src.types import AudioSegment
 
 
+def _format_chunk_ids(chunk_ids: list) -> str:
+    return f"[{chunk_ids[0]}-{chunk_ids[-1]}]" if chunk_ids else "[]"
+
 class AdaptiveWindower:
     """Aggregates speech segments into recognition windows with overlap.
 
@@ -99,12 +102,9 @@ class AdaptiveWindower:
         if self.verbose:
             duration_ms = len(window_audio) / self.sample_rate * 1000
             logging.debug(f"AdaptiveWindower: created window duration={duration_ms:.0f}ms,"
-                          +f" chunk_ids={unique_chunk_ids}, samples={len(window_audio)}")
+                          +f" chunk_ids={_format_chunk_ids(unique_chunk_ids)}, samples={len(window_audio)}")
 
         self.speech_queue.put(window)
-
-        if self.verbose:
-            logging.debug(f"AdaptiveWindower: put finalized window to queue (chunk_ids={unique_chunk_ids})")
 
         # Keep trailing segments with at least MIN_OVERLAP_DURATION for next window
         overlap_segments = []
@@ -170,7 +170,7 @@ class AdaptiveWindower:
         self.speech_queue.put(window)
 
         if self.verbose:
-            logging.debug(f"AdaptiveWindower.flush(): put to queue (chunk_ids={unique_chunk_ids})")
+            logging.debug(f"AdaptiveWindower.flush(): put to queue (chunk_ids={_format_chunk_ids(unique_chunk_ids)})")
 
         # Reset state for next speech sequence
         self._reset_state()

@@ -12,6 +12,10 @@ if TYPE_CHECKING:
 from onnx_asr.asr import TimestampedResult
 
 
+def _format_chunk_ids(chunk_ids: list) -> str:
+    return f"[{chunk_ids[0]}-{chunk_ids[-1]}]" if chunk_ids else "[]"
+
+
 class Recognizer:
     """Pure speech recognition: AudioSegment → RecognitionResult
 
@@ -100,14 +104,13 @@ class Recognizer:
         if self.verbose:
             logging.debug(f"recognize() dump:")
             logging.debug(f"  type: {window_data.type}")
-            logging.debug(f"  chunk_ids={window_data.chunk_ids}")
+            logging.debug(f"  chunk_ids={_format_chunk_ids(window_data.chunk_ids)}")
             logging.debug(f"  audio duration: {duration_with_context}")
             logging.debug(f"  data_start: {data_start}")
             logging.debug(f"  data_duration: {data_duration}")
             logging.debug(f"  text: '{result.text}'")
             logging.debug(f"  tokens: {result.tokens}")
             logging.debug(f"  timestamps: {result.timestamps}")
-            logging.debug(f"  token_confidences: {token_confidences}")
 
         if not result.text or not result.text.strip():
             return None

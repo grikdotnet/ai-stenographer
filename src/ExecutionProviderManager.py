@@ -285,7 +285,6 @@ class ExecutionProviderManager:
             virtual_count = len(adapters) - len(real_adapters)
             if virtual_count > 0:
                 virtual_names = [a['name'] for a in adapters if a['type'] == 'virtual']
-                self.logger.debug(f"Filtered out {virtual_count} virtual GPU(s): {virtual_names}")
 
             # Prefer discrete GPU if available (from real adapters only)
             discrete_adapters = [a for a in real_adapters if a['type'] == 'discrete']
@@ -541,11 +540,6 @@ class ExecutionProviderManager:
                         'type': gpu_type,
                         'vram_gb': round(vram_gb, 2)
                     })
-
-                    self.logger.debug(
-                        f"DXGI device_id {adapter_index}: {adapter_name} "
-                        f"({gpu_type}, {vram_gb:.2f} GB VRAM)"
-                    )
 
                 # Release adapter
                 adapter_release_ptr = ctypes.cast(

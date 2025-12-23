@@ -58,7 +58,6 @@ class STTPipeline:
         strategy = factory.get_strategy(gpu_type)
         strategy.configure_session_options(sess_options)
 
-        logging.info("Loading FP16 Parakeet models...")
         base_model = onnx_asr.load_model(
             "nemo-parakeet-tdt-0.6b-v3",
             model_path,
@@ -172,13 +171,11 @@ class STTPipeline:
 
         dummy_audio = np.zeros(48000, dtype=np.float32)
 
-        logging.info("Warming up GPU model (shader compilation)...")
         start = time.perf_counter()
 
         try:
             _ = self.model.recognize(dummy_audio)
             elapsed = (time.perf_counter() - start) * 1000
-            logging.info(f"Warm-up complete: {elapsed:.0f}ms")
         except Exception as e:
             logging.warning(f"Warm-up failed: {e}")
 

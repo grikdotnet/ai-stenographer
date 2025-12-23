@@ -350,9 +350,6 @@ class SoundPreProcessor:
                     self._append_to_speech_buffer(audio, timestamp, is_speech=False, chunk_id=s.chunk_id_counter)
                     s.chunk_id_counter += 1
 
-                    if self.verbose:
-                        logging.debug(f"SoundPreProcessor: silence_energy={s.silence_energy:.2f}")
-
                     if s.silence_energy >= self.silence_energy_threshold:
                         # ACCUMULATING_SILENCE → IDLE
                         segment = self._build_audio_segment(breakpoint_idx=s.silence_start_idx)
@@ -366,7 +363,7 @@ class SoundPreProcessor:
                         if self.verbose:
                             logging.debug(f"SoundPreProcessor: silence_energy_threshold reached")
                             logging.debug(f"SoundPreProcessor: emitting preliminary segment")
-                            logging.debug(f"  chunk_ids={segment.chunk_ids}")
+                            logging.debug(f"  chunk_ids=[{segment.chunk_ids[0] if segment.chunk_ids else ''}...{segment.chunk_ids[-1] if segment.chunk_ids else ''}]")
                             logging.debug(f"  left_context={len(segment.left_context)/512} chunks, right_context={len(segment.right_context)/512} chunks")
 
     def _normalize_rms(self, audio_chunk: np.ndarray) -> np.ndarray:
@@ -606,7 +603,7 @@ class SoundPreProcessor:
 
             if self.verbose:
                 logging.debug(f"SoundPreProcessor: emitting preliminary segment")
-                logging.debug(f"  chunk_ids={segment.chunk_ids}")
+                logging.debug(f"  chunk_ids=[{segment.chunk_ids[0] if segment.chunk_ids else ''}...{segment.chunk_ids[-1] if segment.chunk_ids else ''}]")
                 logging.debug(f"  left_context={len(segment.left_context)/512} chunks, right_context={len(segment.right_context)/512} chunks")
 
         else:
@@ -620,7 +617,7 @@ class SoundPreProcessor:
 
             if self.verbose:
                 logging.debug(f"SoundPreProcessor: emitting preliminary segment")
-                logging.debug(f"  chunk_ids={segment.chunk_ids}")
+                logging.debug(f"  chunk_ids=[{segment.chunk_ids[0] if segment.chunk_ids else ''}...{segment.chunk_ids[-1] if segment.chunk_ids else ''}]")
                 logging.debug(f"  left_context={len(segment.left_context)/512} chunks, right_context={len(segment.right_context)/512} chunks")
 
             # Reset buffer but stay in ACTIVE_SPEECH (speech continues)

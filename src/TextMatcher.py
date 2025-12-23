@@ -8,6 +8,11 @@ from .GuiWindow import GuiWindow
 from .types import RecognitionResult
 from dataclasses import replace
 
+
+def _format_chunk_ids(chunk_ids: list) -> str:
+    return f"[{chunk_ids[0]}-{chunk_ids[-1]}]" if chunk_ids else "[]"
+
+
 class TextMatcher:
     """Matches overlapping speech recognition results from sliding windows.
 
@@ -155,7 +160,7 @@ class TextMatcher:
 
         if self.verbose:
             logging.debug(f"TextMatcher.process_finalized() received '{current_text}'")
-            logging.debug(f"  chunk_ids={result.chunk_ids}")
+            logging.debug(f"  chunk_ids={_format_chunk_ids(result.chunk_ids)}")
             logging.debug(f"  confidence={result.confidence:.3f}")
             logging.debug(f"  previous_text: '{self.previous_result.text if self.previous_result else None}'")
 
@@ -189,7 +194,7 @@ class TextMatcher:
                 # Send finalized text to GUI - create RecognitionResult with resolved text from previous window
                 if finalized_text.strip():
                     if self.verbose:
-                        logging.debug(f"  finalize_text('{finalized_text}') chunk_ids={self.previous_result.chunk_ids}")
+                        logging.debug(f"  finalize_text('{finalized_text}') chunk_ids={_format_chunk_ids(self.previous_result.chunk_ids)}")
 
                     finalized_result = replace(self.previous_result,text=finalized_text)
                     self.gui_window.finalize_text(finalized_result)
