@@ -64,7 +64,6 @@ class STTPipeline:
             quantization='fp16',
             providers=providers,
             sess_options=sess_options,
-            cpu_preprocessing=False
         )
         self.model: TimestampedResultsAsrAdapter = base_model.with_timestamps()
         logging.info("FP16 models loaded successfully (timestamped mode)")

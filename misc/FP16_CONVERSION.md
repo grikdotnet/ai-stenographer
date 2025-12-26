@@ -94,7 +94,8 @@ model = onnx_asr.load_model(
     'nemo-parakeet-tdt-0.6b-v3',
     './models/parakeet',
     quantization='fp16',  # Load FP16 models
-    cpu_preprocessing=False
+    preprocessor_config={'device': 'gpu'},
+    resampler_config={'device': 'gpu'}
 )
 ```
 
@@ -111,7 +112,8 @@ self.model: Any = onnx_asr.load_model(
     model_path,
     providers=providers,
     sess_options=sess_options,
-    cpu_preprocessing=False
+    preprocessor_config={'device': 'gpu'},
+    resampler_config={'device': 'gpu'}
 )
 
 # For FP16:
@@ -121,7 +123,8 @@ self.model: Any = onnx_asr.load_model(
     quantization='fp16',  # Add this parameter
     providers=providers,
     sess_options=sess_options,
-    cpu_preprocessing=False
+    preprocessor_config={'device': 'gpu'},
+    resampler_config={'device': 'gpu'}
 )
 ```
 
