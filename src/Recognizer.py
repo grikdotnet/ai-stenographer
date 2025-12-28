@@ -9,6 +9,7 @@ from src.ConfidenceExtractor import ConfidenceExtractor
 
 if TYPE_CHECKING:
     from onnx_asr.adapters import TimestampedResultsAsrAdapter
+    from src.ApplicationState import ApplicationState
 from onnx_asr.asr import TimestampedResult
 
 
@@ -22,11 +23,15 @@ class Recognizer:
     Single Responsibility: Convert audio to text using STT model.
     Does not handle silence detection or text finalization logic.
 
+    Observer Pattern: Subscribes to ApplicationState for shutdown events.
+    Components can be stopped via observer notification.
+
     Args:
         speech_queue: Queue to read AudioSegment instances from (both preliminary and finalized)
         text_queue: Queue to write RecognitionResult instances to
         model: Pre-loaded speech recognition model with recognize() method (timestamped)
         sample_rate: Audio sample rate in Hz (default: 16000)
+        app_state: ApplicationState for observer pattern (REQUIRED)
         verbose: Enable verbose logging
     """
 
@@ -34,6 +39,7 @@ class Recognizer:
                  text_queue: queue.Queue,
                  model: "TimestampedResultsAsrAdapter",
                  sample_rate: int = 16000,
+                 app_state: 'ApplicationState' = None,
                  verbose: bool = False
                  ) -> None:
         self.speech_queue: queue.Queue = speech_queue
@@ -43,10 +49,14 @@ class Recognizer:
         self.is_running: bool = False
         self.thread: Optional[threading.Thread] = None
         self.verbose: bool = verbose
+        self.app_state: 'ApplicationState' = app_state
 
         # Create single ConfidenceExtractor instance to reuse across all recognitions
         # (avoids repeated patch/unpatch overhead and log spam)
         self.confidence_extractor: ConfidenceExtractor = ConfidenceExtractor(self.model)
+
+        # Register as component observer
+        self.app_state.register_component_observer(self.on_state_change)
 
     def recognize_window(self, window_data: ChunkQueueItem) -> Optional[RecognitionResult]:
         """Recognize audio with context and filter tokens by timestamp.
@@ -240,7 +250,25 @@ class Recognizer:
         Sets the running flag to False, causing the background thread
         to exit its processing loop. Also unpatches the confidence extractor
         to restore the model to its original state.
+
+        This method is idempotent - safe to call multiple times.
         """
+        if not self.is_running:
+            return
+
         self.is_running = False
         # Explicitly unpatch the model (single cleanup instead of per-segment GC)
         self.confidence_extractor.unpatch()
+
+    def on_state_change(self, old_state: str, new_state: str) -> None:
+        """Handle application state changes.
+
+        Observes ApplicationState and reacts to state transitions:
+        - * -> shutdown: stop processing and cleanup resources
+
+        Args:
+            old_state: Previous state
+            new_state: New state
+        """
+        if new_state == 'shutdown':
+            self.stop()

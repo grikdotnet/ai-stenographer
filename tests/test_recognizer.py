@@ -3,7 +3,7 @@ import pytest
 import queue
 import time
 import numpy as np
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
 from src.Recognizer import Recognizer
 from src.types import AudioSegment, RecognitionResult
 from onnx_asr.asr import TimestampedResult
@@ -29,7 +29,7 @@ class TestRecognizer:
             timestamps=None
         )
 
-        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000)
+        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000, app_state=Mock())
 
         segment = AudioSegment(
             type='preliminary',
@@ -58,7 +58,7 @@ class TestRecognizer:
             timestamps=None
         )
 
-        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000)
+        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000, app_state=Mock())
 
         # Create finalized window
         segment = AudioSegment(
@@ -89,7 +89,7 @@ class TestRecognizer:
             TimestampedResult(text="world", tokens=None, timestamps=None)
         ]
 
-        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000)
+        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000, app_state=Mock())
 
         # Process three segments
         results = []
@@ -122,7 +122,7 @@ class TestRecognizer:
 
         speech_queue = queue.Queue()
         text_queue = queue.Queue()
-        recognizer = Recognizer(speech_queue, text_queue, mock_model, sample_rate=16000)
+        recognizer = Recognizer(speech_queue, text_queue, mock_model, sample_rate=16000, app_state=Mock())
 
         # Add preliminary and finalized segments
         preliminary = AudioSegment(
@@ -184,7 +184,7 @@ class TestRecognizer:
             timestamps=None
         )
 
-        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000)
+        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000, app_state=Mock())
 
         # Test mapping: type='preliminary' → status='preliminary'
         preliminary_segment = AudioSegment(
@@ -251,7 +251,8 @@ class TestTimestampedRecognition:
             queue.Queue(),
             queue.Queue(),
             timestamped_mock_model,
-            sample_rate=16000
+            sample_rate=16000,
+            app_state=Mock()
         )
 
         segment = AudioSegment(
@@ -283,7 +284,8 @@ class TestTimestampedRecognition:
             queue.Queue(),
             queue.Queue(),
             timestamped_mock_model,
-            sample_rate=16000
+            sample_rate=16000,
+            app_state=Mock()
         )
 
         segment = AudioSegment(
@@ -317,7 +319,8 @@ class TestTimestampedRecognition:
             queue.Queue(),
             queue.Queue(),
             timestamped_mock_model,
-            sample_rate=16000
+            sample_rate=16000,
+            app_state=Mock()
         )
 
         segment = AudioSegment(
@@ -351,7 +354,8 @@ class TestTimestampedRecognition:
             queue.Queue(),
             queue.Queue(),
             timestamped_mock_model,
-            sample_rate=16000
+            sample_rate=16000,
+            app_state=Mock()
         )
 
         segment = AudioSegment(
@@ -382,7 +386,8 @@ class TestTimestampedRecognition:
             queue.Queue(),
             queue.Queue(),
             timestamped_mock_model,
-            sample_rate=16000
+            sample_rate=16000,
+            app_state=Mock()
         )
 
         segment = AudioSegment(
@@ -421,7 +426,8 @@ class TestTimestampedRecognition:
             queue.Queue(),
             queue.Queue(),
             timestamped_mock_model,
-            sample_rate=16000
+            sample_rate=16000,
+            app_state=Mock()
         )
 
         left = np.full(4000, 0.1, dtype=np.float32)   # 0.25s
@@ -456,7 +462,8 @@ class TestTimestampedRecognition:
             queue.Queue(),
             queue.Queue(),
             timestamped_mock_model,
-            sample_rate=16000
+            sample_rate=16000,
+            app_state=Mock()
         )
 
         # Test case: tokens with various timestamps and confidence scores
@@ -487,7 +494,8 @@ class TestTimestampedRecognition:
             queue.Queue(),
             queue.Queue(),
             timestamped_mock_model,
-            sample_rate=16000
+            sample_rate=16000,
+            app_state=Mock()
         )
 
         # Empty tokens - should return full text with empty confidences (fallback)
@@ -558,7 +566,8 @@ class TestConfidenceMetrics:
             queue.Queue(),
             queue.Queue(),
             mock_model_with_confidence,
-            sample_rate=16000
+            sample_rate=16000,
+            app_state=Mock()
         )
 
         # Create segment with known RMS value
@@ -594,7 +603,8 @@ class TestConfidenceMetrics:
             queue.Queue(),
             queue.Queue(),
             mock_model_with_confidence,
-            sample_rate=16000
+            sample_rate=16000,
+            app_state=Mock()
         )
 
         segment = AudioSegment(
@@ -626,7 +636,8 @@ class TestConfidenceMetrics:
             queue.Queue(),
             queue.Queue(),
             mock_model_with_confidence,
-            sample_rate=16000
+            sample_rate=16000,
+            app_state=Mock()
         )
 
         # Create segment with distinct RMS values in different regions
@@ -651,3 +662,84 @@ class TestConfidenceMetrics:
         assert abs(result.audio_rms - 0.3) < 0.01
         # Text should be filtered to data region
         assert result.text == "hello"
+
+
+class TestRecognizerObserverPattern:
+    """Tests for Recognizer observer pattern with ApplicationState.
+
+    Tests that Recognizer subscribes to ApplicationState and reacts to
+    shutdown events via observer callbacks.
+    """
+
+    @pytest.fixture
+    def mock_model(self):
+        """Mock speech recognition model."""
+        return MagicMock()
+
+    @pytest.fixture
+    def mock_app_state(self):
+        """Mock ApplicationState."""
+        return Mock()
+
+    def test_recognizer_subscribes_to_application_state(self, mock_model, mock_app_state):
+        """Test that Recognizer registers as component observer when app_state provided.
+
+        Logic: Recognizer.__init__(app_state=...) should call
+               app_state.register_component_observer()
+        """
+        recognizer = Recognizer(
+            speech_queue=queue.Queue(),
+            text_queue=queue.Queue(),
+            model=mock_model,
+            app_state=mock_app_state
+        )
+
+        mock_app_state.register_component_observer.assert_called_once()
+        # Verify callback is the on_state_change method
+        callback = mock_app_state.register_component_observer.call_args[0][0]
+        assert callback == recognizer.on_state_change
+
+    def test_recognizer_shutdown_state_stops_processing(self, mock_model, mock_app_state):
+        """Test that Recognizer stops when receiving 'shutdown' state.
+
+        Logic: on_state_change(_, 'shutdown') should set is_running=False
+               and call unpatch on confidence_extractor.
+        """
+        recognizer = Recognizer(
+            speech_queue=queue.Queue(),
+            text_queue=queue.Queue(),
+            model=mock_model,
+            app_state=mock_app_state
+        )
+
+        # Mock the unpatch method
+        recognizer.confidence_extractor.unpatch = Mock()
+
+        recognizer.is_running = True
+        recognizer.on_state_change('running', 'shutdown')
+
+        assert recognizer.is_running == False
+        recognizer.confidence_extractor.unpatch.assert_called_once()
+
+    def test_recognizer_stop_is_idempotent(self, mock_model, mock_app_state):
+        """Test that calling stop() multiple times is safe.
+
+        Logic: stop() should check if already stopped and avoid duplicate cleanup.
+        """
+        recognizer = Recognizer(
+            speech_queue=queue.Queue(),
+            text_queue=queue.Queue(),
+            model=mock_model,
+            app_state=mock_app_state
+        )
+
+        # Mock the unpatch method
+        recognizer.confidence_extractor.unpatch = Mock()
+
+        recognizer.start()
+        recognizer.stop()
+        recognizer.stop()  # Second call should be safe
+        recognizer.stop()  # Third call should be safe
+
+        # Should not raise errors, confidence_extractor.unpatch() called once
+        assert recognizer.confidence_extractor.unpatch.call_count == 1

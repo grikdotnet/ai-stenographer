@@ -1036,3 +1036,66 @@ def test_pause_state_flushes_segments():
     # Verify flush was called (segment should be in speech_queue)
     assert not speech_queue.empty(), "flush() should emit pending segment"
 
+
+def test_sound_preprocessor_shutdown_calls_flush():
+    """Test that shutdown via observer calls flush() to emit pending segments.
+
+    Logic: on_state_change(_, 'shutdown') should call stop(), which calls flush()
+           to ensure pending segments are emitted before shutdown.
+    """
+    from unittest.mock import Mock
+    import queue
+
+    chunk_queue = queue.Queue()
+    speech_queue = queue.Queue()
+    mock_vad = Mock()
+    mock_vad.process_frame.return_value = {'speech_probability': 0.9, 'is_speech': True}
+    mock_windower = Mock()
+    mock_app_state = Mock()
+
+    config = {
+        'audio': {
+            'sample_rate': 16000,
+            'chunk_duration': 0.032,
+            'silence_energy_threshold': 1.5,
+            'rms_normalization': {
+                'target_rms': 0.05,
+                'silence_threshold': 0.001,
+                'gain_smoothing': 0.8
+            }
+        },
+        'vad': {
+            'frame_duration_ms': 32,
+            'threshold': 0.5
+        },
+        'windowing': {
+            'max_speech_duration_ms': 3000,
+            'silence_timeout': 0.5
+        }
+    }
+
+    preprocessor = SoundPreProcessor(
+        chunk_queue=chunk_queue,
+        speech_queue=speech_queue,
+        vad=mock_vad,
+        windower=mock_windower,
+        config=config,
+        app_state=mock_app_state,
+        verbose=False
+    )
+    preprocessor.is_running = True
+
+    # Add some speech chunks to create a pending segment
+    for i in range(5):
+        chunk = {
+            'audio': np.random.randn(512).astype(np.float32) * 0.1,
+            'timestamp': float(i * 0.032)
+        }
+        preprocessor._process_chunk(chunk)
+
+    preprocessor.on_state_change('running', 'shutdown')
+
+    # Verify flush was called (segment should be in speech_queue)
+    assert not speech_queue.empty(), "stop() should call flush() to emit pending segment"
+    assert preprocessor.is_running == False
+

@@ -136,7 +136,7 @@ class TestPreliminaryFinalizedIntegration:
             TimestampedResult(text="quality result", tokens=None, timestamps=None)
         ]
 
-        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000)
+        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000, app_state=Mock())
 
         # Create preliminary and finalized segments
         preliminary = AudioSegment(
@@ -211,7 +211,7 @@ class TestPreliminaryFinalizedIntegration:
             tokens=None,
             timestamps=None
         )
-        recognizer = Recognizer(speech_queue, text_queue, mock_model, sample_rate=16000)
+        recognizer = Recognizer(speech_queue, text_queue, mock_model, sample_rate=16000, app_state=Mock())
 
         # Feed raw audio chunks - use 4 seconds to ensure finalized window
         chunk_size = 512
@@ -270,7 +270,7 @@ class TestPreliminaryFinalizedIntegration:
             timestamps=None
         )
 
-        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000)
+        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000, app_state=Mock())
 
         # Create segment with specific timing
         segment = AudioSegment(

@@ -22,7 +22,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_resolve_overlap_with_boundary_errors(self):
         """Test window overlap resolution handling STT boundary recognition errors"""
-        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui, app_state=Mock())
 
         # Window overlap resolution test cases
         resolution_cases = [
@@ -52,7 +52,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_resolve_overlap_with_punctuation(self):
         """Test resolve_overlap() handles punctuation variants correctly"""
-        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui, app_state=Mock())
 
         # Test cases: punctuation should not prevent overlap detection
         cases = [
@@ -95,7 +95,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_resolve_overlap_with_case_variations(self):
         """Test resolve_overlap() handles case variations correctly"""
-        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui, app_state=Mock())
 
         cases = [
             # Case should not prevent overlap detection, but original case preserved in output
@@ -126,7 +126,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_resolve_overlap_with_unicode(self):
         """Test resolve_overlap() handles Unicode and accented characters"""
-        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui, app_state=Mock())
 
         cases = [
             # Accented characters should normalize for comparison
@@ -159,7 +159,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_resolve_overlap_edge_cases(self):
         """Test resolve_overlap() edge cases"""
-        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui, app_state=Mock())
 
         # No overlap - should raise exception
         with self.assertRaises(Exception) as context:
@@ -198,7 +198,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_resolve_overlap_preserves_original_text(self):
         """Test that resolve_overlap() preserves original text formatting in output"""
-        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui, app_state=Mock())
 
         # Original text should be preserved (case, punctuation)
         finalized, remaining = text_matcher.resolve_overlap(
@@ -212,7 +212,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_process_first_finalized_text(self):
         """Test processing first finalized text"""
-        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui, app_state=Mock())
 
         first_text = RecognitionResult(
             text='hello world',
@@ -231,7 +231,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_process_finalized_texts_with_overlap(self):
         """Test processing sequential finalized texts with word overlap through process_text()"""
-        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui, app_state=Mock())
 
         # Three overlapping windows to test sequential processing
         texts = [
@@ -260,7 +260,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_process_finalized_texts_no_overlap(self):
         """Test finalized texts with no overlap - finalize previous, store current"""
-        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui, app_state=Mock())
 
         # Two finalized texts with no overlap
         text1 = RecognitionResult('hello world', 1.0, 1.5, status='final', chunk_ids=[1, 2])
@@ -286,7 +286,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_finalize_pending_finalized_text(self):
         """Test explicit finalize_pending() call finalizes stored text"""
-        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui, app_state=Mock())
 
         # Process some finalized speech
         speech_text = RecognitionResult('hello world', 1.0, 1.5, status='final', chunk_ids=[1, 2])
@@ -310,7 +310,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_finalize_pending_when_empty(self):
         """Test finalize_pending() with no pending text does nothing"""
-        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui, app_state=Mock())
 
         # Call finalize with no pending text
         text_matcher.finalize_pending()
@@ -321,7 +321,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_process_preliminary(self):
         """Preliminary results should NOT use resolve_overlap()"""
-        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui, app_state=Mock())
 
         # Two preliminary results with no overlap
         prelim1 = RecognitionResult('hello world', 1.0, 1.5, status='preliminary', chunk_ids=[1])
@@ -345,7 +345,7 @@ class TestTextMatcher(unittest.TestCase):
 
     def test_process_mixed_preliminary_finalized(self):
         """System should handle mix of preliminary and finalized results"""
-        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui, app_state=Mock())
 
         # Preliminary result (instant, word-level)
         prelim1 = RecognitionResult('hello', 1.0, 1.2, status='preliminary', chunk_ids=[1])
@@ -368,7 +368,7 @@ class TestTextMatcher(unittest.TestCase):
     def test_process_flush_finalizes_pending(self):
         """Flush result with empty text should trigger finalize_pending()"""
         self.mock_gui = Mock(spec=['update_partial', 'finalize_text'])
-        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui, app_state=Mock())
 
         # 1. Process final text (gets stored in previous_finalized_text)
         final_text = RecognitionResult('hello world', 1.0, 1.5, status='final', chunk_ids=[1, 2])
@@ -393,7 +393,7 @@ class TestTextMatcher(unittest.TestCase):
     def test_process_flush_with_text(self):
         """Flush result with text should process as final, then finalize pending"""
         self.mock_gui = Mock(spec=['update_partial', 'finalize_text'])
-        text_matcher = TextMatcher(self.text_queue, self.mock_gui)
+        text_matcher = TextMatcher(self.text_queue, self.mock_gui, app_state=Mock())
 
         # Process flush result with text (from flushed audio segment)
         flush_text = RecognitionResult('hello world', 1.0, 2.0, status='flush', chunk_ids=[1, 2])
@@ -406,6 +406,56 @@ class TestTextMatcher(unittest.TestCase):
         self.assertEqual(finalized.text, 'hello world')
         # State should be cleared after finalize
         self.assertIsNone(text_matcher.previous_result)
+
+
+class TestTextMatcherObserverPattern(unittest.TestCase):
+    """Tests for TextMatcher observer pattern with ApplicationState.
+
+    Tests that TextMatcher subscribes to ApplicationState and reacts to
+    shutdown events via observer callbacks.
+    """
+
+    def setUp(self):
+        self.text_queue = queue.Queue()
+        self.mock_gui = Mock(spec=['update_partial', 'finalize_text'])
+        self.mock_app_state = Mock()
+
+    def test_text_matcher_shutdown_calls_finalize_pending(self):
+        """Test that shutdown via observer calls finalize_pending() BEFORE stop().
+
+        Logic: on_state_change(_, 'shutdown') should call finalize_pending()
+               to flush any remaining partial text before stopping.
+        """
+        text_matcher = TextMatcher(
+            text_queue=self.text_queue,
+            gui_window=self.mock_gui,
+            app_state=self.mock_app_state
+        )
+
+        result = RecognitionResult(
+            text="pending text",
+            start_time=1.0,
+            end_time=2.0,
+            status='final',
+            chunk_ids=[1, 2],
+            confidence=0.95,
+            token_confidences=[],
+            audio_rms=0.1,
+            confidence_variance=0.01
+        )
+        text_matcher.previous_result = result
+
+        text_matcher.on_state_change('running', 'shutdown')
+
+        # Verify finalize_text was called with pending result
+        self.mock_gui.finalize_text.assert_called_once()
+        finalized = self.mock_gui.finalize_text.call_args[0][0]
+        self.assertEqual(finalized.text, "pending text")
+
+        self.assertIsNone(text_matcher.previous_result)
+
+        # Verify is_running is False
+        self.assertEqual(text_matcher.is_running, False)
 
 
 if __name__ == '__main__':

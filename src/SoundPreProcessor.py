@@ -218,7 +218,6 @@ class SoundPreProcessor:
         self.thread = threading.Thread(target=self.process, daemon=True)
         self.thread.start()
 
-
     def stop(self) -> None:
         """Stop processing thread and flush pending segments"""
         self.is_running = False
@@ -651,5 +650,16 @@ class SoundPreProcessor:
             logging.debug("SoundPreProcessor: flush()")
 
     def on_state_change(self, old_state: str, new_state: str) -> None:
+        """
+        Observes ApplicationState and reacts to:
+        paused: flush pending segments
+        shutdown: stop processing and flush
+
+        Args:
+            old_state: Previous state
+            new_state: New state
+        """
         if new_state == 'paused':
             self.flush()
+        elif new_state == 'shutdown':
+            self.stop()

@@ -51,7 +51,7 @@ class TestRecognizerExecutionProviders:
         text_queue = queue.Queue()
 
         # Create Recognizer with mock model
-        recognizer = Recognizer(chunk_queue, text_queue, mock_model, sample_rate=16000, verbose=False)
+        recognizer = Recognizer(chunk_queue, text_queue, mock_model, sample_rate=16000, verbose=False, app_state=Mock())
 
         # Create AudioSegment with speech audio
         segment = stt_types.AudioSegment(

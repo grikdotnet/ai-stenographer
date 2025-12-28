@@ -72,9 +72,9 @@ class TestApplicationState(unittest.TestCase):
         """Test that invalid state transitions are rejected."""
         app_state = self.ApplicationState(config={})
 
-        # Can't go from starting to shutdown directly
+        # Can't go from starting to paused (must go to running first)
         with self.assertRaises(ValueError):
-            app_state.set_state('shutdown')
+            app_state.set_state('paused')
 
     def test_multiple_observers_all_notified(self):
         """Test that all registered observers are notified of state changes."""

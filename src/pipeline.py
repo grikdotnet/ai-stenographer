@@ -126,10 +126,16 @@ class STTPipeline:
             text_queue=self.text_queue,
             model=self.model,
             sample_rate=sample_rate,
+            app_state=self.app_state,
             verbose=verbose
         )
 
-        self.text_matcher: TextMatcher = TextMatcher(self.text_queue, self.gui_window, verbose=verbose)
+        self.text_matcher: TextMatcher = TextMatcher(
+            self.text_queue,
+            self.gui_window,
+            app_state=self.app_state,
+            verbose=verbose
+        )
 
         # Update components list
         self.components: List[Any] = [
@@ -190,16 +196,10 @@ class STTPipeline:
         logging.info("Pipeline running. Press Ctrl+C to stop.")
 
     def stop(self) -> None:
-        """Stop all pipeline components.
+        """Stop all pipeline components via observer pattern.
 
-        Stops components in proper order:
-        1. AudioSource (stop capturing audio)
-        2. SoundPreProcessor (stop processing, flushes pending segments)
-        3. Recognizer (stop processing audio)
-        4. TextMatcher finalization (flush pending text)
-        5. TextMatcher (stop processing)
-
-        This method is idempotent - safe to call multiple times.
+        Sets ApplicationState to 'shutdown', which triggers all component
+        observers to stop themselves
         """
         if self._is_stopped:
             return
@@ -207,17 +207,7 @@ class STTPipeline:
         self._is_stopped = True
 
         logging.info("Stopping pipeline...")
-
-        self.app_state.set_state('shutdown')
-
-        self.sound_preprocessor.stop()
-
-        self.recognizer.stop()
-
-        logging.info("Finalizing pending text...")
-        self.text_matcher.finalize_pending()
-        self.text_matcher.stop()
-
+        self.app_state.set_state('shutdown')  # Triggers all observers
         logging.info("Pipeline stopped.")
 
     def run(self) -> None:

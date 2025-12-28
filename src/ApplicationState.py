@@ -9,11 +9,10 @@ It supports two types of observers:
 State mutations are protected by threading.Lock.
 
 State Machine:
-- starting -> running
-- running -> paused
-- paused -> running
-- running -> shutdown
-- paused -> shutdown
+- starting -> running, shutdown
+- running -> paused, shutdown
+- paused -> running, shutdown
+- shutdown -> (terminal state)
 """
 import threading
 from typing import Callable, Dict, List, Optional, Set
@@ -34,7 +33,7 @@ class ApplicationState:
 
     # Valid state transitions
     _VALID_TRANSITIONS: Dict[str, Set[str]] = {
-        'starting': {'running'},
+        'starting': {'running', 'shutdown'},
         'running': {'paused', 'shutdown'},
         'paused': {'running', 'shutdown'},
         'shutdown': set()

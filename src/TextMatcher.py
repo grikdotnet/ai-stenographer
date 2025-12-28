@@ -2,11 +2,14 @@
 import queue
 import threading
 import logging
-from typing import Dict, Any, Optional, Union
+from typing import Optional, TYPE_CHECKING
 from .TextNormalizer import TextNormalizer
 from .GuiWindow import GuiWindow
 from .types import RecognitionResult
 from dataclasses import replace
+
+if TYPE_CHECKING:
+    from src.ApplicationState import ApplicationState
 
 
 def _format_chunk_ids(chunk_ids: list) -> str:
@@ -21,11 +24,15 @@ class TextMatcher:
     (word-level VAD) directly to GUI, and finalized results (sliding windows) through
     overlap resolution before displaying.
 
+    Observer Pattern: Subscribes to ApplicationState for shutdown events.
+    Components can be stopped via observer notification.
+
     Args:
         text_queue: Queue to read recognition results from
         gui_window: GUI window instance with update_partial() and finalize_text() methods
         text_normalizer: Optional text normalizer for overlap detection
         time_threshold: Time threshold for duplicate detection (finalized only)
+        app_state: ApplicationState for observer pattern (REQUIRED)
         verbose: Enable verbose logging
     """
 
@@ -33,6 +40,7 @@ class TextMatcher:
                  gui_window: GuiWindow,
                  text_normalizer: Optional[TextNormalizer] = None,
                  time_threshold: float = 0.6,
+                 app_state: 'ApplicationState' = None,
                  verbose: bool = False
                  ) -> None:
         self.text_queue: queue.Queue = text_queue
@@ -40,6 +48,7 @@ class TextMatcher:
         self.is_running: bool = False
         self.thread: Optional[threading.Thread] = None
         self.verbose: bool = verbose
+        self.app_state: 'ApplicationState' = app_state
 
         # Enhanced duplicate detection parameters (for finalized path)
         self.text_normalizer: TextNormalizer = text_normalizer if text_normalizer is not None else TextNormalizer()
@@ -48,6 +57,9 @@ class TextMatcher:
         # State only needed for final/flush paths (overlap resolution)
         # Preliminary path has no state - VAD guarantees distinct segments
         self.previous_result: Optional[RecognitionResult] = None
+
+        # Register as component observer
+        self.app_state.register_component_observer(self.on_state_change)
 
     def find_word_overlap(self, words1: list[str], words2: list[str]) -> tuple[int, int, int]:
         """Find longest overlapping word sequence between two word lists.
@@ -273,4 +285,15 @@ class TextMatcher:
         Sets the running flag to False, causing the background thread
         to exit its processing loop.
         """
+        if not self.is_running:
+            return
+
         self.is_running = False
+
+    def on_state_change(self, old_state: str, new_state: str) -> None:
+        """
+        Observes ApplicationState and reacts to shutdown
+        """
+        if new_state == 'shutdown':
+            self.finalize_pending()
+            self.stop()

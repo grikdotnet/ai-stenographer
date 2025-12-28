@@ -41,7 +41,7 @@ Microphone Input (16kHz, mono)
 ├──────────────────────────────────────────────────────────────────────────┤
 │  ApplicationState (shared object, dependency injection)                  │
 │    ├─→ States: starting → running ⟷ paused → shutdown                   │
-│    ├─→ Component observers: AudioSource, SoundPreProcessor              │
+│    ├─→ Component observers: AudioSource, SoundPreProcessor, Recognizer, TextMatcher │
 │    ├─→ GUI observers: ControlPanel                                      │
 │    └─→ Thread-safe mutations (threading.Lock)                           │
 │                                                                           │
@@ -915,31 +915,35 @@ Output:
 
 ### Shutdown Sequence
 
+**Pure Observer Pattern**: Pipeline.stop() ONLY changes state to 'shutdown'. All components autonomously stop themselves via observer callbacks.
+
 ```
 1. User presses Ctrl+C or closes window
 
 2. Pipeline.stop()
-   ├─→ app_state.set_state('shutdown')  → notifies observers           # <-- NEW
-   │     ├─→ AudioSource.on_state_change() → stop stream              # <-- NEW
-   │     └─→ ControlPanel updates button (disabled)                    # <-- NEW
-   │
-   ├─→ sound_preprocessor.stop()
-   │     ├─→ Set is_running=False → thread exits
-   │     ├─→ _finalize_segment() → emit pending segment
-   │     └─→ windower.flush() → emit final window
-   │
-   ├─→ recognizer.stop()
-   │     └─→ Set is_running=False → thread exits
-   │
-   ├─→ text_matcher.finalize_pending()
-   │     └─→ Flush remaining partial text to GUI (gui_window.finalize_text())
-   │
-   └─→ text_matcher.stop()
-         └─→ Set is_running=False → thread exits
+   └─→ app_state.set_state('shutdown')  → notifies ALL observers
+         ├─→ AudioSource.on_state_change('running', 'shutdown')
+         │     └─→ stop() → stop and close stream
+         │
+         ├─→ SoundPreProcessor.on_state_change('running', 'shutdown')
+         │     └─→ stop() → set is_running=False, thread exits, flush()
+         │           ├─→ _finalize_segment() → emit pending segment
+         │           └─→ windower.flush() → emit final window
+         │
+         ├─→ Recognizer.on_state_change('running', 'shutdown')
+         │     └─→ stop() → set is_running=False, confidence_extractor.unpatch()
+         │
+         ├─→ TextMatcher.on_state_change('running', 'shutdown')
+         │     ├─→ finalize_pending() → flush remaining partial text to GUI
+         │     └─→ stop() → set is_running=False, thread exits
+         │
+         └─→ ControlPanel (GUI observer) → updates button (disabled)
 
 3. All daemon threads exit
 4. Main thread exits
 ```
+
+**Design:** Each component manages its own lifecycle. Pipeline doesn't know component internals - it only publishes state changes.
 
 ### Pause/Resume Cycle
 
