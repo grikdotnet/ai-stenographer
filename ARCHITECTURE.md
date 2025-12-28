@@ -4,6 +4,8 @@
 
 The Speech-to-Text pipeline is a multi-threaded, queue-based architecture that processes audio from microphone to text output in real-time.
 
+Application state management with pause/resume functionality is handled through an observer pattern, allowing components to react independently to state changes.
+
 ---
 
 ## Architecture Diagram
@@ -27,7 +29,30 @@ Microphone Input (16kHz, mono)
 │    ├─→ Captures raw audio (32ms frames, 512 samples)                    │
 │    ├─→ Assigns chunk_id (monotonic counter)                             │
 │    ├─→ chunk_queue.put_nowait({audio, timestamp, chunk_id})             │
+│    ├─→ Observer: ApplicationState (component observer)                 │
+│    │   └─→ on_state_change(): pause → close stream, resume → start()   │
 │    └─→ FAST RETURN (<1ms) - no blocking operations!                     │
+└──────────────────────────────────────────────────────────────────────────┘
+        │
+        ├─ ApplicationState observes: state changes
+        ↓
+┌──────────────────────────────────────────────────────────────────────────┐
+│  APPLICATION STATE MANAGEMENT                                            │
+├──────────────────────────────────────────────────────────────────────────┤
+│  ApplicationState (shared object, dependency injection)                  │
+│    ├─→ States: starting → running ⟷ paused → shutdown                   │
+│    ├─→ Component observers: AudioSource, SoundPreProcessor              │
+│    ├─→ GUI observers: ControlPanel                                      │
+│    └─→ Thread-safe mutations (threading.Lock)                           │
+│                                                                           │
+│  ControlPanel (GUI widget, top of window)                               │
+│    ├─→ Observes ApplicationState (GUI observer)                         │
+│    ├─→ Button states: "Loading..." | "Pause" | "Resume"                 │
+│    └─→ Delegates to PauseController.toggle()                            │
+│                                                                           │
+│  PauseController (MVC controller)                                       │
+│    └─→ ONLY updates ApplicationState.set_state()                        │
+│        └─→ NO component manipulation (proper encapsulation)             │
 └──────────────────────────────────────────────────────────────────────────┘
         │
         ├─ Raw audio dicts: {audio, timestamp, chunk_id}
@@ -77,6 +102,9 @@ Microphone Input (16kHz, mono)
 │    │     ├─→ speech_queue.put(preliminary_segment)  [instant output]    │
 │    │     └─→ AdaptiveWindower.process_segment(segment) [sync call]      │
 │    │           └─→ Aggregates into finalized windows                    │
+│    │                                                                      │
+│    ├─→ Observer: ApplicationState (component observer)                 │
+│    │   └─→ on_state_change(): pause → flush() pending segments         │
 │    │                                                                      │
 │    └─→ Silence timeout detection → windower.flush()                     │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -195,6 +223,9 @@ Microphone Input (16kHz, mono)
 | **Recognizer** | Daemon | Runs STT model on audio segments | `speech_queue.get(timeout=0.1)`, model inference |
 | **TextMatcher** | Daemon | Routes preliminary/finalized, overlap resolution, GUI calls | `text_queue.get(timeout=0.1)`, GUI updates via `root.after()` |
 | **GuiWindow** | **NO THREAD** | Helper for GUI updates (update_partial, finalize_text) | Called by TextMatcher |
+| **ApplicationState** | **NO THREAD** | Shared state manager (dependency injection) | Thread-safe mutations via `threading.Lock` |
+| **PauseController** | **NO THREAD** | MVC controller (called by ControlPanel) | Updates ApplicationState only |
+| **ControlPanel** | **NO THREAD** | GUI widget (runs on main thread) | Observes ApplicationState, delegates to controller |
 | **Main Thread** | Main | Runs Tkinter event loop | `root.mainloop()` |
 
 ### Thread Communication
@@ -251,6 +282,15 @@ Main Thread        AudioSource Thread    SoundPreProcessor Thread    Recognizer 
     │                         │      ├─resolve_overlap                      │
     │                         │      ├─finalize_text()─────────────────────→│ root.after()
     │                         │      └─update_partial()────────────────────→│ root.after()
+    │                         │                                             │
+    │                         │      ApplicationState.set_state('paused')   │
+    │                         │   ─────────────────────────────────────────→│
+    │                         │                                             │
+    │                         │   ← Notify observers ──┤                   │
+    │                         │     ├─ AudioSource.on_state_change()        │
+    │                         │     │   └─ stream.close()                   │
+    │                         │     └─ SoundPreProcessor.on_state_change()  │
+    │                         │         └─ flush()                          │
     │                         │                                             │
     │ stop()                  │                                             │
     ├─────────────────────────┤                                             │
@@ -413,6 +453,100 @@ The system uses a **Strategy Pattern** for hardware-specific optimizations:
 
 ---
 
+### ApplicationState (State Manager)
+
+**File:** `src/ApplicationState.py`
+
+**Responsibility:** Central state manager with observer pattern for pause/resume functionality
+
+**State Machine:**
+```
+starting → running ⟷ paused → shutdown
+```
+
+**Observer Types:**
+1. **Component observers:** Receive `(old_state, new_state)`, called directly
+   - AudioSource: stop/close stream on pause, start fresh stream on resume
+   - SoundPreProcessor: flush pending segments on pause
+
+2. **GUI observers:** Conditionally scheduled based on thread context
+   - Main thread: direct call
+   - Background thread: scheduled via `root.after(0, observer, ...)`
+   - ControlPanel: updates button appearance
+
+**Thread Safety:**
+- All state mutations protected by `threading.Lock`
+- Lock acquired only for state read/write (minimal duration)
+- Observers notified OUTSIDE lock to prevent deadlocks
+
+**Key Methods:**
+- `get_state()` - Thread-safe read
+- `set_state(new_state)` - Thread-safe write + observer notification
+- `register_component_observer(observer)` - Register component callbacks
+- `register_gui_observer(observer)` - Register GUI callbacks
+- `setTkRoot(root)` - Set tkinter root for thread-safe GUI scheduling
+
+**Configuration:**
+- Holds application config dictionary
+- Available to all components via dependency injection
+
+---
+
+### PauseController (MVC Controller)
+
+**File:** `src/controllers/PauseController.py`
+
+**Responsibility:** Minimal controller that ONLY updates ApplicationState
+
+**Design Philosophy:** Proper MVC separation
+- Controller updates state
+- Components observe state and react independently
+- No component manipulation (no `audio_source.stop()` calls)
+
+**Key Methods:**
+- `pause()` - Transition `running` → `paused` (guarded)
+- `resume()` - Transition `paused` → `running` (guarded)
+- `toggle()` - Switch between `running` ⟷ `paused`
+
+**Guards:**
+- Invalid transitions are no-ops (e.g., pause when not running)
+- Prevents errors from rapid clicks or invalid states
+
+---
+
+### ControlPanel (GUI Widget)
+
+**File:** `src/gui/ControlPanel.py`
+
+**Responsibility:** Pause/Resume button widget with state-based appearance
+
+**Integration:**
+- Created in `GuiWindow.create_stt_window()`
+- Placed at top of window in button_frame
+- Registers as GUI observer on initialization
+
+**Button Appearance by State:**
+
+| State | Button Text | Enabled? |
+|-------|-------------|----------|
+| starting | "Loading..." | No |
+| running | "Pause" | Yes |
+| paused | "Resume" | Yes |
+| shutdown | (disabled) | No |
+
+**Rapid Click Prevention:**
+1. Button enabled when running/paused
+2. User clicks → button immediately disabled
+3. Controller updates state
+4. Observer callback re-enables button when state change completes
+
+**Key Methods:**
+- `_on_state_change(old_state, new_state)` - GUI observer callback
+- `_update_button_for_state(state)` - Update button appearance
+- `_on_button_click()` - Delegate to controller, disable button
+
+---
+
 ### 1. AudioSource (Simplified)
 
 **Responsibility:** Capture audio from microphone only
@@ -435,6 +569,33 @@ The system uses a **Strategy Pattern** for hardware-specific optimizations:
 **Output:** Raw audio dicts to `chunk_queue`: `{audio, timestamp, chunk_id}`
 
 **Design:** Non-blocking callback prevents buffer overflows
+
+**Pause/Resume Integration:**
+
+Observes ApplicationState as component observer:
+
+```python
+def on_state_change(self, old_state: str, new_state: str) -> None:
+    if new_state == 'paused':
+        # Release microphone
+        self.stream.stop()
+        self.stream.close()
+    elif old_state == 'paused' and new_state == 'running':
+        # Create fresh stream
+        self.start()
+    elif new_state == 'shutdown':
+        self.stop()
+```
+
+**Pause Behavior:**
+- Stops and closes sounddevice stream (releases microphone to OS)
+- `is_running` flag set to False
+- No audio callbacks during paused state
+
+**Resume Behavior:**
+- Creates fresh `sd.InputStream` (not reused)
+- New stream captures fresh microphone input
+- Prevents data leakage from old chunks
 
 ### 2. SoundPreProcessor
 
@@ -505,6 +666,27 @@ The system uses a **Strategy Pattern** for hardware-specific optimizations:
 **Side Effect:** Calls `windower.process_segment()` synchronously
 
 **Design:** Dedicated thread prevents blocking audio capture callback
+
+**Pause/Resume Integration:**
+
+Observes ApplicationState as component observer:
+
+```python
+def on_state_change(self, old_state: str, new_state: str) -> None:
+    if new_state == 'paused':
+        self.flush()
+```
+
+**Pause Behavior:**
+- Calls `flush()` to emit pending AudioSegment
+- Windower also flushed via `windower.flush()`
+- Resets segment state (clears speech_buffer)
+- Returns to IDLE state
+
+**Why Flush on Pause:**
+- Finalizes pending audio (prevents data loss)
+- User sees all speech recognized before pause
+- Clean continuation when resumed (fresh state machine)
 
 ### 3. AdaptiveWindower (NO THREAD)
 
@@ -697,6 +879,7 @@ Output:
 ```
 1. Pipeline.__init__()
    ├─→ Load config from config/stt_config.json
+   ├─→ Create ApplicationState (shared state manager)    # <-- NEW
    ├─→ Create queues (chunk, speech, text)
    ├─→ Hardware acceleration setup:
    │     ├─→ ExecutionProviderManager.detect_gpu_type() [DXGI enumeration]
@@ -704,12 +887,16 @@ Output:
    │     └─→ Strategy.configure_session_options(sess_options)
    ├─→ Load Parakeet model with hardware-optimized session
    ├─→ Create Tkinter GUI window
+   │     └─→ create_stt_window(config, app_state)       # <-- Pass app_state
+   │         ├─→ Set root in ApplicationState            # <-- NEW
+   │         ├─→ Create PauseController                  # <-- NEW
+   │         └─→ Create ControlPanel                     # <-- NEW
    ├─→ Create GuiWindow (helper for TextMatcher)
    ├─→ Create VAD (for SoundPreProcessor)
    ├─→ Create components:
    │     ├─→ AdaptiveWindower (no thread, writes to speech_queue)
-   │     ├─→ AudioSource (writes raw dicts to chunk_queue)
-   │     ├─→ SoundPreProcessor (reads chunk_queue, writes to speech_queue)
+   │     ├─→ AudioSource (app_state=app_state)           # <-- Observer registration
+   │     ├─→ SoundPreProcessor (app_state=app_state)     # <-- Observer registration
    │     ├─→ Recognizer (reads speech_queue)
    │     └─→ TextMatcher (with gui_window reference)
    └─→ Setup signal handlers (Ctrl+C)
@@ -719,7 +906,8 @@ Output:
    ├─→ audio_source.start()           → starts sounddevice stream
    ├─→ sound_preprocessor.start()     → spawns daemon thread
    ├─→ recognizer.start()              → spawns daemon thread
-   └─→ text_matcher.start()            → spawns daemon thread
+   ├─→ text_matcher.start()            → spawns daemon thread
+   └─→ app_state.set_state('running')  → notifies observers (ControlPanel updates)  # <-- NEW
 
 3. Pipeline.run()
    └─→ root.mainloop()                 → Tkinter event loop
@@ -731,8 +919,9 @@ Output:
 1. User presses Ctrl+C or closes window
 
 2. Pipeline.stop()
-   ├─→ audio_source.stop()
-   │     └─→ Stop microphone stream (sounddevice)
+   ├─→ app_state.set_state('shutdown')  → notifies observers           # <-- NEW
+   │     ├─→ AudioSource.on_state_change() → stop stream              # <-- NEW
+   │     └─→ ControlPanel updates button (disabled)                    # <-- NEW
    │
    ├─→ sound_preprocessor.stop()
    │     ├─→ Set is_running=False → thread exits
@@ -751,6 +940,69 @@ Output:
 3. All daemon threads exit
 4. Main thread exits
 ```
+
+### Pause/Resume Cycle
+
+**Complete Pause Flow:**
+```
+User clicks "Pause" button
+└─ ControlPanel._on_button_click()
+   └─ Disable button (prevent double-click)
+      └─ PauseController.toggle()
+         └─ ApplicationState.set_state('paused')
+            ├─ Acquire lock, validate transition, update state
+            ├─ Release lock
+            └─ Notify observers
+               ├─ AudioSource.on_state_change()
+               │  ├─ stream.stop()
+               │  └─ stream.close()          # Microphone released
+               │
+               ├─ SoundPreProcessor.on_state_change()
+               │  └─ flush()
+               │     ├─ Emit pending segment
+               │     ├─ Reset audio_state
+               │     └─ Reset to IDLE
+               │
+               └─ ControlPanel._on_state_change()
+                  └─ root.after() scheduled (if from background thread)
+                     └─ Update button: "Resume" + enabled
+```
+
+**Complete Resume Flow:**
+```
+User clicks "Resume" button
+└─ ControlPanel._on_button_click()
+   └─ Disable button
+      └─ PauseController.toggle()
+         └─ ApplicationState.set_state('running')
+            ├─ Acquire lock, validate transition, update state
+            ├─ Release lock
+            └─ Notify observers
+               ├─ AudioSource.on_state_change()
+               │  └─ start()
+               │     └─ Create new sd.InputStream
+               │        └─ Fresh microphone capture begins
+               │
+               ├─ SoundPreProcessor: no action
+               │  └─ Ready to process new chunks
+               │
+               └─ ControlPanel._on_state_change()
+                  └─ Update button: "Pause" + enabled
+```
+
+**State During Pause:**
+- AudioSource: NO microphone (stream closed, no capture)
+- SoundPreProcessor: idle, waiting for chunks
+- Recognizer: may process final segment from flush
+- TextMatcher: displays finalized text
+- GUI: Shows "Resume" button (enabled)
+
+**State After Resume:**
+- AudioSource: Fresh stream capturing microphone
+- SoundPreProcessor: Processes new chunks (fresh state)
+- Recognizer: Recognizes new speech
+- TextMatcher: Appends new recognized text
+- GUI: Shows "Pause" button (enabled)
 
 ---
 
@@ -863,6 +1115,35 @@ Strategy Pattern for hardware-specific optimizations:
 - **Manager**: ExecutionProviderManager handles detection and provider selection
 - **Separation**: Hardware logic isolated from main pipeline (OCP/DIP compliance)
 
+### 6. Observer Pattern for State Management
+
+Decouples state changes from component reactions:
+- **ApplicationState (Subject)**: Maintains state, notifies observers
+- **Component Observers**: AudioSource, SoundPreProcessor react independently
+- **GUI Observers**: ControlPanel updates appearance
+- **Controller Separation**: PauseController only updates state (no component manipulation)
+- **Encapsulation**: Components own their pause/resume logic
+
+**Benefits:**
+- **Extensibility**: New components register observers without changing controller
+- **Testability**: Each observer can be tested independently
+- **Thread Safety**: State mutations protected, observers notified outside lock
+- **Separation of Concerns**: Controller doesn't know implementation details
+
+### 7. MVC Pattern for Pause/Resume
+
+Classic Model-View-Controller separation:
+- **Model**: ApplicationState (state + observers)
+- **View**: ControlPanel (button widget)
+- **Controller**: PauseController (state transitions only)
+
+**Flow:**
+```
+User action → View → Controller → Model → Observers → Components
+```
+
+**Key Principle:** Controller NEVER manipulates components directly
+
 ---
 
 ## Testing Strategy
@@ -902,6 +1183,10 @@ This architecture provides:
 ✅ **Testability** - tests covering all major paths
 ✅ **Maintainability** - Clear architecture, well-documented
 ✅ **Tunable configuration** - Iteratively optimized parameters with trade-off guidance
+✅ **Pause/Resume functionality** - Observer pattern with MVC separation
+✅ **State management** - Thread-safe ApplicationState with dual observer types
+✅ **Graceful pause** - Microphone release, pending audio finalized
+✅ **Clean resume** - Fresh stream creation, no data leakage
 
 ### Key Innovations
 
@@ -927,5 +1212,12 @@ This architecture provides:
 - 3-chunk confirmation prevents false positives
 - Reduces transient noise triggering
 - Preserves responsiveness while improving accuracy
+
+**Observer-Based State Management:**
+- ApplicationState as central subject with dual observer types
+- Component observers called directly for background operations
+- GUI observers scheduled via `root.after()` for thread safety
+- Lock-protected state mutations with deadlock prevention
+- Enables pause/resume without tight coupling between controller and components
 
 The dual-path design (preliminary + finalized) balances responsiveness with accuracy, while the Strategy Pattern for hardware abstraction ensures optimal performance across different GPU architectures and CPU-only systems. The context-aware recognition improvements deliver better short-word quality and eliminate hallucinations without sacrificing real-time performance.
