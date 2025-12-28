@@ -5,7 +5,10 @@ import queue
 import numpy as np
 import time
 import logging
-from typing import Dict, Any
+from typing import Dict, Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.ApplicationState import ApplicationState
 
 
 class AudioSource:
@@ -27,6 +30,7 @@ class AudioSource:
     def __init__(self,
                  chunk_queue: queue.Queue,
                  config: Dict[str, Any],
+                 app_state: Optional['ApplicationState'] = None,
                  verbose: bool = False):
 
         self.chunk_queue: queue.Queue = chunk_queue
@@ -38,6 +42,11 @@ class AudioSource:
         self.chunk_size: int = int(self.sample_rate * chunk_duration)
         self.is_running: bool = False
         self.stream: sd.InputStream | None = None
+        self.app_state = app_state
+
+        # Register as component observer if app_state provided
+        if self.app_state:
+            self.app_state.register_component_observer(self.on_state_change)
 
 
     def audio_callback(self, indata: np.ndarray, frames: int, time_info: Any, status: Any) -> None:
@@ -94,3 +103,28 @@ class AudioSource:
         self.is_running = False
         if self.stream:
             self.stream.stop()
+
+
+    def on_state_change(self, old_state: str, new_state: str) -> None:
+        """Handle application state changes.
+
+        Observes ApplicationState and reacts to state transitions:
+        - running -> paused: stop and close stream (release microphone)
+        - paused -> running: restart stream
+        - * -> shutdown: stop stream
+
+        Args:
+            old_state: Previous state
+            new_state: New state
+        """
+        if new_state == 'paused':
+            if self.stream:
+                self.stream.stop()
+                self.stream.close()
+                self.is_running = False
+        elif old_state == 'paused' and new_state == 'running':
+            self.start()
+        elif new_state == 'shutdown':
+            self.stop()
+
+

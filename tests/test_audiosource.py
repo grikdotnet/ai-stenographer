@@ -102,3 +102,82 @@ class TestAudioSource:
             audio_source.stop()
             mock_stream.stop.assert_called_once()
             assert not audio_source.is_running
+
+
+    def test_pause_state_stops_and_closes_stream(self, config):
+        """Test that pausing stops and closes the audio stream.
+
+        Logic: state changes to 'paused' → stop() and close() stream to release microphone.
+        """
+        chunk_queue = queue.Queue()
+        mock_app_state = Mock()
+
+        audio_source = AudioSource(
+            chunk_queue=chunk_queue,
+            config=config,
+            app_state=mock_app_state,
+            verbose=False
+        )
+
+        mock_stream = Mock()
+        audio_source.stream = mock_stream
+        audio_source.is_running = True
+
+        audio_source.on_state_change('running', 'paused')
+
+        # Verify stream was stopped and closed
+        mock_stream.stop.assert_called_once()
+        mock_stream.close.assert_called_once()
+
+
+    def test_resume_state_creates_new_stream(self, config):
+        """Test that resuming creates a new audio stream.
+
+        Logic: state changes from 'paused' to 'running' → start() creates new stream.
+        """
+        chunk_queue = queue.Queue()
+        mock_app_state = Mock()
+
+        audio_source = AudioSource(
+            chunk_queue=chunk_queue,
+            config=config,
+            app_state=mock_app_state,
+            verbose=False
+        )
+
+        audio_source.is_running = False
+        audio_source.stream = None
+
+        mock_stream = Mock()
+
+        with patch('sounddevice.InputStream', return_value=mock_stream):
+            audio_source.on_state_change('paused', 'running')
+
+            # Verify stream was started
+            mock_stream.start.assert_called_once()
+            assert audio_source.is_running
+
+
+    def test_shutdown_state_stops_stream(self, config):
+        """Test that shutdown stops the audio stream.
+
+        Logic: state changes to 'shutdown' → stop() stream.
+        """
+        chunk_queue = queue.Queue()
+        mock_app_state = Mock()
+
+        audio_source = AudioSource(
+            chunk_queue=chunk_queue,
+            config=config,
+            app_state=mock_app_state,
+            verbose=False
+        )
+
+        mock_stream = Mock()
+        audio_source.stream = mock_stream
+        audio_source.is_running = True
+
+        audio_source.on_state_change('running', 'shutdown')
+
+        # Verify stream was stopped
+        mock_stream.stop.assert_called_once()

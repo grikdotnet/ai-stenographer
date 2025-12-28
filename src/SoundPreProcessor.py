@@ -13,12 +13,13 @@ import logging
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Dict, Any, TYPE_CHECKING
+from typing import Dict, Any, TYPE_CHECKING, Optional
 from src.types import AudioSegment
 
 if TYPE_CHECKING:
     from src.VoiceActivityDetector import VoiceActivityDetector
     from src.AdaptiveWindower import AdaptiveWindower
+    from src.ApplicationState import ApplicationState
 
 
 # ========================================================================
@@ -161,6 +162,7 @@ class SoundPreProcessor:
                  vad: VoiceActivityDetector,
                  windower: AdaptiveWindower,
                  config: Dict[str, Any],
+                 app_state: Optional['ApplicationState'] = None,
                  verbose: bool = False):
 
         self.chunk_queue: queue.Queue = chunk_queue      # INPUT: raw audio
@@ -189,6 +191,11 @@ class SoundPreProcessor:
         self.is_running: bool = False
         self.thread: threading.Thread | None = None
         self.verbose: bool = verbose
+        self.app_state = app_state
+
+        # Register as component observer if app_state provided
+        if self.app_state:
+            self.app_state.register_component_observer(self.on_state_change)
 
     @property
     def state(self) -> ProcessingStatesEnum:
@@ -642,3 +649,7 @@ class SoundPreProcessor:
 
         if self.verbose:
             logging.debug("SoundPreProcessor: flush()")
+
+    def on_state_change(self, old_state: str, new_state: str) -> None:
+        if new_state == 'paused':
+            self.flush()

@@ -10,6 +10,7 @@ try:
     from tkinter import scrolledtext
     from src.GuiWindow import GuiWindow, create_stt_window
     from src.types import RecognitionResult
+    from src.ApplicationState import ApplicationState
     TKINTER_AVAILABLE = True
 except ImportError:
     TKINTER_AVAILABLE = False
@@ -30,9 +31,12 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
     def setUp(self) -> None:
         """Set up GUI window for testing."""
         try:
-            self.root, self.text_widget = create_stt_window()
+            # Create minimal config and ApplicationState for testing
+            test_config = {'audio': {}}  # Minimal config needed by ApplicationState
+            test_app_state = ApplicationState(config=test_config)
+            self.root, self.gui = create_stt_window(test_config, test_app_state)
             self.root.withdraw()
-            self.gui = GuiWindow(self.text_widget, self.root)
+            self.text_widget = self.gui.text_widget  # Access internal widget for test assertions
         except Exception as e:
             self.skipTest(f"Could not initialize tkinter GUI: {e}")
 
@@ -333,9 +337,12 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
     def setUp(self) -> None:
         """Set up GUI window for testing."""
         try:
-            self.root, self.text_widget = create_stt_window()
+            # Create minimal config and ApplicationState for testing
+            test_config = {'audio': {}}  # Minimal config needed by ApplicationState
+            test_app_state = ApplicationState(config=test_config)
+            self.root, self.gui = create_stt_window(test_config, test_app_state)
             self.root.withdraw()
-            self.gui = GuiWindow(self.text_widget, self.root)
+            self.text_widget = self.gui.text_widget  # Access internal widget for test assertions
         except Exception as e:
             self.skipTest(f"Could not initialize tkinter GUI: {e}")
 

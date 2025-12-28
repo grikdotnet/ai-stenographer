@@ -8,7 +8,6 @@ import json
 from pathlib import Path
 from typing import List, Any, Dict, TYPE_CHECKING
 import tkinter as tk
-from tkinter import scrolledtext
 
 from .AudioSource import AudioSource
 from .FileAudioSource import FileAudioSource
@@ -20,6 +19,7 @@ from .GuiWindow import GuiWindow, create_stt_window, run_gui_loop
 from .VoiceActivityDetector import VoiceActivityDetector
 from .ExecutionProviderManager import ExecutionProviderManager
 from .SessionOptionsFactory import SessionOptionsFactory
+from .ApplicationState import ApplicationState
 
 if TYPE_CHECKING:
     from onnx_asr.adapters import TimestampedResultsAsrAdapter
@@ -68,41 +68,41 @@ class STTPipeline:
         self.model: TimestampedResultsAsrAdapter = base_model.with_timestamps()
         logging.info("FP16 models loaded successfully (timestamped mode)")
 
-        self.root: tk.Tk
-        self.text_widget: scrolledtext.ScrolledText
-        self.root, self.text_widget = create_stt_window()
+        # Create ApplicationState first (needed by both pipeline and GUI)
+        self.app_state: ApplicationState = ApplicationState(config=self.config)
 
-        self.gui_window: GuiWindow = GuiWindow(self.text_widget, self.root)
+        # Create complete GUI setup (window + gui_window + pause controller + control panel)
+        self.root: tk.Tk
+        self.gui_window: GuiWindow
+        self.root, self.gui_window = create_stt_window(self.config, self.app_state)
 
         if models_dir is None:
             models_dir = Path("./models")
         vad_model_path = models_dir / "silero_vad" / "silero_vad.onnx"
 
-        # Create VAD (unchanged)
         self.vad: VoiceActivityDetector = VoiceActivityDetector(
             config=self.config,
             model_path=vad_model_path,
             verbose=verbose
         )
 
-        # Create AdaptiveWindower (renamed queue)
         self.adaptive_windower: AdaptiveWindower = AdaptiveWindower(
             speech_queue=self.speech_queue,
             config=self.config,
             verbose=verbose
         )
 
-        # Create SoundPreProcessor (NEW)
         self.sound_preprocessor: SoundPreProcessor = SoundPreProcessor(
             chunk_queue=self.chunk_queue,
             speech_queue=self.speech_queue,
             vad=self.vad,
             windower=self.adaptive_windower,
             config=self.config,
+            app_state=self.app_state,
             verbose=verbose
         )
 
-        # Create AudioSource (microphone or file)
+        # Create AudioSource - microphone or file
         if input_file:
             logging.info(f"Using file input: {input_file}")
             self.audio_source: FileAudioSource = FileAudioSource(
@@ -116,10 +116,10 @@ class STTPipeline:
             self.audio_source: AudioSource = AudioSource(
                 chunk_queue=self.chunk_queue,
                 config=self.config,
+                app_state=self.app_state,
                 verbose=verbose
             )
 
-        # Create Recognizer (renamed queue)
         sample_rate = self.config['audio']['sample_rate']
         self.recognizer: Recognizer = Recognizer(
             speech_queue=self.speech_queue,
@@ -134,7 +134,7 @@ class STTPipeline:
         # Update components list
         self.components: List[Any] = [
             self.audio_source,
-            self.sound_preprocessor,  # NEW
+            self.sound_preprocessor,
             self.recognizer,
             self.text_matcher
         ]
@@ -156,11 +156,11 @@ class STTPipeline:
             return json.load(f)
 
     def _warmup_model(self) -> None:
-        """Warm up model to trigger shader compilation (DirectML/CUDA).
+        """Warm up model to trigger shader compilation.
 
-        DirectML compiles GPU shaders on first inference, causing ~500ms delay.
+        DirectML compiles GPU shaders on first inference.
         This method runs a dummy inference during startup to pre-compile shaders.
-        Skips warm-up for CPU providers (no shader compilation needed).
+        Skips for CPU providers.
         """
         if self.execution_provider_manager.selected_provider == 'CPU':
             return
@@ -184,6 +184,9 @@ class STTPipeline:
 
         for component in self.components:
             component.start()
+
+        # Set state to running after all components started
+        self.app_state.set_state('running')
         logging.info("Pipeline running. Press Ctrl+C to stop.")
 
     def stop(self) -> None:
@@ -205,20 +208,14 @@ class STTPipeline:
 
         logging.info("Stopping pipeline...")
 
-        # 1. Stop audio capture
-        self.audio_source.stop()
+        self.app_state.set_state('shutdown')
 
-        # 2. Stop preprocessing (flushes pending segments)
         self.sound_preprocessor.stop()
 
-        # 3. Stop recognition
         self.recognizer.stop()
 
-        # 4. Finalize text
         logging.info("Finalizing pending text...")
         self.text_matcher.finalize_pending()
-
-        # 5. Stop text processing
         self.text_matcher.stop()
 
         logging.info("Pipeline stopped.")

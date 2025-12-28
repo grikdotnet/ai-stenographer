@@ -1,9 +1,12 @@
 import tkinter as tk
 import logging
 from tkinter import scrolledtext
-from typing import Tuple, List, Set
+from typing import Tuple, List, Set, Dict
 from src.types import RecognitionResult
 from src.GuiFactory import GuiFactory
+from src.ApplicationState import ApplicationState
+from src.controllers.PauseController import PauseController
+from src.gui.ControlPanel import ControlPanel
 
 
 class GuiWindow:
@@ -166,10 +169,21 @@ class GuiWindow:
             self.text_widget.insert(tk.END, separator + r.text, "preliminary")
 
 
-def create_stt_window() -> Tuple[tk.Tk, scrolledtext.ScrolledText]:
-    """Creates and returns a configured tkinter window with text widget for STT display."""
+def create_stt_window(config: Dict, app_state: ApplicationState) -> Tuple[tk.Tk, GuiWindow]:
+    """Creates and returns a configured tkinter window with text widget for STT display.
+
+    Args:
+        config: Application configuration dictionary
+        app_state: ApplicationState instance for pause/resume functionality
+
+    Returns:
+        tuple: (root, gui_window)
+    """
     # Use GuiFactory to create main window
     root = GuiFactory.create_window("Speech-to-Text Display", "800x600")
+
+    # Set root in ApplicationState for thread-safe GUI observer callbacks
+    app_state.setTkRoot(root)
 
     # Create main frame
     main_frame = tk.Frame(root, padx=10, pady=10)
@@ -180,10 +194,19 @@ def create_stt_window() -> Tuple[tk.Tk, scrolledtext.ScrolledText]:
                           font=("Arial", 16, "bold"))
     title_label.pack(pady=(0, 10))
 
-    # Create status label
-    status_label = tk.Label(main_frame, text="Gray text: Preliminary (may change) | Black text: Final",
+    # Create container frame for button AND status label on same row
+    button_frame = tk.Frame(main_frame)
+    button_frame.pack(fill=tk.X, pady=(0, 10))
+
+    # Create PauseController and ControlPanel (GUI concerns)
+    pause_controller = PauseController(app_state)
+    control_panel = ControlPanel(button_frame, app_state, pause_controller)
+    control_panel.pack(side=tk.LEFT, anchor='w')
+
+    # Create status label inside button_frame (same row as button)
+    status_label = tk.Label(button_frame, text="Gray text: Preliminary (may change) | Black text: Final",
                            font=("Arial", 10), fg="gray")
-    status_label.pack(pady=(0, 10))
+    status_label.pack(side=tk.RIGHT, padx=(20, 50))
 
     # Use GuiFactory to create scrolled text widget
     text_widget = GuiFactory.create_scrolled_text(
@@ -200,7 +223,10 @@ def create_stt_window() -> Tuple[tk.Tk, scrolledtext.ScrolledText]:
     # Make text widget read-only for users but allow programmatic updates
     text_widget.config(state=tk.NORMAL)
 
-    return root, text_widget
+    # Create GuiWindow
+    gui_window = GuiWindow(text_widget, root)
+
+    return root, gui_window
 
 
 def run_gui_loop(root: tk.Tk) -> None:
