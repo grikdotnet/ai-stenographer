@@ -15,7 +15,8 @@ from .SoundPreProcessor import SoundPreProcessor
 from .AdaptiveWindower import AdaptiveWindower
 from .Recognizer import Recognizer
 from .TextMatcher import TextMatcher
-from .GuiWindow import GuiWindow, create_stt_window, run_gui_loop
+from .GuiWindow import GuiWindow
+from .gui.ApplicationWindow import ApplicationWindow
 from .VoiceActivityDetector import VoiceActivityDetector
 from .ExecutionProviderManager import ExecutionProviderManager
 from .SessionOptionsFactory import SessionOptionsFactory
@@ -71,10 +72,10 @@ class STTPipeline:
         # Create ApplicationState first (needed by both pipeline and GUI)
         self.app_state: ApplicationState = ApplicationState(config=self.config)
 
-        # Create complete GUI setup (window + gui_window + pause controller + control panel)
-        self.root: tk.Tk
-        self.gui_window: GuiWindow
-        self.root, self.gui_window = create_stt_window(self.config, self.app_state)
+        # Create GUI window
+        app_window: ApplicationWindow = ApplicationWindow(self.app_state, self.config)
+        self.root: tk.Tk = app_window.get_root()
+        gui_window: GuiWindow = app_window.get_gui_window()
 
         if models_dir is None:
             models_dir = Path("./models")
@@ -132,7 +133,7 @@ class STTPipeline:
 
         self.text_matcher: TextMatcher = TextMatcher(
             self.text_queue,
-            self.gui_window,
+            gui_window,
             app_state=self.app_state,
             verbose=verbose
         )
@@ -229,8 +230,17 @@ class STTPipeline:
         self.root.protocol("WM_DELETE_WINDOW", on_window_close)
 
         try:
-            run_gui_loop(self.root)
+            # Run GUI main loop
+            self.root.mainloop()
         except KeyboardInterrupt:
             self.stop()
         finally:
             self.stop()
+            try:
+                self.root.quit()
+            except tk.TclError:
+                pass
+            try:
+                self.root.destroy()
+            except tk.TclError:
+                pass

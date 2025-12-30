@@ -17,16 +17,19 @@ class TestPipelineSessionOptionsStrategy:
     """Tests for pipeline integration with SessionOptionsStrategy pattern."""
 
     @patch('src.pipeline.onnx_asr.load_model')
-    @patch('src.pipeline.create_stt_window')
+    @patch('src.gui.ApplicationWindow.ApplicationWindow')
     @patch('src.pipeline.AudioSource')
     @patch('src.pipeline.VoiceActivityDetector')
     @patch('src.ExecutionProviderManager.ExecutionProviderManager._enumerate_adapters_dxgi')
-    def test_pipeline_uses_integrated_gpu_strategy(self, mock_dxgi, mock_vad, mock_audio, mock_gui, mock_load_model):
+    def test_pipeline_uses_integrated_gpu_strategy(self, mock_dxgi, mock_vad, mock_audio, mock_app_window, mock_load_model):
         """Pipeline should use IntegratedGPUStrategy for integrated GPU."""
-        # Mock GUI window creation
+        # Mock ApplicationWindow
         mock_root = Mock()
-        mock_text_widget = Mock()
-        mock_gui.return_value = (mock_root, mock_text_widget)
+        mock_gui_window = Mock()
+        mock_app_window_instance = Mock()
+        mock_app_window_instance.get_root.return_value = mock_root
+        mock_app_window_instance.get_gui_window.return_value = mock_gui_window
+        mock_app_window.return_value = mock_app_window_instance
 
         mock_model = Mock()
         mock_load_model.return_value = mock_model
@@ -51,15 +54,19 @@ class TestPipelineSessionOptionsStrategy:
                 "IntegratedGPUStrategy should disable CPU memory arena"
 
     @patch('src.pipeline.onnx_asr.load_model')
-    @patch('src.pipeline.create_stt_window')
+    @patch('src.gui.ApplicationWindow.ApplicationWindow')
     @patch('src.pipeline.AudioSource')
     @patch('src.pipeline.VoiceActivityDetector')
     @patch('src.ExecutionProviderManager.ExecutionProviderManager._enumerate_adapters_dxgi')
-    def test_pipeline_uses_discrete_gpu_strategy(self, mock_dxgi, mock_vad, mock_audio, mock_gui, mock_load_model):
+    def test_pipeline_uses_discrete_gpu_strategy(self, mock_dxgi, mock_vad, mock_audio, mock_app_window, mock_load_model):
         """Pipeline should use DiscreteGPUStrategy for discrete GPU."""
+        # Mock ApplicationWindow
         mock_root = Mock()
-        mock_text_widget = Mock()
-        mock_gui.return_value = (mock_root, mock_text_widget)
+        mock_gui_window = Mock()
+        mock_app_window_instance = Mock()
+        mock_app_window_instance.get_root.return_value = mock_root
+        mock_app_window_instance.get_gui_window.return_value = mock_gui_window
+        mock_app_window.return_value = mock_app_window_instance
 
         mock_model = Mock()
         mock_load_model.return_value = mock_model
@@ -84,14 +91,18 @@ class TestPipelineSessionOptionsStrategy:
                 "DiscreteGPUStrategy should enable CPU memory arena"
 
     @patch('src.pipeline.onnx_asr.load_model')
-    @patch('src.pipeline.create_stt_window')
+    @patch('src.gui.ApplicationWindow.ApplicationWindow')
     @patch('src.pipeline.AudioSource')
     @patch('src.pipeline.VoiceActivityDetector')
-    def test_pipeline_uses_cpu_strategy(self, mock_vad, mock_audio, mock_gui, mock_load_model):
+    def test_pipeline_uses_cpu_strategy(self, mock_vad, mock_audio, mock_app_window, mock_load_model):
         """Pipeline should use CPUStrategy for CPU mode."""
+        # Mock ApplicationWindow
         mock_root = Mock()
-        mock_text_widget = Mock()
-        mock_gui.return_value = (mock_root, mock_text_widget)
+        mock_gui_window = Mock()
+        mock_app_window_instance = Mock()
+        mock_app_window_instance.get_root.return_value = mock_root
+        mock_app_window_instance.get_gui_window.return_value = mock_gui_window
+        mock_app_window.return_value = mock_app_window_instance
 
         mock_model = Mock()
         mock_load_model.return_value = mock_model
@@ -138,16 +149,19 @@ class TestPipelineSessionOptionsStrategy:
             Path(config_path).unlink()
 
     @patch('src.pipeline.onnx_asr.load_model')
-    @patch('src.pipeline.create_stt_window')
+    @patch('src.gui.ApplicationWindow.ApplicationWindow')
     @patch('src.pipeline.AudioSource')
     @patch('src.pipeline.VoiceActivityDetector')
     @patch('src.ExecutionProviderManager.ExecutionProviderManager._enumerate_adapters_dxgi')
-    def test_session_options_correctly_applied_by_strategy(self, mock_dxgi, mock_vad, mock_audio, mock_gui, mock_load_model):
+    def test_session_options_correctly_applied_by_strategy(self, mock_dxgi, mock_vad, mock_audio, mock_app_window, mock_load_model):
         """Session options from strategy should be passed to model loading."""
-        # Mock GUI window creation
+        # Mock ApplicationWindow
         mock_root = Mock()
-        mock_text_widget = Mock()
-        mock_gui.return_value = (mock_root, mock_text_widget)
+        mock_gui_window = Mock()
+        mock_app_window_instance = Mock()
+        mock_app_window_instance.get_root.return_value = mock_root
+        mock_app_window_instance.get_gui_window.return_value = mock_gui_window
+        mock_app_window.return_value = mock_app_window_instance
 
         # Mock model loading
         mock_model = Mock()

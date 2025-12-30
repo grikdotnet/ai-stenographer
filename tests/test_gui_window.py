@@ -8,7 +8,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 try:
     import tkinter as tk
     from tkinter import scrolledtext
-    from src.GuiWindow import GuiWindow, create_stt_window
+    from src.GuiWindow import GuiWindow
+    from src.gui.ApplicationWindow import ApplicationWindow
     from src.types import RecognitionResult
     from src.ApplicationState import ApplicationState
     TKINTER_AVAILABLE = True
@@ -34,7 +35,9 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             # Create minimal config and ApplicationState for testing
             test_config = {'audio': {}}  # Minimal config needed by ApplicationState
             test_app_state = ApplicationState(config=test_config)
-            self.root, self.gui = create_stt_window(test_config, test_app_state)
+            self.app_window = ApplicationWindow(test_app_state, test_config)
+            self.root = self.app_window.get_root()
+            self.gui = self.app_window.get_gui_window()
             self.root.withdraw()
             self.text_widget = self.gui.text_widget  # Access internal widget for test assertions
         except Exception as e:
@@ -340,7 +343,9 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
             # Create minimal config and ApplicationState for testing
             test_config = {'audio': {}}  # Minimal config needed by ApplicationState
             test_app_state = ApplicationState(config=test_config)
-            self.root, self.gui = create_stt_window(test_config, test_app_state)
+            self.app_window = ApplicationWindow(test_app_state, test_config)
+            self.root = self.app_window.get_root()
+            self.gui = self.app_window.get_gui_window()
             self.root.withdraw()
             self.text_widget = self.gui.text_widget  # Access internal widget for test assertions
         except Exception as e:
@@ -621,42 +626,6 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
         # Widget should show preliminary text only
         content = self.get_widget_content()
         self.assertEqual(content, "hello")
-
-
-@unittest.skipUnless(TKINTER_AVAILABLE, "tkinter not available or properly configured")
-class TestCreateSttWindow(unittest.TestCase):
-    """Tests for create_stt_window() factory function."""
-
-    def tearDown(self) -> None:
-        """Clean up GUI window."""
-        if hasattr(self, 'root'):
-            try:
-                self.root.destroy()
-            except:
-                pass
-
-    def test_create_stt_window_returns_root_and_widget(self) -> None:
-        """Test that create_stt_window() returns root and text widget."""
-        try:
-            root, text_widget = create_stt_window()
-            self.root = root
-            self.root.withdraw()
-
-            self.assertIsInstance(root, tk.Tk)
-            self.assertIsInstance(text_widget, scrolledtext.ScrolledText)
-        except Exception as e:
-            self.skipTest(f"Could not initialize tkinter GUI: {e}")
-
-    def test_created_window_has_title(self) -> None:
-        """Test that created window has correct title."""
-        try:
-            root, text_widget = create_stt_window()
-            self.root = root
-            self.root.withdraw()
-
-            self.assertEqual(root.title(), "Speech-to-Text Display")
-        except Exception as e:
-            self.skipTest(f"Could not initialize tkinter GUI: {e}")
 
 
 if __name__ == '__main__':

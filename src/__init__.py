@@ -2,14 +2,15 @@
 from .AudioSource import AudioSource
 from .Recognizer import Recognizer
 from .TextMatcher import TextMatcher
-from .GuiWindow import create_stt_window, run_gui_loop
+from .GuiWindow import GuiWindow
+from .gui.ApplicationWindow import ApplicationWindow
 from .pipeline import STTPipeline
 
 __all__ = [
     'AudioSource',
     'Recognizer',
     'TextMatcher',
-    'create_stt_window',
-    'run_gui_loop',
+    'GuiWindow',
+    'ApplicationWindow',
     'STTPipeline'
 ]
