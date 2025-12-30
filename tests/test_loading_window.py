@@ -4,7 +4,7 @@ import pytest
 from pathlib import Path
 from unittest.mock import patch, Mock, MagicMock
 import threading
-from src.LoadingWindow import LoadingWindow
+from src.gui.LoadingWindow import LoadingWindow
 from src.ModelManager import ModelManager
 
 

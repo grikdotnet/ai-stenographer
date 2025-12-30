@@ -6,7 +6,7 @@ from typing import Dict
 from logging.handlers import RotatingFileHandler
 from src.ModelManager import ModelManager
 from src.ModelDownloadDialog import show_download_dialog
-from src.LoadingWindow import LoadingWindow
+from src.gui.LoadingWindow import LoadingWindow
 
 
 # ============================================================================

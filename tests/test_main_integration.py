@@ -97,7 +97,7 @@ class TestMainIntegration:
 class TestLoadingWindowIntegration:
     """Integration tests for LoadingWindow display during startup."""
 
-    @patch('src.LoadingWindow.LoadingWindow')
+    @patch('src.gui.LoadingWindow.LoadingWindow')
     @patch('src.ModelManager.ModelManager.get_missing_models')
     @patch('src.pipeline.STTPipeline')
     def test_loading_window_shown_during_startup(self, mock_pipeline, mock_get_missing, mock_loading_window):
@@ -148,7 +148,7 @@ class TestLoadingWindowIntegration:
         # Verify pipeline started
         mock_pipeline_instance.run.assert_called_once()
 
-    @patch('src.LoadingWindow.LoadingWindow')
+    @patch('src.gui.LoadingWindow.LoadingWindow')
     @patch('src.ModelDownloadDialog.show_download_dialog')
     @patch('src.ModelManager.ModelManager.get_missing_models')
     @patch('src.pipeline.STTPipeline')
@@ -209,7 +209,7 @@ class TestLoadingWindowIntegration:
         # Verify pipeline started
         mock_pipeline_instance.run.assert_called_once()
 
-    @patch('src.LoadingWindow.LoadingWindow')
+    @patch('src.gui.LoadingWindow.LoadingWindow')
     @patch('src.ModelManager.ModelManager.get_missing_models')
     @patch('src.pipeline.STTPipeline')
     def test_loading_window_closed_on_error(self, mock_pipeline, mock_get_missing, mock_loading_window):
