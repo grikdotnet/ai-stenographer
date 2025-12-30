@@ -5,7 +5,7 @@ Panel containing scrolled text widget and GuiWindow for text rendering.
 """
 import tkinter as tk
 from typing import Dict
-from src.GuiFactory import GuiFactory
+from src.gui.GuiFactory import GuiFactory
 from src.GuiWindow import GuiWindow
 
 

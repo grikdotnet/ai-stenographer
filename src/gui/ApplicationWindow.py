@@ -6,7 +6,7 @@ Owns tkinter root and orchestrates MainView creation.
 import tkinter as tk
 from typing import Dict
 from src.ApplicationState import ApplicationState
-from src.GuiFactory import GuiFactory
+from src.gui.GuiFactory import GuiFactory
 from src.gui.MainView import MainView
 from src.GuiWindow import GuiWindow
 

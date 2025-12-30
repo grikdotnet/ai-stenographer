@@ -4,7 +4,7 @@ Tests for GuiFactory - shared GUI infrastructure.
 import pytest
 import tkinter as tk
 from tkinter import scrolledtext, ttk
-from src.GuiFactory import GuiFactory
+from src.gui.GuiFactory import GuiFactory
 
 
 class TestGuiFactory:
