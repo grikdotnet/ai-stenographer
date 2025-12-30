@@ -21,7 +21,7 @@ It can work in the background on a modern notebook, consuming 0.5% of CPU, just 
 
 ## Installation
 
-1. Download the distributive package: [Version 1.4](https://github.com/grikdotnet/ai-stenographer/releases/download/1.4/AI-Stenographer-1.4.zip).
+1. Download the distributive package: [Version 1.5](https://github.com/grikdotnet/ai-stenographer/releases/download/1.5/AI-Stenographer-1.5.zip).
 2. Extract the downloaded ZIP package.
 3. Run the `STT - Stenographer` icon.
 
@@ -37,8 +37,8 @@ It can work in the background on a modern notebook, consuming 0.5% of CPU, just 
 
 - Windows 10 or 11
 - Microphone
-- It Downloads a 2.5GB speech recognition model
-- Consumes 2.5GB RAM
+- It Downloads a 1.2GB speech recognition model
+- Consumes 1.2 GB of RAM
 
 ## License
 
