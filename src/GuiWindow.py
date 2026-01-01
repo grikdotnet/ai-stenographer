@@ -1,5 +1,4 @@
 import tkinter as tk
-import logging
 from tkinter import scrolledtext
 from typing import List, Set
 from src.types import RecognitionResult
@@ -11,6 +10,9 @@ class GuiWindow:
     Provides update_partial() and finalize_text() methods for displaying
     preliminary (gray/italic) and final (black/normal) text in a tkinter widget.
     Uses chunk-ID tracking for accurate partial finalization.
+
+    Text widget must be pre-configured with 'preliminary' and 'final' tags
+    before passing to GuiWindow constructor.
     """
     PARAGRAPH_PAUSE_THRESHOLD: float = 2.0  # seconds
 
@@ -22,21 +24,14 @@ class GuiWindow:
         self.last_finalized_end_time: float = 0.0
 
         # Chunk-ID-based tracking
-        self.preliminary_results: List[RecognitionResult] = [] 
+        self.preliminary_results: List[RecognitionResult] = []
         self.finalized_chunk_ids: Set[int] = set()
         self.finalized_text: str = ""
-
-        self._setup_text_styles()
 
     def _is_main_thread(self) -> bool:
         """Check if we're running on the main thread."""
         import threading
         return threading.current_thread() is threading.main_thread()
-
-    def _setup_text_styles(self) -> None:
-        """Configure visual styling for preliminary and final text display."""
-        self.text_widget.tag_configure("preliminary", foreground="gray", font=("TkDefaultFont", 10, "italic"))
-        self.text_widget.tag_configure("final", foreground="black", font=("TkDefaultFont", 10, "normal"))
 
     def update_partial(self, result: RecognitionResult) -> None:
         """Append new preliminary text.
@@ -57,7 +52,6 @@ class GuiWindow:
         Stores RecognitionResult object and appends text to widget.
         Detects audio pauses and inserts paragraph breaks when pause exceeds threshold.
         """
-        # Store RecognitionResult object for chunk-ID tracking
         self.preliminary_results.append(result)
         
         if (self.last_finalized_end_time != 0
@@ -105,10 +99,8 @@ class GuiWindow:
             result: RecognitionResult with chunk_ids
         """
         if self.root and not self._is_main_thread():
-            # Schedule GUI update on main thread when called from background thread
             self.root.after(0, self._finalize_text_safe, result)
         else:
-            # Direct call when on main thread or in tests
             self._finalize_text_safe(result)
 
     def _finalize_text_safe(self, result: RecognitionResult) -> None:
@@ -120,7 +112,6 @@ class GuiWindow:
         if result.text == self.last_finalized_text:
             return
 
-        # Mark chunks as finalized
         self.finalized_chunk_ids.update(result.chunk_ids)
 
         # Append to finalized text
@@ -129,12 +120,12 @@ class GuiWindow:
         else:
             self.finalized_text = result.text
 
-        # Re-render everything
         self._rerender_all()
 
-        # Update last finalized tracker
         self.last_finalized_text = result.text
-        self.last_finalized_end_time = result.end_time  # Track timing for pause detection
+        
+        # Track timing for pause detection
+        self.last_finalized_end_time = result.end_time  
 
         self.text_widget.see(tk.END)
 
@@ -143,10 +134,8 @@ class GuiWindow:
 
         Filters out preliminary results whose chunks have been finalized.
         """
-        # Clear everything
         self.text_widget.delete("1.0", tk.END)
 
-        # Add finalized text (black)
         if self.finalized_text:
             self.text_widget.insert(tk.END, self.finalized_text + " ", "final")
 
