@@ -368,7 +368,7 @@ class SoundPreProcessor:
 
                         if self.verbose:
                             logging.debug(f"SoundPreProcessor: silence_energy_threshold reached")
-                            logging.debug(f"SoundPreProcessor: emitting preliminary segment")
+                            logging.debug(f"SoundPreProcessor: emitting segment")
                             logging.debug(f"  chunk_ids=[{segment.chunk_ids[0] if segment.chunk_ids else ''}...{segment.chunk_ids[-1] if segment.chunk_ids else ''}]")
                             logging.debug(f"  left_context={len(segment.left_context)/512} chunks, right_context={len(segment.right_context)/512} chunks")
 

@@ -1,7 +1,13 @@
 import tkinter as tk
 from tkinter import scrolledtext
+import logging
 from typing import List, Set
 from src.types import RecognitionResult
+
+
+def _format_chunk_ids(chunk_ids: list) -> str:
+    """Format chunk IDs for logging (e.g., [45-47] or [])."""
+    return f"[{chunk_ids[0]}-{chunk_ids[-1]}]" if chunk_ids else "[]"
 
 
 class GuiWindow:
@@ -16,9 +22,10 @@ class GuiWindow:
     """
     PARAGRAPH_PAUSE_THRESHOLD: float = 2.0  # seconds
 
-    def __init__(self, text_widget: scrolledtext.ScrolledText, root: tk.Tk = None) -> None:
+    def __init__(self, text_widget: scrolledtext.ScrolledText, root: tk.Tk = None, verbose: bool = False) -> None:
         self.text_widget: scrolledtext.ScrolledText = text_widget
         self.root: tk.Tk = root
+        self.verbose: bool = verbose
         self.preliminary_start_pos: str = "1.0"
         self.last_finalized_text: str = ""
         self.last_finalized_end_time: float = 0.0
@@ -59,7 +66,10 @@ class GuiWindow:
             and self.last_finalized_text != ""
             and self.finalized_text and not self.finalized_text.endswith('\n')):
                 # Pause detected - insert paragraph break and re-render
-                self.finalized_text += "\n\n"
+                pause_duration = result.start_time - self.last_finalized_end_time
+                if self.verbose:
+                    logging.debug(f"GuiWindow: pause detected ({pause_duration:.2f}s) - inserting paragraph break")
+                self.finalized_text += "\n"
                 self._rerender_all()
                 self.text_widget.see(tk.END)
                 return
@@ -68,10 +78,8 @@ class GuiWindow:
         try:
             self.text_widget.index(self.preliminary_start_pos)
         except tk.TclError:
-            # Position is invalid, reset to end of text
             self.preliminary_start_pos = self.text_widget.index("end-1c")
 
-        # Get current end position to check if there's existing preliminary text
         current_end = self.text_widget.index("end-1c")
 
         # Check if there's existing preliminary text
@@ -81,11 +89,15 @@ class GuiWindow:
             # No existing preliminary text, insert without space
             text_to_insert = result.text
 
-        # Insert new preliminary text at the end
         self.text_widget.insert(tk.END, text_to_insert, "preliminary")
 
         # Reset the last finalized text tracker since we have new preliminary text
         self.last_finalized_text = ""
+
+        if self.verbose:
+            with_space = text_to_insert.startswith(" ")
+            logging.debug(f"GuiWindow: update_partial() text='{result.text}' "
+                         f"chunk_ids={_format_chunk_ids(result.chunk_ids)} with_space={with_space}")
 
         self.text_widget.see(tk.END)
 
@@ -110,6 +122,8 @@ class GuiWindow:
         """
         # Prevent duplicate finalization of the same text
         if result.text == self.last_finalized_text:
+            if self.verbose:
+                logging.debug(f"GuiWindow: duplicate finalization prevented for text='{result.text}'")
             return
 
         self.finalized_chunk_ids.update(result.chunk_ids)
@@ -119,6 +133,11 @@ class GuiWindow:
             self.finalized_text += " " + result.text
         else:
             self.finalized_text = result.text
+
+        if self.verbose:
+            logging.debug(f"GuiWindow: finalize_text() text='{result.text}' "
+                         f"chunk_ids={_format_chunk_ids(result.chunk_ids)}")
+            logging.debug(f"GuiWindow: finalized_text buffer size: {len(self.finalized_text)} chars")
 
         self._rerender_all()
 
@@ -134,6 +153,10 @@ class GuiWindow:
 
         Filters out preliminary results whose chunks have been finalized.
         """
+        if self.verbose:
+            logging.debug(f"GuiWindow: rerender_all() finalized_len={len(self.finalized_text)} "
+                         f"preliminary_count={len(self.preliminary_results)}")
+
         self.text_widget.delete("1.0", tk.END)
 
         if self.finalized_text:
@@ -147,6 +170,9 @@ class GuiWindow:
             r for r in self.preliminary_results
             if not any(cid in self.finalized_chunk_ids for cid in r.chunk_ids)
         ]
+
+        if self.verbose:
+            logging.debug(f"GuiWindow: rerender_all() remaining_count={len(remaining)}")
 
         # Add remaining preliminary text (gray)
         for i, r in enumerate(remaining):

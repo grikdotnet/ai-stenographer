@@ -145,8 +145,6 @@ class Recognizer:
 
         if self.verbose:
             logging.debug(f"  filtered text: '{filtered_text}'")
-            logging.debug(f"  avg confidence: {avg_confidence:.3f}")
-            logging.debug(f"  confidence variance: {confidence_variance :.3f}")
             logging.debug(f"  audio_rms: {audio_rms:.3f}")
 
         recognition_result = RecognitionResult(

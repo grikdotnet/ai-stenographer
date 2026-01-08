@@ -18,12 +18,13 @@ class ApplicationWindow:
     Owns tkinter root and creates all GUI components directly.
     """
 
-    def __init__(self, app_state: ApplicationState, config: Dict):
+    def __init__(self, app_state: ApplicationState, config: Dict, verbose: bool = False):
         """Initialize TK root and all GUI components.
 
         Args:
             app_state: ApplicationState instance for state management
             config: Application configuration dictionary
+            verbose: Enable verbose logging
         """
         self.root = tk.Tk()
         self.root.title("Speech-to-Text Display")
@@ -80,7 +81,7 @@ class ApplicationWindow:
         )
 
         # Create GuiWindow with text_widget for pipeline integration
-        self.gui_window = GuiWindow(text_widget, self.root)
+        self.gui_window = GuiWindow(text_widget, self.root, verbose=verbose)
 
     def get_gui_window(self) -> GuiWindow:
         """Returns GuiWindow for pipeline integration."""

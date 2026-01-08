@@ -161,10 +161,6 @@ class TextMatcher:
     def process_finalized(self, result: RecognitionResult) -> None:
         """Process finalized result using window-based overlap resolution.
 
-        Finalized results come from sliding windows with overlap. Uses the
-        resolve_overlap algorithm to find reliable common subsequences and
-        finalize the reliable parts while discarding boundary errors.
-
         Args:
             result: RecognitionResult with finalized text, chunk_ids, and confidence
         """
@@ -173,14 +169,11 @@ class TextMatcher:
         if self.verbose:
             logging.debug(f"TextMatcher.process_finalized() received '{current_text}'")
             logging.debug(f"  chunk_ids={_format_chunk_ids(result.chunk_ids)}")
-            logging.debug(f"  confidence={result.confidence:.3f}")
             logging.debug(f"  previous_text: '{self.previous_result.text if self.previous_result else None}'")
 
-        # Enhanced duplicate detection using text normalization
-        # This handles punctuation variants ("Hello." vs "Hello?") while preventing
+        # Handle punctuation variants ("Hello." vs "Hello?") while preventing
         # false positives when user says the same word multiple times
         if self.previous_result:
-            # Normalize both texts for comparison
             current_normalized = self.text_normalizer.normalize_text(current_text)
             previous_normalized = self.text_normalizer.normalize_text(self.previous_result.text)
             time_diff = abs(result.start_time - self.previous_result.start_time)

@@ -73,7 +73,7 @@ class STTPipeline:
         self.app_state: ApplicationState = ApplicationState(config=self.config)
 
         # Create GUI window
-        app_window: ApplicationWindow = ApplicationWindow(self.app_state, self.config)
+        app_window: ApplicationWindow = ApplicationWindow(self.app_state, self.config, verbose=verbose)
         self.root: tk.Tk = app_window.get_root()
         gui_window: GuiWindow = app_window.get_gui_window()
 
