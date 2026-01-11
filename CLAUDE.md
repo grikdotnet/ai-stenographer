@@ -9,18 +9,16 @@ The test should focus on:
 - Queue interaction
 
 Create tests to check the application code, never re-implement application logic in tests.
-Avoid tests of parameters passed to methods, variables assignments and other checks that make no sense.
+Avoid tests of parameters passed to methods, variables assignments and checks that make no sense.
 
 Create dockblocks to describe logic and algorithms. Comment logic instead of commenting code.
-Avoid comments duplicating code, example:
-|  # RMS normalization
-|  rms_config = config['audio'].get('rms_normalization', {})
+Add little comments in code, explain logic rather than operations.
 
 Before doing anything check whether the tofo item is in the task definition, or it is made up. Before doing anything on your own initiative, ask for the user confirmation.
 
 Define types of parameters and return where possible.
 
-In the end of task execution think what can be wrong, and offer what to check.
+In the end of task execution think what can be wrong, check diagnostics, and offer what to test.
 
 After creating git commit mesages replace "Generated with [Claude Code] ..." line or "Co-Authored-By" with a joke.
 Never commit automatically without user command or confirmation.
@@ -29,7 +27,7 @@ In the start of an answer, be creative, instead of generic phrases like "You're 
 
 Sarcasm and jokes are welcome everywhere.
 
-It's December 2025 now.
+It's January 2026 now.
 
 ## Project Overview
 
