@@ -38,7 +38,7 @@ def _check_tkinter_available():
     try:
         import tkinter as tk
         from src.gui.ApplicationWindow import ApplicationWindow
-        from src.GuiWindow import GuiWindow
+        from src.gui.TextFormatter import TextFormatter
     except ImportError:
         return False
     except Exception:
@@ -75,7 +75,8 @@ TKINTER_AVAILABLE = _check_tkinter_available()
 if TKINTER_AVAILABLE:
     import tkinter as tk
     from src.gui.ApplicationWindow import ApplicationWindow
-    from src.GuiWindow import GuiWindow
+    from src.gui.TextFormatter import TextFormatter
+    from src.gui.TextDisplayWidget import TextDisplayWidget
 
 
 @pytest.fixture
@@ -121,29 +122,13 @@ def test_application_window_sets_root_in_app_state(app_state, config):
     app_window.root.destroy()
 
 
-def test_application_window_get_gui_window(app_state, config):
-    """Test that get_gui_window() returns GuiWindow instance."""
+def test_application_window_creates_formatter_and_display(app_state, config):
+    """Test that ApplicationWindow creates TextFormatter and TextDisplayWidget instances."""
     app_window = ApplicationWindow(app_state, config)
 
-    gui_window = app_window.get_gui_window()
-
-    assert gui_window is not None
-    assert isinstance(gui_window, GuiWindow)
-    # Should be the same instance owned by ApplicationWindow
-    assert gui_window == app_window.gui_window
-
-    # Cleanup
-    app_window.root.destroy()
-
-
-def test_application_window_creates_gui_window(app_state, config):
-    """Test that ApplicationWindow creates GuiWindow instance."""
-    app_window = ApplicationWindow(app_state, config)
-
-    assert app_window.gui_window is not None
-    assert isinstance(app_window.gui_window, GuiWindow)
-    # GuiWindow should have a text widget
-    assert app_window.gui_window.text_widget is not None
+    assert isinstance(app_window.formatter, TextFormatter)
+    assert isinstance(app_window.display, TextDisplayWidget)
+    assert isinstance(app_window.display.text_widget, tk.scrolledtext.ScrolledText)
 
     # Cleanup
     app_window.root.destroy()

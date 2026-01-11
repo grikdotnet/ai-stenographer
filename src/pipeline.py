@@ -15,7 +15,6 @@ from .SoundPreProcessor import SoundPreProcessor
 from .AdaptiveWindower import AdaptiveWindower
 from .Recognizer import Recognizer
 from .TextMatcher import TextMatcher
-from .GuiWindow import GuiWindow
 from .gui.ApplicationWindow import ApplicationWindow
 from .VoiceActivityDetector import VoiceActivityDetector
 from .ExecutionProviderManager import ExecutionProviderManager
@@ -75,7 +74,7 @@ class STTPipeline:
         # Create GUI window
         app_window: ApplicationWindow = ApplicationWindow(self.app_state, self.config, verbose=verbose)
         self.root: tk.Tk = app_window.get_root()
-        gui_window: GuiWindow = app_window.get_gui_window()
+        formatter = app_window.get_formatter()
 
         if models_dir is None:
             models_dir = Path("./models")
@@ -133,7 +132,7 @@ class STTPipeline:
 
         self.text_matcher: TextMatcher = TextMatcher(
             self.text_queue,
-            gui_window,
+            formatter,
             app_state=self.app_state,
             verbose=verbose
         )

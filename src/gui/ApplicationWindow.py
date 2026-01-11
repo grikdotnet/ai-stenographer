@@ -10,7 +10,8 @@ from src.ApplicationState import ApplicationState
 from src.gui.HeaderPanel import HeaderPanel
 from src.gui.ControlPanel import ControlPanel
 from src.controllers.PauseController import PauseController
-from src.GuiWindow import GuiWindow
+from src.gui.TextDisplayWidget import TextDisplayWidget
+from src.gui.TextFormatter import TextFormatter
 
 
 class ApplicationWindow:
@@ -80,12 +81,25 @@ class ApplicationWindow:
             font=("TkDefaultFont", 10, "normal")
         )
 
-        # Create GuiWindow with text_widget for pipeline integration
-        self.gui_window = GuiWindow(text_widget, self.root, verbose=verbose)
+        # display (view) → formatter (controller)
+        self.display = TextDisplayWidget(text_widget, self.root, verbose=verbose)
+        self.formatter = TextFormatter(display=self.display, verbose=verbose)
 
-    def get_gui_window(self) -> GuiWindow:
-        """Returns GuiWindow for pipeline integration."""
-        return self.gui_window
+    def get_formatter(self) -> TextFormatter:
+        """Returns TextFormatter for pipeline integration.
+
+        Returns:
+            TextFormatter instance for TextMatcher to call
+        """
+        return self.formatter
+
+    def get_display(self) -> TextDisplayWidget:
+        """Returns TextDisplayWidget for testing.
+
+        Returns:
+            TextDisplayWidget instance
+        """
+        return self.display
 
     def get_root(self) -> tk.Tk:
         """Access root window.

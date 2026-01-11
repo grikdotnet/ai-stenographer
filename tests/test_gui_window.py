@@ -8,7 +8,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 try:
     import tkinter as tk
     from tkinter import scrolledtext
-    from src.GuiWindow import GuiWindow
+    from src.gui.TextFormatter import TextFormatter
+    from src.gui.TextDisplayWidget import TextDisplayWidget
     from src.gui.ApplicationWindow import ApplicationWindow
     from src.types import RecognitionResult
     from src.ApplicationState import ApplicationState
@@ -23,23 +24,27 @@ except Exception:
 @unittest.skipUnless(TKINTER_AVAILABLE, "tkinter not available or properly configured")
 class TestGuiWindowWithChunkIds(unittest.TestCase):
     """
-    Tests for GuiWindow with chunk-ID-based partial finalization.
+    Tests for TextFormatter + TextDisplayWidget with chunk-ID-based partial finalization.
 
-    Tests new behavior where GuiWindow tracks RecognitionResult objects
-    with chunk_ids to correctly handle partial finalization.
+    Tests MVC architecture where TextFormatter (controller) calculates formatting logic
+    and TextDisplayWidget (view) renders to tkinter.
     """
 
     def setUp(self) -> None:
-        """Set up GUI window for testing."""
+        """Set up TextFormatter + TextDisplayWidget for testing."""
         try:
             # Create minimal config and ApplicationState for testing
             test_config = {'audio': {}}  # Minimal config needed by ApplicationState
             test_app_state = ApplicationState(config=test_config)
             self.app_window = ApplicationWindow(test_app_state, test_config)
             self.root = self.app_window.get_root()
-            self.gui = self.app_window.get_gui_window()
+
+            # Get MVC components from ApplicationWindow
+            self.formatter = self.app_window.get_formatter()
+            self.display = self.app_window.get_display()
+            self.text_widget = self.display.text_widget  # Access internal widget for test assertions
+
             self.root.withdraw()
-            self.text_widget = self.gui.text_widget  # Access internal widget for test assertions
         except Exception as e:
             self.skipTest(f"Could not initialize tkinter GUI: {e}")
 
@@ -64,7 +69,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             status='preliminary',
             chunk_ids=[1]
         )
-        self.gui.update_partial(result)
+        self.formatter.partial_update(result)
 
         content = self.get_widget_content()
         self.assertEqual(content, "hello")
@@ -79,7 +84,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             status='preliminary',
             chunk_ids=[1]
         )
-        self.gui.update_partial(prelim)
+        self.formatter.partial_update(prelim)
 
         # Finalize
         final = RecognitionResult(
@@ -89,7 +94,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             status='final',
             chunk_ids=[1]
         )
-        self.gui.finalize_text(final)
+        self.formatter.finalization(final)
 
         content = self.get_widget_content()
         self.assertEqual(content, "hello ")
@@ -113,7 +118,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
         ]
 
         for r in results:
-            self.gui.update_partial(r)
+            self.formatter.partial_update(r)
 
         # All preliminary
         content = self.get_widget_content()
@@ -127,7 +132,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             status='final',
             chunk_ids=[1, 2, 3]
         )
-        self.gui.finalize_text(final)
+        self.formatter.finalization(final)
 
         # Content preserved: finalized + remaining preliminary
         content = self.get_widget_content()
@@ -159,13 +164,13 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             RecognitionResult("world", 0.5, 1.0, True, [2]),
             RecognitionResult("how", 1.0, 1.5, True, [3]),
         ]:
-            self.gui.update_partial(r)
+            self.formatter.partial_update(r)
 
         content = self.get_widget_content()
         self.assertEqual(content, "hello world how")
 
         # Window 1 finalized
-        self.gui.finalize_text(
+        self.formatter.finalization(
             RecognitionResult("hello world", 0.0, 1.0, False, [1, 2])
         )
 
@@ -177,13 +182,13 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             RecognitionResult("are", 1.5, 2.0, True, [4]),
             RecognitionResult("you", 2.0, 2.5, True, [5]),
         ]:
-            self.gui.update_partial(r)
+            self.formatter.partial_update(r)
 
         content = self.get_widget_content()
         self.assertEqual(content, "hello world how are you")
 
         # Window 2 finalized (includes overlap chunk 3)
-        self.gui.finalize_text(
+        self.formatter.finalization(
             RecognitionResult("how are", 1.0, 2.0, False, [3, 4])
         )
 
@@ -213,22 +218,22 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             RecognitionResult("two", 0.5, 1.0, True, [2]),
             RecognitionResult("three", 1.0, 1.5, True, [3]),
         ]:
-            self.gui.update_partial(r)
+            self.formatter.partial_update(r)
 
         # Finalize chunk 1
-        self.gui.finalize_text(
+        self.formatter.finalization(
             RecognitionResult("one", 0.0, 0.5, False, [1])
         )
-        self.assertIn(1, self.gui.finalized_chunk_ids)
+        self.assertIn(1, self.formatter.finalized_chunk_ids)
 
         # Finalize chunk 2
-        self.gui.finalize_text(
+        self.formatter.finalization(
             RecognitionResult("two", 0.5, 1.0, False, [2])
         )
-        self.assertIn(2, self.gui.finalized_chunk_ids)
+        self.assertIn(2, self.formatter.finalized_chunk_ids)
 
         # Both chunks tracked
-        self.assertEqual(self.gui.finalized_chunk_ids, {1, 2})
+        self.assertEqual(self.formatter.finalized_chunk_ids, {1, 2})
 
         # Chunk 3 still preliminary
         content = self.get_widget_content()
@@ -246,14 +251,14 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
         ]
 
         for r in results:
-            self.gui.update_partial(r)
+            self.formatter.partial_update(r)
 
         # GuiWindow should have stored these objects
-        self.assertEqual(len(self.gui.preliminary_results), 2)
-        self.assertEqual(self.gui.preliminary_results[0].text, "hello")
-        self.assertEqual(self.gui.preliminary_results[1].text, "world")
-        self.assertEqual(self.gui.preliminary_results[0].chunk_ids, [1])
-        self.assertEqual(self.gui.preliminary_results[1].chunk_ids, [2])
+        self.assertEqual(len(self.formatter.preliminary_results), 2)
+        self.assertEqual(self.formatter.preliminary_results[0].text, "hello")
+        self.assertEqual(self.formatter.preliminary_results[1].text, "world")
+        self.assertEqual(self.formatter.preliminary_results[0].chunk_ids, [1])
+        self.assertEqual(self.formatter.preliminary_results[1].chunk_ids, [2])
 
     def test_finalize_text_without_preliminary(self) -> None:
         """Test that finalize_text() works when no preliminary text exists."""
@@ -264,7 +269,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             status='final',
             chunk_ids=[1]
         )
-        self.gui.finalize_text(result)
+        self.formatter.finalization(result)
 
         content = self.get_widget_content()
         self.assertEqual(content, "hello ")
@@ -279,7 +284,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             status='preliminary',
             chunk_ids=[1]
         )
-        self.gui.update_partial(prelim)
+        self.formatter.partial_update(prelim)
 
         # Finalize once
         final = RecognitionResult(
@@ -289,10 +294,10 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             status='final',
             chunk_ids=[1]
         )
-        self.gui.finalize_text(final)
+        self.formatter.finalization(final)
 
         # Try to finalize again with same text (duplicate call)
-        self.gui.finalize_text(final)
+        self.formatter.finalization(final)
 
         content = self.get_widget_content()
         self.assertEqual(content, "hello ")  # Should not duplicate
@@ -306,7 +311,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             status='preliminary',
             chunk_ids=[1]
         )
-        self.gui.update_partial(result)
+        self.formatter.partial_update(result)
 
         # Get tags at the start of the text
         tags = self.text_widget.tag_names("1.0")
@@ -321,7 +326,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
             status='preliminary',
             chunk_ids=[]
         )
-        self.gui.update_partial(result)
+        self.formatter.partial_update(result)
 
         content = self.get_widget_content()
         self.assertEqual(content, "")
@@ -332,22 +337,26 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
     """
     Tests for automatic paragraph breaks based on audio timing pauses.
 
-    Tests the feature where GuiWindow automatically inserts paragraph breaks
-    when there's a pause >= PARAGRAPH_PAUSE_THRESHOLD (2.5s) between a finalized
+    Tests the feature where TextFormatter automatically inserts paragraph breaks
+    when there's a pause >= PARAGRAPH_PAUSE_THRESHOLD (2.0s) between a finalized
     segment's end and the next preliminary segment's start.
     """
 
     def setUp(self) -> None:
-        """Set up GUI window for testing."""
+        """Set up TextFormatter + TextDisplayWidget for testing."""
         try:
             # Create minimal config and ApplicationState for testing
             test_config = {'audio': {}}  # Minimal config needed by ApplicationState
             test_app_state = ApplicationState(config=test_config)
             self.app_window = ApplicationWindow(test_app_state, test_config)
             self.root = self.app_window.get_root()
-            self.gui = self.app_window.get_gui_window()
+
+            # Get MVC components from ApplicationWindow
+            self.formatter = self.app_window.get_formatter()
+            self.display = self.app_window.get_display()
+            self.text_widget = self.display.text_widget  # Access internal widget for test assertions
+
             self.root.withdraw()
-            self.text_widget = self.gui.text_widget  # Access internal widget for test assertions
         except Exception as e:
             self.skipTest(f"Could not initialize tkinter GUI: {e}")
 
@@ -381,11 +390,11 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
             status='final',
             chunk_ids=[1, 2]
         )
-        self.gui.finalize_text(final_result)
+        self.formatter.finalization(final_result)
 
         # Verify initial state
-        self.assertEqual(self.gui.finalized_text, "hello world")
-        self.assertEqual(self.gui.last_finalized_end_time, 1.0)
+        self.assertEqual(self.formatter.finalized_text, "hello world")
+        self.assertEqual(self.formatter.last_finalized_end_time, 1.0)
 
         # Preliminary after 3-second pause
         prelim_result = RecognitionResult(
@@ -395,15 +404,15 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
             status='preliminary',
             chunk_ids=[3]
         )
-        self.gui.update_partial(prelim_result)
+        self.formatter.partial_update(prelim_result)
 
-        # Paragraph break should be inserted
-        self.assertTrue(self.gui.finalized_text.endswith("\n\n"))
-        self.assertEqual(self.gui.finalized_text, "hello world\n\n")
+        # Paragraph break should be inserted (single newline)
+        self.assertTrue(self.formatter.finalized_text.endswith("\n"))
+        self.assertEqual(self.formatter.finalized_text, "hello world\n")
 
         # Widget should show the paragraph break
         content = self.get_widget_content()
-        self.assertIn("\n\n", content)
+        self.assertIn("\n", content)
         self.assertIn("how", content)
 
     def test_short_pause_no_paragraph_break(self) -> None:
@@ -424,7 +433,7 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
             status='final',
             chunk_ids=[1]
         )
-        self.gui.finalize_text(final_result)
+        self.formatter.finalization(final_result)
 
         # Preliminary after 1-second pause (too short)
         prelim_result = RecognitionResult(
@@ -434,15 +443,15 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
             status='preliminary',
             chunk_ids=[2]
         )
-        self.gui.update_partial(prelim_result)
+        self.formatter.partial_update(prelim_result)
 
         # No paragraph break should be inserted
-        self.assertFalse(self.gui.finalized_text.endswith("\n\n"))
-        self.assertEqual(self.gui.finalized_text, "hello")
+        self.assertFalse(self.formatter.finalized_text.endswith("\n"))
+        self.assertEqual(self.formatter.finalized_text, "hello")
 
         # Widget should show text without paragraph break
         content = self.get_widget_content()
-        self.assertNotIn("\n\n", content)
+        self.assertNotIn("\n", content)
         self.assertIn("hello", content)
         self.assertIn("world", content)
 
@@ -464,7 +473,7 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
             status='final',
             chunk_ids=[1]
         )
-        self.gui.finalize_text(final_result)
+        self.formatter.finalization(final_result)
 
         # First preliminary after pause (inserts break)
         prelim1 = RecognitionResult(
@@ -474,10 +483,10 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
             status='preliminary',
             chunk_ids=[2]
         )
-        self.gui.update_partial(prelim1)
+        self.formatter.partial_update(prelim1)
 
         # Verify paragraph break inserted
-        self.assertEqual(self.gui.finalized_text, "hello\n\n")
+        self.assertEqual(self.formatter.finalized_text, "hello\n")
 
         # Second preliminary after same pause (should NOT insert duplicate)
         prelim2 = RecognitionResult(
@@ -487,11 +496,11 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
             status='preliminary',
             chunk_ids=[3]
         )
-        self.gui.update_partial(prelim2)
+        self.formatter.partial_update(prelim2)
 
         # Should still have only one paragraph break
-        self.assertEqual(self.gui.finalized_text, "hello\n\n")
-        self.assertEqual(self.gui.finalized_text.count("\n\n"), 1)
+        self.assertEqual(self.formatter.finalized_text, "hello\n")
+        self.assertEqual(self.formatter.finalized_text.count("\n"), 1)
 
         # Widget should show both preliminaries without duplicate break
         content = self.get_widget_content()
@@ -508,8 +517,8 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
         - Expected: NO paragraph break (check skipped)
         """
         # Verify initial state
-        self.assertEqual(self.gui.last_finalized_end_time, 0.0)
-        self.assertEqual(self.gui.finalized_text, "")
+        self.assertEqual(self.formatter.last_finalized_end_time, 0.0)
+        self.assertEqual(self.formatter.finalized_text, "")
 
         # Preliminary without any prior finalization
         prelim_result = RecognitionResult(
@@ -519,15 +528,15 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
             status='preliminary',
             chunk_ids=[1]
         )
-        self.gui.update_partial(prelim_result)
+        self.formatter.partial_update(prelim_result)
 
         # No paragraph break should be inserted
-        self.assertEqual(self.gui.finalized_text, "")
+        self.assertEqual(self.formatter.finalized_text, "")
 
         # Widget should just show the preliminary text
         content = self.get_widget_content()
         self.assertEqual(content, "hello")
-        self.assertNotIn("\n\n", content)
+        self.assertNotIn("\n", content)
 
     def test_multiple_pauses_multiple_breaks(self) -> None:
         """
@@ -548,8 +557,8 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
             status='final',
             chunk_ids=[1]
         )
-        self.gui.finalize_text(final1)
-        self.assertEqual(self.gui.finalized_text, "one")
+        self.formatter.finalization(final1)
+        self.assertEqual(self.formatter.finalized_text, "one")
 
         # First pause - preliminary triggers first break
         prelim1 = RecognitionResult(
@@ -559,8 +568,8 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
             status='preliminary',
             chunk_ids=[2]
         )
-        self.gui.update_partial(prelim1)
-        self.assertEqual(self.gui.finalized_text, "one\n\n")
+        self.formatter.partial_update(prelim1)
+        self.assertEqual(self.formatter.finalized_text, "one\n")
 
         # Second finalization (includes "two" from preliminary)
         final2 = RecognitionResult(
@@ -570,10 +579,10 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
             status='final',
             chunk_ids=[2, 3]
         )
-        self.gui.finalize_text(final2)
-        # finalized_text should be "one\n\n" + " " + "two three"
-        self.assertEqual(self.gui.finalized_text, "one\n\n two three")
-        self.assertEqual(self.gui.last_finalized_end_time, 7.0)
+        self.formatter.finalization(final2)
+        # finalized_text should be "one\n" + " " + "two three"
+        self.assertEqual(self.formatter.finalized_text, "one\n two three")
+        self.assertEqual(self.formatter.last_finalized_end_time, 7.0)
 
         # Second pause - preliminary triggers second break
         prelim2 = RecognitionResult(
@@ -583,11 +592,11 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
             status='preliminary',
             chunk_ids=[4]
         )
-        self.gui.update_partial(prelim2)
+        self.formatter.partial_update(prelim2)
 
         # Should have two paragraph breaks now
-        self.assertTrue(self.gui.finalized_text.endswith("\n\n"))
-        self.assertEqual(self.gui.finalized_text, "one\n\n two three\n\n")
+        self.assertTrue(self.formatter.finalized_text.endswith("\n"))
+        self.assertEqual(self.formatter.finalized_text, "one\n two three\n")
 
         # Widget should show all text with both breaks
         content = self.get_widget_content()
@@ -605,8 +614,8 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
         - Expected: No crash, no paragraph break (guard: self.finalized_text and ...)
         """
         # Artificially set last_finalized_end_time without finalized text (edge case)
-        self.gui.last_finalized_end_time = 1.0
-        self.assertEqual(self.gui.finalized_text, "")
+        self.formatter.last_finalized_end_time = 1.0
+        self.assertEqual(self.formatter.finalized_text, "")
 
         # Preliminary with pause
         prelim_result = RecognitionResult(
@@ -618,10 +627,10 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
         )
 
         # Should not crash
-        self.gui.update_partial(prelim_result)
+        self.formatter.partial_update(prelim_result)
 
         # No paragraph break inserted (empty finalized_text guard)
-        self.assertEqual(self.gui.finalized_text, "")
+        self.assertEqual(self.formatter.finalized_text, "")
 
         # Widget should show preliminary text only
         content = self.get_widget_content()

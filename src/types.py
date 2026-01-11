@@ -65,3 +65,25 @@ class RecognitionResult:
     token_confidences: list[float] = field(default_factory=list)
     audio_rms: float = 0.0
     confidence_variance: float = 0.0
+
+
+@dataclass
+class DisplayInstructions:
+    """Pure data DTO - separates WHAT to display from HOW to display it.
+
+    Carries formatting decisions from TextFormatter to TextDisplayWidget.
+    TextFormatter calculates these instructions based on recognition results.
+    TextDisplayWidget renders these instructions to tkinter GUI.
+
+    Attributes:
+        action: Type of display operation to perform
+        text_to_append: Text to append for partial updates (pre-formatted with spacing)
+        finalized_text: Complete finalized text buffer (for finalize/rerender operations)
+        preliminary_segments: Remaining preliminary results to display (for rerender operations)
+        paragraph_break_inserted: Whether a paragraph break was just inserted
+    """
+    action: Literal['update_partial', 'finalize', 'rerender_all']
+    text_to_append: str = ""
+    finalized_text: str = ""
+    preliminary_segments: list['RecognitionResult'] = field(default_factory=list)
+    paragraph_break_inserted: bool = False

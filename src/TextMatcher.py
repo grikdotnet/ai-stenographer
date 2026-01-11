@@ -4,12 +4,12 @@ import threading
 import logging
 from typing import Optional, TYPE_CHECKING
 from .TextNormalizer import TextNormalizer
-from .GuiWindow import GuiWindow
 from .types import RecognitionResult
 from dataclasses import replace
 
 if TYPE_CHECKING:
     from src.ApplicationState import ApplicationState
+    from src.gui.TextFormatter import TextFormatter
 
 
 def _format_chunk_ids(chunk_ids: list) -> str:
@@ -19,17 +19,16 @@ def _format_chunk_ids(chunk_ids: list) -> str:
 class TextMatcher:
     """Matches overlapping speech recognition results from sliding windows.
 
-    TextMatcher processes sequential speech recognition results that may contain
-    overlapping words due to sliding window recognition. Routes preliminary results
-    (word-level VAD) directly to GUI, and finalized results (sliding windows) through
+    TextMatcher processes sequential speech recognition results with
+    overlapping words from sliding window recognition. Routes preliminary results
+    to formatter, and finalized results (sliding windows) through
     overlap resolution before displaying.
 
     Observer Pattern: Subscribes to ApplicationState for shutdown events.
-    Components can be stopped via observer notification.
 
     Args:
         text_queue: Queue to read recognition results from
-        gui_window: GUI window instance with update_partial() and finalize_text() methods
+        formatter: TextFormatter instance (controller) for formatting logic
         text_normalizer: Optional text normalizer for overlap detection
         time_threshold: Time threshold for duplicate detection (finalized only)
         app_state: ApplicationState for observer pattern (REQUIRED)
@@ -37,14 +36,14 @@ class TextMatcher:
     """
 
     def __init__(self, text_queue: queue.Queue,
-                 gui_window: GuiWindow,
+                 formatter: 'TextFormatter',
                  text_normalizer: Optional[TextNormalizer] = None,
                  time_threshold: float = 0.6,
                  app_state: 'ApplicationState' = None,
                  verbose: bool = False
                  ) -> None:
         self.text_queue: queue.Queue = text_queue
-        self.gui_window: GuiWindow = gui_window
+        self.formatter: 'TextFormatter' = formatter
         self.is_running: bool = False
         self.thread: Optional[threading.Thread] = None
         self.verbose: bool = verbose
@@ -143,15 +142,15 @@ class TextMatcher:
         """Process a single text segment using appropriate path.
 
         Routes based on status:
-        - 'preliminary': Pass through to GUI directly
-        - 'final': Overlap resolution, then to GUI
+        - 'preliminary': Pass through to formatter directly
+        - 'final': Overlap resolution, then to formatter
         - 'flush': Trigger finalize_pending() to flush buffered text
 
         Args:
             result: RecognitionResult with text, timing, and chunk_ids
         """
         if result.status == 'preliminary':
-            self.gui_window.update_partial(result)
+            self.formatter.partial_update(result)
         elif result.status == 'final':
             self.process_finalized(result)
         elif result.status == 'flush':
@@ -196,22 +195,22 @@ class TextMatcher:
                 # Resolve overlap between windows
                 finalized_text, remaining_window = self.resolve_overlap(window1, window2)
 
-                # Send finalized text to GUI - create RecognitionResult with resolved text from previous window
+                # Send finalized text with resolved text from previous window to formatter
                 if finalized_text.strip():
                     if self.verbose:
-                        logging.debug(f"  finalize_text('{finalized_text}') chunk_ids={_format_chunk_ids(self.previous_result.chunk_ids)}")
+                        logging.debug(f"  finalization('{finalized_text}') chunk_ids={_format_chunk_ids(self.previous_result.chunk_ids)}")
 
                     finalized_result = replace(self.previous_result,text=finalized_text)
-                    self.gui_window.finalize_text(finalized_result)
+                    self.formatter.finalization(finalized_result)
 
                 self.previous_result = replace(result,text=remaining_window[0])
                 
             except Exception:
                 # No overlap found. This is a poor recognition result, just show the previous result as is.
                 if self.verbose:
-                    logging.debug(f"  no overlap, finalize_text('{self.previous_result.text}')")
+                    logging.debug(f"  no overlap, finalization('{self.previous_result.text}')")
 
-                self.gui_window.finalize_text(self.previous_result)
+                self.formatter.finalization(self.previous_result)
                 self.previous_result = result
 
         else:
@@ -253,7 +252,7 @@ class TextMatcher:
                 logging.debug(f"TextMatcher.finalize_pending() previous finalized text: '{self.previous_result.text}'")
 
             # Finalize the pending result directly
-            self.gui_window.finalize_text(self.previous_result)
+            self.formatter.finalization(self.previous_result)
             self.previous_result = None
 
     def process_flush(self, result: RecognitionResult) -> None:
