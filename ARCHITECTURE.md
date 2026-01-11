@@ -169,7 +169,7 @@ Microphone Input (16kHz, mono)
         │
         ↓
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  TIER 4: Text Processing + Display                                       │
+│  TIER 4: Text Processing + Display (MVC Architecture)                   │
 │  Thread: TextMatcher (daemon)                                            │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  TextMatcher.process()                                                   │
@@ -177,9 +177,11 @@ Microphone Input (16kHz, mono)
 │    ├─→ Routes based on status field:                                    │
 │    │                                                                      │
 │    ├─ PRELIMINARY PATH (silence-bounded segments with context):         │
-│    │   └─→ process_preliminary()                                        │
-│    │       └─→ gui_window.update_partial(text)  [direct, no overlap]   │
-│    │           └─→ root.after() → GUI main thread                       │
+│    │   └─→ process_text()                                               │
+│    │       └─→ formatter.partial_update(result)  [direct call]          │
+│    │           └─→ TextFormatter calculates DisplayInstructions          │
+│    │               └─→ display.apply_instructions(instructions)          │
+│    │                   └─→ Thread-safe: schedules on main thread        │
 │    │                                                                      │
 │    ├─ FINAL PATH (3s sliding windows):                                  │
 │    │   └─→ process_finalized()                                          │
@@ -187,24 +189,36 @@ Microphone Input (16kHz, mono)
 │    │       ├─→ resolve_overlap() - handles windowed text overlaps       │
 │    │       │     └─→ Uses TextNormalizer for fuzzy matching             │
 │    │       │     └─→ Finds longest common subsequence                   │
-│    │       ├─→ gui_window.finalize_text(finalized_part)                 │
-│    │       │     └─→ root.after() → GUI main thread                     │
-│    │       └─→ gui_window.update_partial(remaining_part)                │
-│    │           └─→ root.after() → GUI main thread                       │
+│    │       └─→ formatter.finalization(finalized_result)                 │
+│    │           └─→ TextFormatter calculates DisplayInstructions          │
+│    │               └─→ display.apply_instructions(instructions)          │
+│    │                   └─→ Thread-safe: schedules on main thread        │
 │    │                                                                      │
 │    └─ FLUSH PATH (end of speech segment):                               │
 │        └─→ process_flush()                                              │
-│            └─→ Finalize pending partial text                            │
+│            └─→ formatter.finalization(pending_result)                   │
 │                                                                           │
 │  TextMatcher.finalize_pending()                                          │
 │    └─→ Called by Pipeline.stop() to flush remaining partial text        │
+│        └─→ formatter.finalization(previous_result)                      │
 │                                                                           │
-│  GuiWindow (helper, no thread):                                          │
-│    ├─→ update_partial(text) - gray/italic (temporary)                   │
-│    └─→ finalize_text(text) - black/normal (permanent)                   │
+│  TextFormatter (controller, no thread):                                  │
+│    ├─→ partial_update(result) - calculates preliminary formatting       │
+│    │     └─→ _calculate_partial_update() → DisplayInstructions          │
+│    │         └─→ display.apply_instructions()                           │
+│    ├─→ finalization(result) - calculates final formatting               │
+│    │     └─→ _calculate_finalization() → DisplayInstructions            │
+│    │         └─→ display.apply_instructions() (if not duplicate)        │
+│    └─→ State: preliminary_results, finalized_chunk_ids, finalized_text  │
+│                                                                           │
+│  TextDisplayWidget (view, technical layer):                             │
+│    ├─→ apply_instructions(instructions) - thread-safe entry point       │
+│    │     └─→ Checks thread: main? direct call : root.after()            │
+│    │         └─→ _apply_instructions_safe() - renders to widget         │
+│    └─→ Handles GUI rendering + thread-safety internally                 │
 └──────────────────────────────────────────────────────────────────────────┘
         │
-        ├─ Direct GUI calls (no queues)
+        ├─ MVC Pattern: TextMatcher → TextFormatter → TextDisplayWidget
         ↓
    Tkinter GUI Window (main thread)
 ```
@@ -221,8 +235,9 @@ Microphone Input (16kHz, mono)
 | **SoundPreProcessor** | Daemon | VAD processing, RMS normalization, speech buffering | `chunk_queue.get(timeout=0.1)`, `speech_queue.put()` |
 | **AdaptiveWindower** | **NO THREAD** | Aggregates segments into windows | Called synchronously by SoundPreProcessor |
 | **Recognizer** | Daemon | Runs STT model on audio segments | `speech_queue.get(timeout=0.1)`, model inference |
-| **TextMatcher** | Daemon | Routes preliminary/finalized, overlap resolution, GUI calls | `text_queue.get(timeout=0.1)`, GUI updates via `root.after()` |
-| **GuiWindow** | **NO THREAD** | Helper for GUI updates (update_partial, finalize_text) | Called by TextMatcher |
+| **TextMatcher** | Daemon | Routes preliminary/finalized, overlap resolution | `text_queue.get(timeout=0.1)`, calls formatter methods |
+| **TextFormatter** | **NO THREAD** | Formatting logic (controller) | Called by TextMatcher, triggers display updates |
+| **TextDisplayWidget** | **NO THREAD** | GUI rendering (view) + thread-safety | Called by TextFormatter, schedules on main thread |
 | **ApplicationState** | **NO THREAD** | Shared state manager (dependency injection) | Thread-safe mutations via `threading.Lock` |
 | **PauseController** | **NO THREAD** | MVC controller (called by ControlPanel) | Updates ApplicationState only |
 | **ControlPanel** | **NO THREAD** | GUI widget (runs on main thread) | Observes ApplicationState, delegates to controller |
@@ -277,11 +292,12 @@ Main Thread        AudioSource Thread    SoundPreProcessor Thread    Recognizer 
     │                         │  ├─→ get result                            │
     │                         │  ├─→ route by type                          │
     │                         │  ├─→ preliminary:                           │
-    │                         │  │   update_partial()─────────────────────→│ root.after()
+    │                         │  │   formatter.partial_update()             │
+    │                         │  │     └─→ display.apply_instructions()────→│ root.after()
     │                         │  └─→ finalized:                             │
     │                         │      ├─resolve_overlap                      │
-    │                         │      ├─finalize_text()─────────────────────→│ root.after()
-    │                         │      └─update_partial()────────────────────→│ root.after()
+    │                         │      └─formatter.finalization()              │
+    │                         │          └─→ display.apply_instructions()──→│ root.after()
     │                         │                                             │
     │                         │      ApplicationState.set_state('paused')   │
     │                         │   ─────────────────────────────────────────→│
@@ -402,13 +418,25 @@ AudioSegment (preliminary)
                 ↓ text_queue
                 │
         TextMatcher (routes by status)
-          ├─→ Preliminary: gui_window.update_partial()
-          ├─→ Final: resolve_overlap() → gui_window.finalize_text() + update_partial()
-          └─→ Flush: finalize pending partial text
+          ├─→ Preliminary: formatter.partial_update(result)
+          ├─→ Final: resolve_overlap() → formatter.finalization(result)
+          └─→ Flush: formatter.finalization(pending_result)
                 │
-                ↓ root.after() → GUI main thread
+                ↓ TextFormatter (controller)
                 │
-        GUI Display (GuiWindow)
+        TextFormatter (calculates DisplayInstructions)
+          ├─→ _calculate_partial_update() → DisplayInstructions
+          ├─→ _calculate_finalization() → DisplayInstructions (or None if duplicate)
+          └─→ display.apply_instructions(instructions)
+                │
+                ↓ TextDisplayWidget (view, thread-safe)
+                │
+        TextDisplayWidget (renders to GUI)
+          ├─→ Checks thread: main? direct call : root.after()
+          └─→ _apply_instructions_safe() → tkinter widget
+                │
+                ↓
+        GUI Display (tkinter ScrolledText)
           └─→ Final text: black, normal (permanent)
           └─→ Partial text: gray, italic (temporary)
 ```
@@ -820,10 +848,10 @@ text_queue.put(result)
 
 ### 5. TextMatcher
 
-**Responsibility:** Handle overlapping text from sliding windows
+**Responsibility:** Handle overlapping text from sliding windows, route to formatter
 
 **Key Methods:**
-- `process_text(text_data)` - Process single recognition result
+- `process_text(result)` - Process single recognition result
 - `resolve_overlap(window1, window2)` - Find common subsequence
 - `finalize_pending()` - Flush remaining partial text
 
@@ -845,20 +873,58 @@ Output:
 - Skips duplicates from overlapping windows
 
 **Input:** RecognitionResults from `text_queue`
-**Output:** Direct GUI calls via `gui_window.update_partial()` and `gui_window.finalize_text()`
+**Output:** Calls `formatter.partial_update()` and `formatter.finalization()`
 
-### 6. GuiWindow
+### 6. TextFormatter (MVC Controller)
 
-**Responsibility:** Manage two-stage text display in GUI
+**File:** `src/gui/TextFormatter.py`
+
+**Responsibility:** Calculate text formatting logic (NO GUI knowledge, NO tkinter)
 
 **Key Methods:**
-- `update_partial(text)` - Display temporary gray/italic text
-- `finalize_text(text)` - Convert to permanent black/normal text
-- Uses `root.after()` to marshal calls to main GUI thread
+- `partial_update(result)` - Calculate preliminary formatting, trigger display
+- `finalization(result)` - Calculate final formatting, trigger display (if not duplicate)
+- `_calculate_partial_update(result)` - Returns DisplayInstructions
+- `_calculate_finalization(result)` - Returns DisplayInstructions or None (duplicate)
+
+**State Management:**
+- `preliminary_results: List[RecognitionResult]` - Tracks all preliminary segments
+- `finalized_chunk_ids: Set[int]` - Marks finalized chunks
+- `finalized_text: str` - Buffer of finalized text
+- `last_finalized_text: str` - For duplicate detection
+- `last_finalized_end_time: float` - For pause detection
+
+**Formatting Logic:**
+- Space insertion between segments
+- Paragraph break detection (2.0s pause threshold)
+- Chunk-ID filtering for partial finalization
+- Duplicate prevention
+
+**Output:** Calls `display.apply_instructions(instructions)` to trigger GUI updates
+
+### 7. TextDisplayWidget (MVC View)
+
+**File:** `src/gui/TextDisplayWidget.py`
+
+**Responsibility:** Render DisplayInstructions to tkinter widget + thread-safety
+
+**Key Methods:**
+- `apply_instructions(instructions)` - Thread-safe entry point
+- `_apply_instructions_safe(instructions)` - Actual rendering (main thread)
+- `_rerender_all(finalized, preliminary)` - Full widget refresh
+- `_is_main_thread()` - Thread detection
+
+**Thread-Safety:**
+- Detects calling thread
+- Schedules on main thread via `root.after()` if needed
+- Direct call if already on main thread
 
 **Display Styles:**
 - Final text: black, normal (permanent)
 - Partial text: gray, italic (temporary, gets replaced)
+
+**Input:** DisplayInstructions from TextFormatter
+**Output:** tkinter ScrolledText widget updates
 
 ---
 
@@ -1087,8 +1153,9 @@ Each component has one clear responsibility:
 - **SoundPreProcessor:** VAD, RMS normalization, speech buffering
 - **AdaptiveWindower:** Window aggregation
 - **Recognizer:** Speech recognition
-- **TextMatcher:** Text processing and display routing
-- **GuiWindow:** GUI updates
+- **TextMatcher:** Text processing and overlap resolution (routes to formatter)
+- **TextFormatter:** Formatting logic (MVC controller, NO GUI knowledge)
+- **TextDisplayWidget:** GUI rendering + thread-safety (MVC view)
 
 ### 2. Open/Closed Principle (OCP)
 
@@ -1147,6 +1214,23 @@ User action → View → Controller → Model → Observers → Components
 ```
 
 **Key Principle:** Controller NEVER manipulates components directly
+
+### 8. MVC Pattern for Text Display
+
+Separation of formatting logic from GUI rendering:
+- **Model**: RecognitionResult (data from recognizer)
+- **Controller**: TextFormatter (formatting logic, NO tkinter)
+- **View**: TextDisplayWidget (GUI rendering + thread-safety)
+
+**Flow:**
+```
+TextMatcher → TextFormatter → TextDisplayWidget → tkinter
+```
+
+**Key Principles:**
+- **TextFormatter** has NO GUI knowledge (pure logic)
+- **TextDisplayWidget** handles ALL technical concerns (GUI + threading)
+- **TextMatcher** has NO GUI knowledge (only calls formatter)
 
 ---
 

@@ -94,9 +94,10 @@ The system uses a **pipeline architecture** with threaded components communicati
 2. **SoundPreProcessor** → reads `chunk_queue` → RMS normalization + VAD + buffering → preliminary `AudioSegment` → `speech_queue`
 3. **SoundPreProcessor** → calls **AdaptiveWindower** (sync) → finalized `AudioSegment` → `speech_queue`
 4. **Recognizer** → reads `speech_queue` → processes AudioSegments → `RecognitionResult` → `text_queue`
-5. **TextMatcher** → filters/processes text → GUI display (via `GuiWindow`)
+5. **TextMatcher** → filters/processes text → routes to `TextFormatter` (controller)
+6. **TextFormatter** → calculates formatting logic → triggers `TextDisplayWidget` (view)
 
-**Key Components:** `AudioSource`, `SoundPreProcessor`, `VoiceActivityDetector`, `AdaptiveWindower`, `Recognizer`, `TextMatcher`, `GuiWindow`
+**Key Components:** `AudioSource`, `SoundPreProcessor`, `VoiceActivityDetector`, `AdaptiveWindower`, `Recognizer`, `TextMatcher`, `TextFormatter`, `TextDisplayWidget`
 
 **Data Types:** `AudioSegment` (preliminary/finalized), `RecognitionResult` (with `status` field)
 
@@ -147,7 +148,7 @@ Located in `config/stt_config.json` in section "vad".
 - **`tests/test_vad.py`**: Unit tests for VoiceActivityDetector
 - **`tests/test_sound_preprocessor.py`**: Comprehensive tests for SoundPreProcessor (VAD integration, RMS normalization, speech buffering, intelligent breakpoint splitting)
 - **`tests/test_adaptive_windower.py`**: Tests for AdaptiveWindower (window aggregation with chunk_ids)
-- **`tests/test_gui_window.py`**: Tests for GuiWindow (preliminary/final text display)
+- **`tests/test_gui_window.py`**: Tests for TextFormatter + TextDisplayWidget (MVC architecture, preliminary/final text display)
 
 **Model Download Tests:**
 - **`tests/test_model_manager.py`**: 8 tests for ModelManager (model detection and download)
@@ -169,8 +170,9 @@ Located in `config/stt_config.json` in section "vad".
 - **`src/VoiceActivityDetector.py`**: Silero VAD for speech detection (used by SoundPreProcessor)
 - **`src/AdaptiveWindower.py`**: Window aggregation (called synchronously by SoundPreProcessor)
 - **`src/Recognizer.py`**: Parakeet STT inference with context-aware recognition
-- **`src/TextMatcher.py`**: Text overlap resolution and routing (preliminary/final)
-- **`src/GuiWindow.py`**: Two-stage text display (preliminary/final)
+- **`src/TextMatcher.py`**: Text overlap resolution and routing (routes to formatter)
+- **`src/gui/TextFormatter.py`**: Formatting logic controller (NO tkinter, MVC pattern)
+- **`src/gui/TextDisplayWidget.py`**: GUI view + thread-safety (MVC pattern)
 
 **Data Types:**
-- **`src/types.py`**: AudioSegment, RecognitionResult dataclasses
+- **`src/types.py`**: AudioSegment, RecognitionResult, DisplayInstructions dataclasses
