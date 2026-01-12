@@ -43,7 +43,7 @@ Always activate venv when running python with `source venv/Scripts/activate`.
 python main.py
 ```
 
-Starts the real-time STT pipeline.
+Starts the application.
 
 ### Verbose Mode
 
@@ -51,26 +51,15 @@ Starts the real-time STT pipeline.
 python main.py -v
 ```
 
-Runs the pipeline with detailed logging for debugging text duplication issues. Shows:
+Runs with logging for debugging.
 
 ### File Input (Testing Mode)
 
 ```bash
-python main.py --input-file=path/to/audio.wav -v
-```
-
-Uses a WAV file as input instead of microphone for reproducible testing:
-
-- `--input-file=path` - Path to WAV file (replaces microphone input)
-- Audio is automatically resampled to 16kHz if needed
-- Stereo files are converted to mono (first channel)
-- Chunks are fed to pipeline at real-time rate (32ms per chunk)
-- Useful for testing timestamp accuracy and model behavior
-
-**Example with test audio:**
-```bash
 python main.py --input-file=tests/fixtures/en.wav -v
 ```
+Uses a WAV file as input instead of microphone for reproducible testing.
+- `--input-file=path` - Path to WAV file (replaces microphone input)
 
 ### Testing
 
@@ -84,7 +73,7 @@ Runs all tests in the tests directory.
 
 The system uses a **pipeline architecture** with threaded components communicating via queues.
 
-📖 **See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation** including diagrams, threading model, data flow, and design principles.
+📖 **See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation**.
 
 ### Quick Reference
 
@@ -99,80 +88,9 @@ The system uses a **pipeline architecture** with threaded components communicati
 
 **Key Components:** `AudioSource`, `SoundPreProcessor`, `VoiceActivityDetector`, `AdaptiveWindower`, `Recognizer`, `TextMatcher`, `TextFormatter`, `TextDisplayWidget`
 
-**Data Types:** `AudioSegment` (preliminary/finalized), `RecognitionResult` (with `status` field)
-
-## Technical Specifications
-
-### Audio Parameters
-
-- Sample rate: 16000 Hz
-- Channels: 1 (mono)
-- Frame duration: 32ms (512 samples) - matches Silero VAD requirements
-- All audio arrays are numpy float32, range -1.0 to 1.0
-
-### VAD Configuration
-
-Located in `config/stt_config.json` in section "vad".
-
-**VAD Parameters Explained:**
-
-- `frame_duration_ms: 32` - Silero VAD's optimal frame size
-- `threshold: 0.5` - Speech probability threshold (0.5 = 50% confidence)
-- `silence_energy_threshold: 1.5` - Cumulative silence probability threshold for segment finalization
-- `max_speech_duration_ms: 3000` - Maximum segment duration; triggers intelligent breakpoint splitting at silence boundaries
-
-**Windowing Parameters:**
-
-- `window_duration` - duration of aggregation windows for recognition (3.0 seconds creates 3-second windows with automatic overlap based on trailing segment duration, MIN_OVERLAP_DURATION = 1.0s)
-
-**Design Rationale:**
-
-1. **Silence Energy**: Cumulative probability scoring ensures robust silence detection
-2. **Recognition Context**: left and right context is sound before and after the speech data, required by STT models for better speech recognition
-4. **Intelligent Splitting**: Splitting the speech by searching backward for natural breakpoints to avoid mid-word cuts
-
-### Model Requirements
-
-**Parakeet STT Model:**
-- Model: nemo-parakeet-tdt-0.6b-v3 (ONNX format)
-- Location: `./models/parakeet/`
-
-**Silero VAD Model:**
-- Model: silero_vad.onnx (quantized to f16)
-- Location: `./models/silero_vad/`
-
-### Testing Infrastructure
-
-**Core Pipeline Tests:**
-- **`tests/conftest.py`**: Pytest fixtures for test data (downloads Silero's en.wav once)
-- **`tests/test_vad.py`**: Unit tests for VoiceActivityDetector
-- **`tests/test_sound_preprocessor.py`**: Comprehensive tests for SoundPreProcessor (VAD integration, RMS normalization, speech buffering, intelligent breakpoint splitting)
-- **`tests/test_adaptive_windower.py`**: Tests for AdaptiveWindower (window aggregation with chunk_ids)
-- **`tests/test_gui_window.py`**: Tests for TextFormatter + TextDisplayWidget (MVC architecture, preliminary/final text display)
-
-**Model Download Tests:**
-- **`tests/test_model_manager.py`**: 8 tests for ModelManager (model detection and download)
-- **`tests/test_gui_factory.py`**: 4 tests for GuiFactory (shared GUI infrastructure)
-- **`tests/test_model_download_dialog.py`**: 6 tests for ModelDownloadDialog (GUI download flow)
-- **`tests/test_main_integration.py`**: 3 integration tests for main.py startup flow
+**Data Types:** `AudioSegment`, `RecognitionResult`
 
 **Test Principles:**
 - **TDD approach**: Tests written before implementation
 - **Real audio**: Tests use real speech samples, not synthetic audio
 - **Type safety**: All tests use AudioSegment and RecognitionResult dataclasses
-
-## Key Components
-
-**Core Pipeline:**
-- **`src/pipeline.py`**: Main STTPipeline orchestrator
-- **`src/AudioSource.py`**: Microphone audio capture (simplified, no VAD)
-- **`src/SoundPreProcessor.py`**: VAD processing, RMS normalization, speech buffering
-- **`src/VoiceActivityDetector.py`**: Silero VAD for speech detection (used by SoundPreProcessor)
-- **`src/AdaptiveWindower.py`**: Window aggregation (called synchronously by SoundPreProcessor)
-- **`src/Recognizer.py`**: Parakeet STT inference with context-aware recognition
-- **`src/TextMatcher.py`**: Text overlap resolution and routing (routes to formatter)
-- **`src/gui/TextFormatter.py`**: Formatting logic controller (NO tkinter, MVC pattern)
-- **`src/gui/TextDisplayWidget.py`**: GUI view + thread-safety (MVC pattern)
-
-**Data Types:**
-- **`src/types.py`**: AudioSegment, RecognitionResult, DisplayInstructions dataclasses
