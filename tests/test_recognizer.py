@@ -466,11 +466,11 @@ class TestTimestampedRecognition:
             app_state=Mock()
         )
 
-        # Test case: tokens with various timestamps and confidence scores
+        # Test case: tokens with various timestamps (no confidence data available)
         text = "yeah hello world mm-hmm"
         tokens = [" yeah", " hello", " world", " mm", "-", "hmm"]
         timestamps = [0.1, 0.8, 1.0, 1.7, 1.75, 1.8]  # "yeah" at 0.1s outside tolerance
-        confidences = [0.9, 0.95, 0.92, 0.85, 0.8, 0.88]
+        confidences = []  # No confidence data available
         data_start = 0.5
         data_end = 1.5
 
@@ -484,9 +484,9 @@ class TestTimestampedRecognition:
         assert "yeah" not in filtered_text
         assert "mm-hmm" not in filtered_text
 
-        # Should include corresponding confidence scores
-        assert len(filtered_confidences) == 2
-        assert filtered_confidences == [0.95, 0.92]
+        # No confidence scores available
+        assert len(filtered_confidences) == 0
+        assert filtered_confidences == []
 
     def test_filter_tokens_empty_tokens(self, timestamped_mock_model):
         """_filter_tokens_with_confidence should handle empty token lists."""
@@ -521,11 +521,8 @@ class TestConfidenceMetrics:
 
     @pytest.fixture
     def mock_model_with_confidence(self):
-        """Mock model configured for confidence extraction."""
+        """Mock model for recognition tests."""
         model = MagicMock()
-        # Configure for ConfidenceExtractor compatibility
-        model.asr = MagicMock()
-        model.asr._decode = MagicMock()
         return model
 
     def test_recognition_result_has_audio_rms_field(self, mock_model_with_confidence):
@@ -620,8 +617,10 @@ class TestConfidenceMetrics:
         result = recognizer.recognize_window(segment)
 
         assert result is not None
-        # Variance should be >= 0.0 (may be 0 if confidence extraction fails gracefully)
-        assert result.confidence_variance >= 0.0
+        # Should be 0.0 (no confidence data available without ConfidenceExtractor)
+        assert result.confidence_variance == 0.0
+        assert result.confidence == 0.0
+        assert result.token_confidences == []
         assert isinstance(result.confidence_variance, float)
 
     def test_new_fields_with_context_filtering(self, mock_model_with_confidence):
@@ -702,8 +701,7 @@ class TestRecognizerObserverPattern:
     def test_recognizer_shutdown_state_stops_processing(self, mock_model, mock_app_state):
         """Test that Recognizer stops when receiving 'shutdown' state.
 
-        Logic: on_state_change(_, 'shutdown') should set is_running=False
-               and call unpatch on confidence_extractor.
+        Logic: on_state_change(_, 'shutdown') should set is_running=False.
         """
         recognizer = Recognizer(
             speech_queue=queue.Queue(),
@@ -712,14 +710,10 @@ class TestRecognizerObserverPattern:
             app_state=mock_app_state
         )
 
-        # Mock the unpatch method
-        recognizer.confidence_extractor.unpatch = Mock()
-
         recognizer.is_running = True
         recognizer.on_state_change('running', 'shutdown')
 
         assert recognizer.is_running == False
-        recognizer.confidence_extractor.unpatch.assert_called_once()
 
     def test_recognizer_stop_is_idempotent(self, mock_model, mock_app_state):
         """Test that calling stop() multiple times is safe.
@@ -733,13 +727,10 @@ class TestRecognizerObserverPattern:
             app_state=mock_app_state
         )
 
-        # Mock the unpatch method
-        recognizer.confidence_extractor.unpatch = Mock()
-
         recognizer.start()
         recognizer.stop()
         recognizer.stop()  # Second call should be safe
         recognizer.stop()  # Third call should be safe
 
-        # Should not raise errors, confidence_extractor.unpatch() called once
-        assert recognizer.confidence_extractor.unpatch.call_count == 1
+        # Should not raise errors
+        assert recognizer.is_running == False

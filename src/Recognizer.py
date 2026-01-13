@@ -5,7 +5,6 @@ import logging
 import numpy as np
 from typing import Any, Optional, TYPE_CHECKING
 from src.types import ChunkQueueItem, RecognitionResult
-from src.ConfidenceExtractor import ConfidenceExtractor
 
 if TYPE_CHECKING:
     from onnx_asr.adapters import TimestampedResultsAsrAdapter
@@ -51,10 +50,6 @@ class Recognizer:
         self.verbose: bool = verbose
         self.app_state: 'ApplicationState' = app_state
 
-        # Create single ConfidenceExtractor instance to reuse across all recognitions
-        # (avoids repeated patch/unpatch overhead and log spam)
-        self.confidence_extractor: ConfidenceExtractor = ConfidenceExtractor(self.model)
-
         # Register as component observer
         self.app_state.register_component_observer(self.on_state_change)
 
@@ -63,12 +58,11 @@ class Recognizer:
 
         Algorithm:
         1. Concatenate left_context + data + right_context for recognition
-        2. Setup confidence extractor (monkey-patch model)
-        3. Recognize with timestamps using TimestampedResultsAsrAdapter
-        4. Extract confidence scores from captured probabilities
-        5. Calculate data region boundaries in seconds
-        6. Filter tokens and confidences to only include those within data region
-        7. Return RecognitionResult with filtered text, original timing, and confidence
+        2. Recognize with timestamps using TimestampedResultsAsrAdapter
+        3. Calculate data region boundaries in seconds
+        4. Filter tokens to only include those within data region
+        5. Return RecognitionResult with filtered text and original timing
+           (confidence fields populated with defaults until new API integration)
 
         Maps AudioSegment.type to RecognitionResult.status:
         - 'preliminary' → 'preliminary'
@@ -99,12 +93,12 @@ class Recognizer:
         }
         status = status_map[window_data.type]
 
-        # Recognize with timestamps (using pre-patched confidence extractor)
+        # Recognize with timestamps
         result: TimestampedResult = self.model.recognize(full_audio)
         duration_with_context = len(full_audio) / self.sample_rate
 
-        # Get captured confidence scores from reused extractor
-        token_confidences = self.confidence_extractor.get_clear_confidences()
+        # Confidence extraction not yet implemented with new API
+        token_confidences = []
 
         # Calculate context boundaries in seconds
         data_start = len(window_data.left_context) / self.sample_rate
@@ -246,8 +240,7 @@ class Recognizer:
         """Stop the background processing thread and cleanup resources.
 
         Sets the running flag to False, causing the background thread
-        to exit its processing loop. Also unpatches the confidence extractor
-        to restore the model to its original state.
+        to exit its processing loop.
 
         This method is idempotent - safe to call multiple times.
         """
@@ -255,8 +248,6 @@ class Recognizer:
             return
 
         self.is_running = False
-        # Explicitly unpatch the model (single cleanup instead of per-segment GC)
-        self.confidence_extractor.unpatch()
 
     def on_state_change(self, old_state: str, new_state: str) -> None:
         """Handle application state changes.
