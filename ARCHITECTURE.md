@@ -381,86 +381,58 @@ class RecognitionResult:
 │  DATA TRANSFORMATION PIPELINE                                            │
 └─────────────────────────────────────────────────────────────────────────┘
 
-Raw Audio Frame (32ms) - AudioSource
-  └─→ np.ndarray: shape=(512,), dtype=float32, range=[-1.0, 1.0]
+Raw Audio Frame - AudioSource
   └─→ dict: {audio, timestamp, chunk_id}
         │
-        ↓ chunk_queue (raw audio)
+        ↓ chunk_queue
         │
-SoundPreProcessor Processing
-  ├─→ RMS Normalization (for VAD input)
-  ├─→ VAD Processing (Silero)
-  ├─→ Circular Context Buffer (20 chunks = 640ms)
-  │     ├─→ left_context: snapshot before speech starts
-  │     └─→ right_context: trailing silence extraction
-  ├─→ Consecutive Speech Logic (3 chunks to start)
-  └─→ Speech Buffering
+SoundPreProcessor
+  ├─→ RMS Normalization + VAD Processing
+  ├─→ Context Buffer (20 chunks = 640ms)
+  └─→ Speech Buffering (3-chunk confirmation)
         │
-        ↓ Segment Finalization (silence-bounded or max duration)
+        ↓ Segment Finalization
         │
 AudioSegment (preliminary)
-  └─→ type='preliminary'
-  └─→ data: np.ndarray (speech only, 64ms-3000ms)
-  └─→ left_context: np.ndarray (pre-speech audio)
-  └─→ right_context: np.ndarray (trailing silence)
-  └─→ start_time: 1.234
-  └─→ end_time: 1.456
-  └─→ chunk_ids: [42, 43, 44]  ← accumulated chunk IDs
+  └─→ type='preliminary', data + left_context + right_context
+  └─→ chunk_ids: [42, 43, 44]
         │
-        ├─→ speech_queue (instant path)
-        │
-        └─→ AdaptiveWindower.process_segment() (sync call)
+        ├─→ speech_queue (instant)
+        └─→ AdaptiveWindower.process_segment() (sync)
               │
-              ↓ Window Aggregation (3s windows, 1s step)
+              ↓ Window Aggregation (≥3s)
               │
         AudioSegment (finalized)
-          └─→ type='finalized'
-          └─→ data: np.ndarray (48000 samples = 3s @ 16kHz)
-          └─→ left_context: np.ndarray (empty for finalized)
-          └─→ right_context: np.ndarray (empty for finalized)
-          └─→ start_time: 1.000
-          └─→ end_time: 4.000
-          └─→ chunk_ids: [42, 43, 44, 45, 46, 47, ...]  ← merged IDs
+          └─→ type='finalized', data (3s window)
+          └─→ chunk_ids: [42, ..., 94] (merged)
                 │
-                ↓ speech_queue (quality path)
+                ↓ speech_queue
                 │
-        Recognizer (Context-Aware Recognition)
-          ├─→ Concatenate: left_context + data + right_context
-          ├─→ Recognize with timestamps (TimestampedResultsAsrAdapter)
-          └─→ Filter tokens by timestamp (exclude context)
+        Recognizer
+          ├─→ Concatenate contexts
+          ├─→ Recognize with timestamps
+          └─→ Filter tokens by timestamp
                 │
                 ↓
-        RecognitionResult (preliminary OR final OR flush)
-          └─→ text: "hello world" (context-filtered)
-          └─→ start_time: 1.234
-          └─→ end_time: 1.456
+        RecognitionResult
+          └─→ text: "hello world"
           └─→ status: 'preliminary' | 'final' | 'flush'
           └─→ chunk_ids: [42, 43, 44]
                 │
                 ↓ text_queue
                 │
-        TextMatcher (routes by status)
-          ├─→ Preliminary: formatter.partial_update(result)
-          ├─→ Final: resolve_overlap() → formatter.finalization(result)
-          └─→ Flush: formatter.finalization(pending_result)
+        TextMatcher
+          ├─→ Preliminary: publish_partial_update()
+          └─→ Final: resolve_overlap() → publish_finalization()
                 │
-                ↓ TextFormatter (controller)
+                ↓ RecognitionResultPublisher
                 │
-        TextFormatter (calculates DisplayInstructions)
-          ├─→ _calculate_partial_update() → DisplayInstructions
-          ├─→ _calculate_finalization() → DisplayInstructions (or None if duplicate)
-          └─→ display.apply_instructions(instructions)
-                │
-                ↓ TextDisplayWidget (view, thread-safe)
-                │
-        TextDisplayWidget (renders to GUI)
-          ├─→ Checks thread: main? direct call : root.after()
-          └─→ _apply_instructions_safe() → tkinter widget
+        TextFormatter (subscriber)
+          └─→ Calculate DisplayInstructions
                 │
                 ↓
-        GUI Display (tkinter ScrolledText)
-          └─→ Final text: black, normal (permanent)
-          └─→ Partial text: gray, italic (temporary)
+        TextDisplayWidget
+          └─→ Thread-safe render to tkinter
 ```
 
 ---
@@ -469,37 +441,19 @@ AudioSegment (preliminary)
 
 ### Hardware Acceleration Architecture
 
-The system uses a **Strategy Pattern** for hardware-specific optimizations:
+Uses **Strategy Pattern** for hardware-specific ONNX Runtime optimizations.
 
 **Components:**
-- **ExecutionProviderManager**: Detects GPU type and builds ONNX Runtime provider list
-- **SessionOptionsFactory**: Creates appropriate strategy based on GPU type
-- **SessionOptionsStrategy**: Configures ONNX Runtime session options per hardware
+- **ExecutionProviderManager**: DXGI-based GPU detection (discrete > integrated priority)
+- **SessionOptionsFactory**: Creates hardware-specific strategy
+- **SessionOptionsStrategy**: Configures session options per hardware type
 
-**GPU Detection (DXGI-based):**
-- Native DXGI API enumeration (IDXGIFactory::EnumAdapters) for ground-truth device_id mapping
-- Multi-GPU priority: discrete > integrated
-- Virtual GPU filtering (Microsoft Basic Render Driver, Remote Desktop adapters)
-- Cached results for performance
+**Hardware Configurations:**
+- **Integrated GPU** (UMA): Zero-copy shared memory, disable CPU arena
+- **Discrete GPU** (PCIe): Staging buffer with CPU arena
+- **CPU**: Multi-threaded execution (auto-detect cores)
 
-**Hardware-Specific Configurations:**
-
-| Hardware Type | Memory Architecture | Session Options |
-|---------------|---------------------|-----------------|
-| **Integrated GPU** | Shared RAM (UMA) | `enable_cpu_mem_arena=False` (zero-copy), threads=(1,1) |
-| **Discrete GPU** | Dedicated VRAM (PCIe) | `enable_cpu_mem_arena=True` (staging buffer), threads=(1,1) |
-| **CPU** | System RAM | `enable_cpu_mem_arena=True`, threads=(≤8,≤4) auto-detect |
-
-**Configuration Options (`config/stt_config.json`):**
-```json
-{
-  "recognition": {
-    "inference": "auto"  // "auto" | "directml" | "cpu"
-  }
-}
-```
-
-**Fallback Chain:** DirectML GPU → CPU
+**Configuration:** `recognition.inference = "auto" | "directml" | "cpu"` with DirectML GPU → CPU fallback
 
 ---
 
@@ -507,38 +461,15 @@ The system uses a **Strategy Pattern** for hardware-specific optimizations:
 
 **File:** `src/ApplicationState.py`
 
-**Responsibility:** Central state manager with observer pattern for pause/resume functionality
+**Responsibility:** Central state manager with observer pattern for pause/resume
 
-**State Machine:**
-```
-starting → running ⟷ paused → shutdown
-```
+**State Machine:** `starting → running ⟷ paused → shutdown`
 
 **Observer Types:**
-1. **Component observers:** Receive `(old_state, new_state)`, called directly
-   - AudioSource: stop/close stream on pause, start fresh stream on resume
-   - SoundPreProcessor: flush pending segments on pause
+- **Component observers**: Called directly (AudioSource, SoundPreProcessor)
+- **GUI observers**: Scheduled via `root.after()` for thread safety (ControlPanel)
 
-2. **GUI observers:** Conditionally scheduled based on thread context
-   - Main thread: direct call
-   - Background thread: scheduled via `root.after(0, observer, ...)`
-   - ControlPanel: updates button appearance
-
-**Thread Safety:**
-- All state mutations protected by `threading.Lock`
-- Lock acquired only for state read/write (minimal duration)
-- Observers notified OUTSIDE lock to prevent deadlocks
-
-**Key Methods:**
-- `get_state()` - Thread-safe read
-- `set_state(new_state)` - Thread-safe write + observer notification
-- `register_component_observer(observer)` - Register component callbacks
-- `register_gui_observer(observer)` - Register GUI callbacks
-- `setTkRoot(root)` - Set tkinter root for thread-safe GUI scheduling
-
-**Configuration:**
-- Holds application config dictionary
-- Available to all components via dependency injection
+**Thread Safety:** Lock-protected state mutations, observers notified outside lock to prevent deadlocks
 
 ---
 
@@ -546,21 +477,9 @@ starting → running ⟷ paused → shutdown
 
 **File:** `src/controllers/PauseController.py`
 
-**Responsibility:** Minimal controller that ONLY updates ApplicationState
+**Responsibility:** Minimal controller that ONLY updates ApplicationState (proper MVC separation)
 
-**Design Philosophy:** Proper MVC separation
-- Controller updates state
-- Components observe state and react independently
-- No component manipulation (no `audio_source.stop()` calls)
-
-**Key Methods:**
-- `pause()` - Transition `running` → `paused` (guarded)
-- `resume()` - Transition `paused` → `running` (guarded)
-- `toggle()` - Switch between `running` ⟷ `paused`
-
-**Guards:**
-- Invalid transitions are no-ops (e.g., pause when not running)
-- Prevents errors from rapid clicks or invalid states
+**Methods:** `pause()`, `resume()`, `toggle()` with guarded state transitions
 
 ---
 
@@ -568,334 +487,77 @@ starting → running ⟷ paused → shutdown
 
 **File:** `src/gui/ControlPanel.py`
 
-**Responsibility:** Pause/Resume button widget with state-based appearance
+**Responsibility:** Pause/Resume button widget observing ApplicationState
 
-**Integration:**
-- Created in `GuiWindow.create_stt_window()`
-- Placed at top of window in button_frame
-- Registers as GUI observer on initialization
-
-**Button Appearance by State:**
-
-| State | Button Text | Enabled? |
-|-------|-------------|----------|
-| starting | "Loading..." | No |
-| running | "Pause" | Yes |
-| paused | "Resume" | Yes |
-| shutdown | (disabled) | No |
-
-**Rapid Click Prevention:**
-1. Button enabled when running/paused
-2. User clicks → button immediately disabled
-3. Controller updates state
-4. Observer callback re-enables button when state change completes
-
-**Key Methods:**
-- `_on_state_change(old_state, new_state)` - GUI observer callback
-- `_update_button_for_state(state)` - Update button appearance
-- `_on_button_click()` - Delegate to controller, disable button
+**Behavior:** Updates button text/state based on application state ("Loading..." → "Pause" → "Resume"), delegates clicks to PauseController
 
 ---
 
-### 1. AudioSource (Simplified)
+### 1. AudioSource
 
-**Responsibility:** Capture audio from microphone only
+**Responsibility:** Capture 32ms audio frames (16kHz, 512 samples) from microphone
 
-**Configuration:**
-```json
-{
-  "audio": {
-    "sample_rate": 16000,
-    "chunk_duration": 0.032  // 32ms = 512 samples
-  }
-}
-```
+**Output:** Raw audio dicts `{audio, timestamp, chunk_id}` → `chunk_queue`
 
-**Key Methods:**
-- `audio_callback(indata, frames, time_info, status)` - Minimal callback (<1ms)
-- `start()` - Start audio stream
-- `stop()` - Stop audio stream
+**Design:** Non-blocking callback (<1ms) prevents buffer overflows
 
-**Output:** Raw audio dicts to `chunk_queue`: `{audio, timestamp, chunk_id}`
-
-**Design:** Non-blocking callback prevents buffer overflows
-
-**Pause/Resume Integration:**
-
-Observes ApplicationState as component observer:
-
-```python
-def on_state_change(self, old_state: str, new_state: str) -> None:
-    if new_state == 'paused':
-        # Release microphone
-        self.stream.stop()
-        self.stream.close()
-    elif old_state == 'paused' and new_state == 'running':
-        # Create fresh stream
-        self.start()
-    elif new_state == 'shutdown':
-        self.stop()
-```
-
-**Pause Behavior:**
-- Stops and closes sounddevice stream (releases microphone to OS)
-- `is_running` flag set to False
-- No audio callbacks during paused state
-
-**Resume Behavior:**
-- Creates fresh `sd.InputStream` (not reused)
-- New stream captures fresh microphone input
-- Prevents data leakage from old chunks
+**Observer Behavior:** On pause: close stream (release microphone). On resume: create fresh stream
 
 ### 2. SoundPreProcessor
 
 **Responsibility:** VAD processing, RMS normalization, context-aware speech buffering, windower orchestration
 
-**Configuration:**
-```json
-{
-  "audio": {
-    "sample_rate": 16000,
-    "rms_normalization": {
-      "target_rms": 0.07,               // Boosted for better VAD response
-      "silence_threshold": 0.001,
-      "gain_smoothing": 0.7             // Faster gain ramp-up
-    },
-    "silence_energy_threshold": 3.0     // Higher threshold for more trailing silence
-  },
-  "vad": {
-    "threshold": 0.55,                  // Tuned for confident speech detection
-    "max_speech_duration_ms": 1500,     // 1.5s maximum
-    "frame_duration_ms": 32
-  },
-  "windowing": {
-    "silence_timeout": 0.5              // Trigger windower.flush()
-  }
-}
-```
-
-**Key Methods:**
-- `process()` - Main loop reading from chunk_queue
-- `_process_chunk(chunk_data)` - Process single raw chunk (dual-path: normalized→VAD, raw→STT)
-- `_normalize_rms(audio)` - Apply RMS normalization with temporal smoothing (AGC)
-- `_handle_speech_frame(audio, timestamp, speech_prob)` - Buffer speech with consecutive logic
-- `_handle_silence_frame(audio, timestamp)` - Handle silence, buffer trailing context
-- `_find_silence_breakpoint()` - **NEW:** Backward search for natural split points
-- `_finalize_segment(breakpoint_idx)` - **ENHANCED:** Emit AudioSegment with context + intelligent splitting
-- `flush()` - Emit pending segment and flush windower
-- `start()` - Start processing thread
-- `stop()` - Stop thread and flush
-
-**Context Buffer Strategy:**
-- Circular buffer: 20 chunks (640ms @ 32ms/chunk)
-- `left_context_snapshot`: Captured when speech starts (immune to wraparound)
-- `right_context`: Extracted from trailing silence chunks (reverse iteration)
-- Enables better STT quality for short words (<100ms)
-- Prevents hallucinations from silence padding
-
-**Consecutive Speech Logic:**
-- Requires 3 consecutive speech chunks to start segment
-- Prevents false positives from transient noise
-- Chunks 1-3: Buffered in context_buffer as unconfirmed
-- Chunk 3: Triggers segment start, extracts last 3 chunks
-
-**Intelligent Breakpoint Splitting:**
-- When max_speech_duration_ms reached, search backward for last silence chunk
-- Skips last 6 chunks to preserve right_context
-- Splits at natural silence boundaries (no mid-word cuts)
-- Preserves buffer continuity with 6-chunk overlap
-- Fallback to hard cut if no silence found
-
-**Chunk Structure:**
-- All chunks: `{'audio', 'timestamp', 'chunk_id', 'is_speech'}`
-- chunk_id: Sequential for segment chunks, None for non-segment silence
-- is_speech: Reflects VAD result (True/False), not placement logic
+**Key Features:**
+- **RMS Normalization**: Temporal smoothing (AGC) before VAD
+- **Context Buffer**: 20-chunk circular buffer (640ms) captures left/right context for better STT
+- **Consecutive Speech Logic**: 3-chunk confirmation prevents false positives
+- **Intelligent Breakpoint Splitting**: Backward search for natural silence boundaries when max duration reached
+- **Observer Behavior**: On pause: flush pending segments to windower
 
 **Input:** Raw audio dicts from `chunk_queue`
-**Output:** Preliminary AudioSegments with context to `speech_queue`
-**Side Effect:** Calls `windower.process_segment()` synchronously
-
-**Design:** Dedicated thread prevents blocking audio capture callback
-
-**Pause/Resume Integration:**
-
-Observes ApplicationState as component observer:
-
-```python
-def on_state_change(self, old_state: str, new_state: str) -> None:
-    if new_state == 'paused':
-        self.flush()
-```
-
-**Pause Behavior:**
-- Calls `flush()` to emit pending AudioSegment
-- Windower also flushed via `windower.flush()`
-- Resets segment state (clears speech_buffer)
-- Returns to IDLE state
-
-**Why Flush on Pause:**
-- Finalizes pending audio (prevents data loss)
-- User sees all speech recognized before pause
-- Clean continuation when resumed (fresh state machine)
+**Output:** Preliminary AudioSegments with context → `speech_queue`
+**Side Effect:** Synchronously calls `windower.process_segment()` for finalized windows
 
 ### 3. AdaptiveWindower (NO THREAD)
 
-**Responsibility:** Aggregate word-level segments into recognition windows
+**Responsibility:** Aggregate word-level segments into 3s recognition windows
 
-**Configuration:**
-```json
-{
-  "windowing": {
-    "window_duration": 3.0  // 3 second aggregation windows
-  }
-}
-```
-
-**Internal Constants (not configurable):**
-- `MIN_OVERLAP_DURATION = 1.0s` - Minimum duration for trailing segments to be kept for next window
-
-**Key Methods:**
-- `process_segment(segment: AudioSegment)` - Add segment to buffer
-- `flush(final_segment: Optional[AudioSegment] = None)` - Emit final partial window
-
-**Windowing Logic (Segment-Based Aggregation):**
-
-Strategy:
-- Accumulates preliminary segments until total duration >= window_duration (3s)
+**Strategy:**
+- Accumulates preliminary segments until total duration ≥3s
 - Emits finalized window when threshold reached
-- Preserves trailing segments with at least MIN_OVERLAP_DURATION (1.0s) for next window
-- Requires 2+ segments to create overlap between windows
+- Preserves trailing segments (≥1s) for overlap with next window
 
-Example:
-```
-Segment A: [0.0s - 0.8s] (800ms)
-Segment B: [0.9s - 2.1s] (1200ms)
-Segment C: [2.2s - 3.5s] (1300ms)
+**Called synchronously by:** SoundPreProcessor
+**Output:** Finalized AudioSegments → `speech_queue`
 
-Window 1: [A + B + C] → 3.3s total → emit finalized
-  - Trailing segments with ≥1s: B (1.2s) + C (1.3s) → kept for Window 2
+### 4. Recognizer
 
-Segment D: [3.6s - 4.2s] (600ms)
-Segment E: [4.3s - 5.1s] (800ms)
+**Responsibility:** Convert audio to text using hardware-accelerated STT model
 
-Window 2: [B + C + D + E] → 3.9s total → emit finalized
-```
+**Model:** Parakeet ONNX (nemo-parakeet-tdt-0.6b-v3, FP16) with `TimestampedResultsAsrAdapter`
 
-Note: Window overlap is automatic based on MIN_OVERLAP_DURATION, not manually configured via step_size
+**Hardware Acceleration:** DirectML GPU (auto-select) → CPU fallback (see Hardware Acceleration Architecture)
 
-**Output:** Finalized AudioSegments with `chunk_ids=[id1, id2, ...]` to `speech_queue`
+**Context-Aware Recognition:**
+- Concatenates left_context + data + right_context for better acoustic modeling
+- Filters tokens by timestamp to remove hallucinations from context regions
+- 0.37s tolerance for VAD warm-up delay
+- Benefits: Better short-word recognition (50-128ms), eliminates silence padding artifacts
 
-### 4. Recognizer (Enhanced with Context-Aware Recognition)
-
-**Responsibility:** Convert audio to text using STT model with hardware-accelerated inference and timestamped token filtering
-
-**Model:** Parakeet ONNX (nemo-parakeet-tdt-0.6b-v3, FP16 quantized)
-**Adapter:** `TimestampedResultsAsrAdapter` with `.with_timestamps()` support
-
-**Hardware Acceleration:**
-- **DirectML GPU** (default on Windows): Automatic GPU selection and optimization
-- **CPU fallback**: Multi-threaded execution for systems without GPU support
-- **Configuration**: `recognition.inference` = "auto" (default) | "directml" | "cpu"
-
-**GPU Selection Strategy:**
-- Prefers discrete GPUs (NVIDIA GeForce/RTX, AMD Radeon RX) over integrated
-- Uses DXGI native enumeration for accurate device_id mapping
-- Filters out virtual GPUs (Microsoft Basic Render Driver)
-- **Multi-GPU systems**: Automatically selects discrete GPU for best performance
-
-**Session Optimization (Strategy Pattern):**
-- **Integrated GPU** (Intel Iris/UHD, AMD Vega): Zero-copy shared memory (UMA), disable CPU arena
-- **Discrete GPU** (NVIDIA, AMD Radeon RX): PCIe staging buffer, enable CPU arena
-- **CPU**: Multi-threaded execution (auto-detect with caps: intra≤8, inter≤4)
-
-**Model Warm-up:**
-- Pre-compiles GPU shaders on startup (~500ms) to avoid first-inference delay
-- Skipped for CPU mode (no shader compilation needed)
-
-**Key Methods:**
-- `recognize_window(segment)` - **ENHANCED:** Context-aware STT with timestamp filtering and confidence extraction
-- `_filter_tokens_with_confidence()` - **NEW:** Filter hallucinated context tokens and extract confidence scores
-- `process()` - Main loop reading from speech_queue
-
-**Context-Aware Recognition Algorithm:**
-```python
-segment = speech_queue.get(timeout=0.1)
-
-# Step 1: Concatenate context for recognition
-full_audio = left_context + data + right_context
-
-# Step 2: Recognize with timestamps
-result: TimestampedResult = model.recognize(full_audio)
-# Returns: {text, tokens, timestamps}
-
-# Step 3: Calculate data boundaries
-data_start = len(left_context) / sample_rate
-data_end = data_start + len(data) / sample_rate
-
-# Step 4: Filter tokens by timestamp and extract confidences
-filtered_text, filtered_confidences = _filter_tokens_with_confidence(
-    result.text, result.tokens, result.timestamps,
-    token_confidences, data_start, data_end
-)
-# Includes 0.37s tolerance for VAD warm-up delay
-# Removes hallucinations like "yeah", "mm-hmm" from silence
-# Returns filtered text and corresponding confidence scores
-
-# Step 5: Map AudioSegment.type to RecognitionResult.status
-status_map = {
-    'preliminary': 'preliminary',
-    'finalized': 'final',
-    'flush': 'flush'
-}
-
-result = RecognitionResult(
-    text=filtered_text,
-    start_time=segment.start_time,
-    end_time=segment.end_time,
-    status=status_map[segment.type],
-    chunk_ids=segment.chunk_ids
-)
-text_queue.put(result)
-```
-
-**Benefits:**
-- Better recognition for short words (50-128ms) due to acoustic context
-- Eliminates hallucinations from silence padding via timestamp filtering
-- Preserves original timing (data region only, not context)
-- Fallback to full text when timestamps unavailable
-- Maintains backward compatibility with empty contexts
-
-**Input:** AudioSegments with context from `speech_queue`
-**Output:** RecognitionResults with `status` field to `text_queue`
+**Input:** AudioSegments from `speech_queue`
+**Output:** RecognitionResults (`status`: preliminary/final/flush) → `text_queue`
 
 ### 5. TextMatcher
 
 **Responsibility:** Handle overlapping text from sliding windows, publish results via Observer pattern
 
-**Key Methods:**
-- `process_text(result)` - Process single recognition result and publish
-- `resolve_overlap(window1, window2)` - Find common subsequence
-- `finalize_pending()` - Flush remaining partial text
-
-**Overlap Resolution:**
-```
-Window 1: "hello world how"
-Window 2: "how are you"
-
-Common: "how" (found via normalized matching)
-
-Output:
-  Final:   "hello world how"
-  Partial: "are you"
-```
-
-**Duplicate Detection:**
-- Normalizes text (punctuation, case, Unicode)
-- Time threshold: 0.6s
-- Skips duplicates from overlapping windows
+**Key Features:**
+- Overlap resolution using normalized text matching and longest common subsequence
+- Duplicate detection (0.6s time threshold, normalized text comparison)
+- Routes by status: preliminary → `publish_partial_update()`, final/flush → `publish_finalization()`
 
 **Input:** RecognitionResults from `text_queue`
-**Output:** Publishes to `RecognitionResultPublisher` which notifies all subscribers
+**Output:** Publishes to `RecognitionResultPublisher` → notifies all subscribers
 
 ### 6. RecognitionResultPublisher (Observer Pattern)
 
@@ -903,286 +565,34 @@ Output:
 
 **Responsibility:** Manage subscribers and publish text recognition events
 
-**Key Methods:**
-- `subscribe(subscriber)` - Register a TextRecognitionSubscriber
-- `unsubscribe(subscriber)` - Unregister a subscriber
-- `publish_partial_update(result)` - Notify all subscribers of preliminary result
-- `publish_finalization(result)` - Notify all subscribers of finalized result
-- `subscriber_count()` - Get number of registered subscribers
+**Protocol:** Subscribers implement `TextRecognitionSubscriber` (`on_partial_update()`, `on_finalization()`)
 
-**Thread Safety:**
-- Subscriber list protected by `threading.Lock`
-- Copy-on-notify pattern: list copied under lock, callbacks made outside lock
-- Prevents deadlocks if subscribers register/unregister during callbacks
+**Thread Safety:** Copy-on-notify pattern (lock-protected list, callbacks outside lock), error isolation per subscriber
 
-**Error Isolation:**
-- Each subscriber notification wrapped in try-except
-- Exceptions logged but don't affect other subscribers
-- Publishing continues even if individual subscribers fail
-
-**Protocol:** Subscribers must implement `TextRecognitionSubscriber` protocol
-- `on_partial_update(result: RecognitionResult) -> None`
-- `on_finalization(result: RecognitionResult) -> None`
-
-**Current Subscribers:** TextFormatter (GUI display)
-**Future Subscribers:** APISubscriber, VoiceInputWriter, CommandAgent
+**Subscribers:** TextFormatter (GUI), Future: APISubscriber, VoiceInputWriter, CommandAgent
 
 ### 7. TextFormatter (MVC Controller + Subscriber)
 
 **File:** `src/gui/TextFormatter.py`
 
-**Responsibility:** Calculate text formatting logic (NO GUI knowledge, NO tkinter), implements TextRecognitionSubscriber
+**Responsibility:** Text formatting logic (NO GUI knowledge), implements `TextRecognitionSubscriber`
 
-**Protocol Implementation:**
-- `on_partial_update(result)` → delegates to `partial_update(result)`
-- `on_finalization(result)` → delegates to `finalization(result)`
+**Logic:**
+- Calculates DisplayInstructions from RecognitionResults
+- Space insertion, paragraph breaks (2.0s threshold), chunk-ID filtering
+- Duplicate detection and prevention
 
-**Key Methods:**
-- `partial_update(result)` - Calculate preliminary formatting, trigger display
-- `finalization(result)` - Calculate final formatting, trigger display (if not duplicate)
-- `_calculate_partial_update(result)` - Returns DisplayInstructions
-- `_calculate_finalization(result)` - Returns DisplayInstructions or None (duplicate)
-
-**State Management:**
-- `preliminary_results: List[RecognitionResult]` - Tracks all preliminary segments
-- `finalized_chunk_ids: Set[int]` - Marks finalized chunks
-- `finalized_text: str` - Buffer of finalized text
-- `last_finalized_text: str` - For duplicate detection
-- `last_finalized_end_time: float` - For pause detection
-
-**Formatting Logic:**
-- Space insertion between segments
-- Paragraph break detection (2.0s pause threshold)
-- Chunk-ID filtering for partial finalization
-- Duplicate prevention
-
-**Output:** Calls `display.apply_instructions(instructions)` to trigger GUI updates
+**Output:** Calls `display.apply_instructions()` to trigger GUI updates
 
 ### 8. TextDisplayWidget (MVC View)
 
 **File:** `src/gui/TextDisplayWidget.py`
 
-**Responsibility:** Render DisplayInstructions to tkinter widget + thread-safety
+**Responsibility:** Render DisplayInstructions to tkinter widget with thread-safety
 
-**Key Methods:**
-- `apply_instructions(instructions)` - Thread-safe entry point
-- `_apply_instructions_safe(instructions)` - Actual rendering (main thread)
-- `_rerender_all(finalized, preliminary)` - Full widget refresh
-- `_is_main_thread()` - Thread detection
+**Thread-Safety:** Detects calling thread, schedules on main thread via `root.after()` if needed
 
-**Thread-Safety:**
-- Detects calling thread
-- Schedules on main thread via `root.after()` if needed
-- Direct call if already on main thread
-
-**Display Styles:**
-- Final text: black, normal (permanent)
-- Partial text: gray, italic (temporary, gets replaced)
-
-**Input:** DisplayInstructions from TextFormatter
-**Output:** tkinter ScrolledText widget updates
-
----
-
-## Queue Specifications
-
-| Queue | Producer | Consumer | Data Type | Maxsize | Purpose |
-|-------|----------|----------|-----------|---------|---------|
-| `chunk_queue` | AudioSource | SoundPreProcessor | `dict` {audio, timestamp, chunk_id} | 200 | Raw audio chunks (32ms frames) |
-| `speech_queue` | SoundPreProcessor, AdaptiveWindower | Recognizer | `AudioSegment` | 200 | Audio segments (preliminary + finalized) |
-| `text_queue` | Recognizer | TextMatcher | `RecognitionResult` | 50 | Recognition results |
-
----
-
-## Control Flow
-
-### Startup Sequence
-
-```
-1. Pipeline.__init__()
-   ├─→ Load config from config/stt_config.json
-   ├─→ Create ApplicationState (shared state manager)    # <-- NEW
-   ├─→ Create queues (chunk, speech, text)
-   ├─→ Hardware acceleration setup:
-   │     ├─→ ExecutionProviderManager.detect_gpu_type() [DXGI enumeration]
-   │     ├─→ SessionOptionsFactory.get_strategy(gpu_type)
-   │     └─→ Strategy.configure_session_options(sess_options)
-   ├─→ Load Parakeet model with hardware-optimized session
-   ├─→ Create Tkinter GUI window
-   │     └─→ create_stt_window(config, app_state)       # <-- Pass app_state
-   │         ├─→ Set root in ApplicationState            # <-- NEW
-   │         ├─→ Create PauseController                  # <-- NEW
-   │         └─→ Create ControlPanel                     # <-- NEW
-   ├─→ Create GuiWindow (helper for TextMatcher)
-   ├─→ Create VAD (for SoundPreProcessor)
-   ├─→ Create components:
-   │     ├─→ AdaptiveWindower (no thread, writes to speech_queue)
-   │     ├─→ AudioSource (app_state=app_state)           # <-- Observer registration
-   │     ├─→ SoundPreProcessor (app_state=app_state)     # <-- Observer registration
-   │     ├─→ Recognizer (reads speech_queue)
-   │     └─→ TextMatcher (with gui_window reference)
-   └─→ Setup signal handlers (Ctrl+C)
-
-2. Pipeline.start()
-   ├─→ _warmup_model()                 → pre-compile GPU shaders (DirectML/CUDA only)
-   ├─→ audio_source.start()           → starts sounddevice stream
-   ├─→ sound_preprocessor.start()     → spawns daemon thread
-   ├─→ recognizer.start()              → spawns daemon thread
-   ├─→ text_matcher.start()            → spawns daemon thread
-   └─→ app_state.set_state('running')  → notifies observers (ControlPanel updates)  # <-- NEW
-
-3. Pipeline.run()
-   └─→ root.mainloop()                 → Tkinter event loop
-```
-
-### Shutdown Sequence
-
-**Pure Observer Pattern**: Pipeline.stop() ONLY changes state to 'shutdown'. All components autonomously stop themselves via observer callbacks.
-
-```
-1. User presses Ctrl+C or closes window
-
-2. Pipeline.stop()
-   └─→ app_state.set_state('shutdown')  → notifies ALL observers
-         ├─→ AudioSource.on_state_change('running', 'shutdown')
-         │     └─→ stop() → stop and close stream
-         │
-         ├─→ SoundPreProcessor.on_state_change('running', 'shutdown')
-         │     └─→ stop() → set is_running=False, thread exits, flush()
-         │           ├─→ _finalize_segment() → emit pending segment
-         │           └─→ windower.flush() → emit final window
-         │
-         ├─→ Recognizer.on_state_change('running', 'shutdown')
-         │     └─→ stop() → set is_running=False, confidence_extractor.unpatch()
-         │
-         ├─→ TextMatcher.on_state_change('running', 'shutdown')
-         │     ├─→ finalize_pending() → flush remaining partial text to GUI
-         │     └─→ stop() → set is_running=False, thread exits
-         │
-         └─→ ControlPanel (GUI observer) → updates button (disabled)
-
-3. All daemon threads exit
-4. Main thread exits
-```
-
-**Design:** Each component manages its own lifecycle. Pipeline doesn't know component internals - it only publishes state changes.
-
-### Pause/Resume Cycle
-
-**Complete Pause Flow:**
-```
-User clicks "Pause" button
-└─ ControlPanel._on_button_click()
-   └─ Disable button (prevent double-click)
-      └─ PauseController.toggle()
-         └─ ApplicationState.set_state('paused')
-            ├─ Acquire lock, validate transition, update state
-            ├─ Release lock
-            └─ Notify observers
-               ├─ AudioSource.on_state_change()
-               │  ├─ stream.stop()
-               │  └─ stream.close()          # Microphone released
-               │
-               ├─ SoundPreProcessor.on_state_change()
-               │  └─ flush()
-               │     ├─ Emit pending segment
-               │     ├─ Reset audio_state
-               │     └─ Reset to IDLE
-               │
-               └─ ControlPanel._on_state_change()
-                  └─ root.after() scheduled (if from background thread)
-                     └─ Update button: "Resume" + enabled
-```
-
-**Complete Resume Flow:**
-```
-User clicks "Resume" button
-└─ ControlPanel._on_button_click()
-   └─ Disable button
-      └─ PauseController.toggle()
-         └─ ApplicationState.set_state('running')
-            ├─ Acquire lock, validate transition, update state
-            ├─ Release lock
-            └─ Notify observers
-               ├─ AudioSource.on_state_change()
-               │  └─ start()
-               │     └─ Create new sd.InputStream
-               │        └─ Fresh microphone capture begins
-               │
-               ├─ SoundPreProcessor: no action
-               │  └─ Ready to process new chunks
-               │
-               └─ ControlPanel._on_state_change()
-                  └─ Update button: "Pause" + enabled
-```
-
-**State During Pause:**
-- AudioSource: NO microphone (stream closed, no capture)
-- SoundPreProcessor: idle, waiting for chunks
-- Recognizer: may process final segment from flush
-- TextMatcher: displays finalized text
-- GUI: Shows "Resume" button (enabled)
-
-**State After Resume:**
-- AudioSource: Fresh stream capturing microphone
-- SoundPreProcessor: Processes new chunks (fresh state)
-- Recognizer: Recognizes new speech
-- TextMatcher: Appends new recognized text
-- GUI: Shows "Pause" button (enabled)
-
----
-
-## Configuration Tuning
-
-The system configuration has been tuned through iterative testing to optimize preliminary segment quality, reduce false positives, and improve short-word recognition.
-
-### Configuration Parameters (`config/stt_config.json`)
-
-```json
-{
-  "audio": {
-    "sample_rate": 16000,
-    "chunk_duration": 0.032,
-    "silence_energy_threshold": 3.0,
-    "rms_normalization": {
-      "target_rms": 0.07,
-      "silence_threshold": 0.0001,
-      "gain_smoothing": 0.7
-    }
-  },
-  "vad": {
-    "frame_duration_ms": 32,
-    "threshold": 0.55
-  },
-  "windowing": {
-    "window_duration": 3.0,
-    "max_speech_duration_ms": 1500,
-    "silence_timeout": 0.5
-  },
-  "recognition": {
-    "model_name": "parakeet",
-    "inference": "auto"
-  }
-}
-```
-
-### Parameter Reference
-
-| Parameter | Value | Purpose | Tuning Notes |
-|-----------|-------|---------|--------------|
-| **VAD** ||||
-| `threshold` | 0.55 | Speech probability threshold | Higher = fewer false positives, may miss soft speech |
-| `frame_duration_ms` | 32 | Silero VAD optimal frame size | Fixed by model requirements |
-| **Audio Processing** ||||
-| `silence_energy_threshold` | 3.0 | Cumulative silence for finalization | Higher = more trailing silence (better right_context) |
-| `target_rms` | 0.07 | RMS normalization target | Higher = better VAD response, may boost noise |
-| `gain_smoothing` | 0.7 | Temporal smoothing factor (α) | Lower = faster gain ramp-up, may cause artifacts |
-| **Windowing** ||||
-| `window_duration` | 3.0 | Recognition window size (s) | Trade-off: context vs latency |
-| `max_speech_duration_ms` | 1500 | Force split threshold | Triggers intelligent breakpoint search |
-| `silence_timeout` | 0.5 | Windower flush timeout (s) | Finalizes pending text after silence |
-| **Recognition** ||||
-| `inference` | "auto" | Hardware selection | "auto" \| "directml" \| "cpu" |
+**Styles:** Final text (black, normal), Partial text (gray, italic)
 
 ---
 
@@ -1216,147 +626,45 @@ Each component has one clear responsibility:
 
 ### 2. Open/Closed Principle (OCP)
 
-System is open for extension, closed for modification:
-- Can add new subscribers (APISubscriber, VoiceInputWriter) without modifying TextMatcher or publisher
-- RecognitionResultPublisher enables extending functionality via subscription
-- TextMatcher exposes `finalize_pending()` as extension point
+Extension without modification via Observer pattern (add new subscribers without changing publisher) and interface-based design
 
 ### 3. Dependency Inversion Principle (DIP)
 
-High-level modules don't depend on low-level details:
-- SoundPreProcessor receives windower interface, not concrete class
-- TextMatcher depends on RecognitionResultPublisher abstraction, not concrete subscribers
-- Subscribers depend on TextRecognitionSubscriber protocol, not publisher internals
-- AudioSource has no knowledge of VAD or windowing logic
+Components depend on abstractions (protocols, interfaces) not concrete implementations (e.g., TextRecognitionSubscriber protocol, windower interface)
 
 ### 4. Type Safety
 
-Strong typing throughout:
-- Dataclasses replace dicts
-- Type discriminators (`type: 'preliminary' | 'finalized'`)
-- Type hints enable IDE/mypy checking
+Strongly-typed dataclasses with discriminated unions (`type: 'preliminary' | 'finalized'`) enable compile-time checking
 
 ### 5. Hardware Abstraction
 
-Strategy Pattern for hardware-specific optimizations:
-- **SessionOptionsStrategy**: Abstract interface for session configuration
-- **Concrete strategies**: IntegratedGPUStrategy, DiscreteGPUStrategy, CPUStrategy
-- **Factory**: SessionOptionsFactory creates appropriate strategy
-- **Manager**: ExecutionProviderManager handles detection and provider selection
-- **Separation**: Hardware logic isolated from main pipeline (OCP/DIP compliance)
+Strategy Pattern isolates hardware optimizations (IntegratedGPUStrategy, DiscreteGPUStrategy, CPUStrategy) from main pipeline
 
 ### 6. Observer Pattern for State Management
 
-Decouples state changes from component reactions:
-- **ApplicationState (Subject)**: Maintains state, notifies observers
-- **Component Observers**: AudioSource, SoundPreProcessor react independently
-- **GUI Observers**: ControlPanel updates appearance
-- **Controller Separation**: PauseController only updates state (no component manipulation)
-- **Encapsulation**: Components own their pause/resume logic
-
-**Benefits:**
-- **Extensibility**: New components register observers without changing controller
-- **Testability**: Each observer can be tested independently
-- **Thread Safety**: State mutations protected, observers notified outside lock
-- **Separation of Concerns**: Controller doesn't know implementation details
+ApplicationState notifies component observers (AudioSource, SoundPreProcessor) and GUI observers (ControlPanel) independently. PauseController only updates state, components react autonomously. Thread-safe: mutations locked, notifications outside lock.
 
 ### 7. Observer Pattern for Text Recognition Distribution
 
-Decouples TextMatcher from its consumers (GUI, API, etc.):
-- **RecognitionResultPublisher (Subject)**: Manages subscribers, publishes events
-- **TextRecognitionSubscriber (Protocol)**: Defines subscriber interface
-- **Subscribers**: TextFormatter (GUI), Future: APISubscriber, VoiceInputWriter, CommandAgent
-- **TextMatcher**: Publishes results, doesn't know about subscribers
-
-**Benefits:**
-- **Extensibility**: Add new subscribers (API, voice input) without modifying TextMatcher
-- **Testability**: Publisher and subscribers tested independently
-- **Error Isolation**: Subscriber exceptions don't affect other subscribers
-- **Thread Safety**: Copy-on-notify prevents deadlocks during callbacks
-- **Separation of Concerns**: TextMatcher focuses on overlap resolution, publisher handles distribution
-
-**Protocol-Based Design:**
-- Uses Python `typing.Protocol` for structural subtyping (duck typing)
-- TextFormatter implements protocol without explicit inheritance
-- Type-safe via mypy static checking
+RecognitionResultPublisher decouples TextMatcher from subscribers (TextFormatter, future: APISubscriber). Uses Python Protocol for structural subtyping. Copy-on-notify prevents deadlocks, error isolation per subscriber.
 
 ### 8. MVC Pattern for Pause/Resume
 
-Classic Model-View-Controller separation:
-- **Model**: ApplicationState (state + observers)
-- **View**: ControlPanel (button widget)
-- **Controller**: PauseController (state transitions only)
+**Model**: ApplicationState | **View**: ControlPanel | **Controller**: PauseController (state-only, no component manipulation)
 
-**Flow:**
-```
-User action → View → Controller → Model → Observers → Components
-```
-
-**Key Principle:** Controller NEVER manipulates components directly
+Flow: `User → View → Controller → Model → Observers → Components`
 
 ### 9. MVC Pattern for Text Display
 
-Separation of formatting logic from GUI rendering:
-- **Model**: RecognitionResult (data from recognizer)
-- **Controller**: TextFormatter (formatting logic, NO tkinter)
-- **View**: TextDisplayWidget (GUI rendering + thread-safety)
+**Model**: RecognitionResult | **Controller**: TextFormatter (no GUI knowledge) | **View**: TextDisplayWidget (thread-safe rendering)
 
-**Flow:**
-```
-TextMatcher → TextFormatter → TextDisplayWidget → tkinter
-```
-
-**Key Principles:**
-- **TextFormatter** has NO GUI knowledge (pure logic)
-- **TextDisplayWidget** handles ALL technical concerns (GUI + threading)
-- **TextMatcher** has NO GUI knowledge (only calls formatter)
+Flow: `TextMatcher → TextFormatter → TextDisplayWidget → tkinter`
 
 ---
-
-## Testing Strategy
-
-### Test Pyramid
-
-```
-                    ┌───────────────┐
-                    │  Integration  │
-                    │     Tests     │
-                    └───────────────┘
-                   ┌─────────────────┐
-                   │  Component      │
-                   │  Integration    │
-                   └─────────────────┘
-                  ┌───────────────────┐
-                  │   Unit Tests      │
-                  │   (Mocked deps)   │
-                  └───────────────────┘
-```
 
 ## Conclusion
 
 This architecture provides:
-
-✅ **Real-time performance** - Sub-250ms latency for preliminary results
-✅ **High accuracy** - 3s windows for quality results
-✅ **Context-aware recognition** - Circular buffer strategy improves short-word quality
-✅ **Intelligent segmentation** - Silence-based breakpoint splitting preserves speech integrity
-✅ **Hallucination prevention** - Timestamped token filtering eliminates context artifacts
-✅ **Hardware acceleration** - Automatic GPU detection with CPU fallback
-✅ **Smart GPU selection** - Multi-GPU support with discrete GPU preference
-✅ **Memory optimization** - Hardware-specific session configurations (UMA vs PCIe)
-✅ **Clean separation** - Each component has single responsibility
-✅ **Type safety** - Strongly-typed dataclasses throughout
-✅ **Extensibility** - Open for enhancement without modification
-✅ **Testability** - tests covering all major paths
-✅ **Maintainability** - Clear architecture, well-documented
-✅ **Tunable configuration** - Iteratively optimized parameters with trade-off guidance
-✅ **Pause/Resume functionality** - Observer pattern with MVC separation
-✅ **State management** - Thread-safe ApplicationState with dual observer types
-✅ **Graceful pause** - Microphone release, pending audio finalized
-✅ **Clean resume** - Fresh stream creation, no data leakage
-✅ **Text recognition distribution** - Observer pattern decouples TextMatcher from subscribers
-✅ **Protocol-based subscribers** - Duck typing via Python Protocol for flexible extensions
-✅ **Multiple output targets** - Single recognition pipeline serves GUI, API, voice input, etc.
 
 ### Key Innovations
 
@@ -1398,4 +706,3 @@ This architecture provides:
 - Enables multiple output targets (GUI, API, voice input) from single pipeline
 - Open for extension: add new subscribers without modifying existing code
 
-The dual-path design (preliminary + finalized) balances responsiveness with accuracy, while the Strategy Pattern for hardware abstraction ensures optimal performance across different GPU architectures and CPU-only systems. The context-aware recognition improvements deliver better short-word quality and eliminate hallucinations without sacrificing real-time performance. The Observer Pattern for text distribution enables flexible output routing without coupling.
