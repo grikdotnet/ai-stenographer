@@ -169,7 +169,7 @@ Microphone Input (16kHz, mono)
         │
         ↓
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  TIER 4: Text Processing + Display (MVC Architecture)                   │
+│  TIER 4: Text Processing + Display (MVC + Observer Pattern)             │
 │  Thread: TextMatcher (daemon)                                            │
 ├──────────────────────────────────────────────────────────────────────────┤
 │  TextMatcher.process()                                                   │
@@ -178,10 +178,12 @@ Microphone Input (16kHz, mono)
 │    │                                                                      │
 │    ├─ PRELIMINARY PATH (silence-bounded segments with context):         │
 │    │   └─→ process_text()                                               │
-│    │       └─→ formatter.partial_update(result)  [direct call]          │
-│    │           └─→ TextFormatter calculates DisplayInstructions          │
-│    │               └─→ display.apply_instructions(instructions)          │
-│    │                   └─→ Thread-safe: schedules on main thread        │
+│    │       └─→ publisher.publish_partial_update(result)  [publishes]    │
+│    │           └─→ RecognitionResultPublisher notifies subscribers      │
+│    │               └─→ TextFormatter.on_partial_update(result)          │
+│    │                   └─→ _calculate_partial_update() → DisplayInstructions │
+│    │                       └─→ display.apply_instructions(instructions) │
+│    │                           └─→ Thread-safe: schedules on main thread│
 │    │                                                                      │
 │    ├─ FINAL PATH (3s sliding windows):                                  │
 │    │   └─→ process_finalized()                                          │
@@ -189,24 +191,40 @@ Microphone Input (16kHz, mono)
 │    │       ├─→ resolve_overlap() - handles windowed text overlaps       │
 │    │       │     └─→ Uses TextNormalizer for fuzzy matching             │
 │    │       │     └─→ Finds longest common subsequence                   │
-│    │       └─→ formatter.finalization(finalized_result)                 │
-│    │           └─→ TextFormatter calculates DisplayInstructions          │
-│    │               └─→ display.apply_instructions(instructions)          │
-│    │                   └─→ Thread-safe: schedules on main thread        │
+│    │       └─→ publisher.publish_finalization(finalized_result)         │
+│    │           └─→ RecognitionResultPublisher notifies subscribers      │
+│    │               └─→ TextFormatter.on_finalization(result)            │
+│    │                   └─→ _calculate_finalization() → DisplayInstructions │
+│    │                       └─→ display.apply_instructions(instructions) │
+│    │                           └─→ Thread-safe: schedules on main thread│
 │    │                                                                      │
 │    └─ FLUSH PATH (end of speech segment):                               │
 │        └─→ process_flush()                                              │
-│            └─→ formatter.finalization(pending_result)                   │
+│            └─→ publisher.publish_finalization(pending_result)           │
 │                                                                           │
 │  TextMatcher.finalize_pending()                                          │
 │    └─→ Called by Pipeline.stop() to flush remaining partial text        │
-│        └─→ formatter.finalization(previous_result)                      │
+│        └─→ publisher.publish_finalization(previous_result)              │
 │                                                                           │
-│  TextFormatter (controller, no thread):                                  │
-│    ├─→ partial_update(result) - calculates preliminary formatting       │
+│  RecognitionResultPublisher (observer pattern, no thread):               │
+│    ├─→ subscribe(subscriber) - register TextRecognitionSubscriber       │
+│    ├─→ unsubscribe(subscriber) - unregister subscriber                  │
+│    ├─→ publish_partial_update(result) - notify all subscribers          │
+│    │     └─→ Thread-safe: copy subscriber list under lock               │
+│    │         └─→ Call subscriber.on_partial_update(result)              │
+│    │             └─→ Error isolation: exceptions logged, don't affect others │
+│    ├─→ publish_finalization(result) - notify all subscribers            │
+│    │     └─→ Thread-safe: copy subscriber list under lock               │
+│    │         └─→ Call subscriber.on_finalization(result)                │
+│    │             └─→ Error isolation: exceptions logged, don't affect others │
+│    └─→ Subscribers: TextFormatter (GUI), Future: APISubscriber, etc.    │
+│                                                                           │
+│  TextFormatter (controller + subscriber, no thread):                     │
+│    ├─→ Implements TextRecognitionSubscriber protocol                    │
+│    ├─→ on_partial_update(result) → partial_update(result)               │
 │    │     └─→ _calculate_partial_update() → DisplayInstructions          │
 │    │         └─→ display.apply_instructions()                           │
-│    ├─→ finalization(result) - calculates final formatting               │
+│    ├─→ on_finalization(result) → finalization(result)                   │
 │    │     └─→ _calculate_finalization() → DisplayInstructions            │
 │    │         └─→ display.apply_instructions() (if not duplicate)        │
 │    └─→ State: preliminary_results, finalized_chunk_ids, finalized_text  │
@@ -218,7 +236,8 @@ Microphone Input (16kHz, mono)
 │    └─→ Handles GUI rendering + thread-safety internally                 │
 └──────────────────────────────────────────────────────────────────────────┘
         │
-        ├─ MVC Pattern: TextMatcher → TextFormatter → TextDisplayWidget
+        ├─ Observer Pattern: TextMatcher → RecognitionResultPublisher → Subscribers
+        ├─ MVC Pattern: TextFormatter → TextDisplayWidget
         ↓
    Tkinter GUI Window (main thread)
 ```
@@ -235,8 +254,9 @@ Microphone Input (16kHz, mono)
 | **SoundPreProcessor** | Daemon | VAD processing, RMS normalization, speech buffering | `chunk_queue.get(timeout=0.1)`, `speech_queue.put()` |
 | **AdaptiveWindower** | **NO THREAD** | Aggregates segments into windows | Called synchronously by SoundPreProcessor |
 | **Recognizer** | Daemon | Runs STT model on audio segments | `speech_queue.get(timeout=0.1)`, model inference |
-| **TextMatcher** | Daemon | Routes preliminary/finalized, overlap resolution | `text_queue.get(timeout=0.1)`, calls formatter methods |
-| **TextFormatter** | **NO THREAD** | Formatting logic (controller) | Called by TextMatcher, triggers display updates |
+| **TextMatcher** | Daemon | Routes preliminary/finalized, overlap resolution, publishes results | `text_queue.get(timeout=0.1)`, calls publisher methods |
+| **RecognitionResultPublisher** | **NO THREAD** | Observer pattern publisher (manages subscribers) | Called by TextMatcher, notifies subscribers with thread-safe copy |
+| **TextFormatter** | **NO THREAD** | Formatting logic (controller + subscriber) | Implements TextRecognitionSubscriber protocol, triggers display updates |
 | **TextDisplayWidget** | **NO THREAD** | GUI rendering (view) + thread-safety | Called by TextFormatter, schedules on main thread |
 | **ApplicationState** | **NO THREAD** | Shared state manager (dependency injection) | Thread-safe mutations via `threading.Lock` |
 | **PauseController** | **NO THREAD** | MVC controller (called by ControlPanel) | Updates ApplicationState only |
@@ -292,12 +312,14 @@ Main Thread        AudioSource Thread    SoundPreProcessor Thread    Recognizer 
     │                         │  ├─→ get result                            │
     │                         │  ├─→ route by type                          │
     │                         │  ├─→ preliminary:                           │
-    │                         │  │   formatter.partial_update()             │
-    │                         │  │     └─→ display.apply_instructions()────→│ root.after()
+    │                         │  │   publisher.publish_partial_update()     │
+    │                         │  │     └─→ formatter.on_partial_update()    │
+    │                         │  │         └─→ display.apply_instructions()─→│ root.after()
     │                         │  └─→ finalized:                             │
     │                         │      ├─resolve_overlap                      │
-    │                         │      └─formatter.finalization()              │
-    │                         │          └─→ display.apply_instructions()──→│ root.after()
+    │                         │      └─publisher.publish_finalization()     │
+    │                         │          └─→ formatter.on_finalization()    │
+    │                         │              └─→ display.apply_instructions()→│ root.after()
     │                         │                                             │
     │                         │      ApplicationState.set_state('paused')   │
     │                         │   ─────────────────────────────────────────→│
@@ -848,10 +870,10 @@ text_queue.put(result)
 
 ### 5. TextMatcher
 
-**Responsibility:** Handle overlapping text from sliding windows, route to formatter
+**Responsibility:** Handle overlapping text from sliding windows, publish results via Observer pattern
 
 **Key Methods:**
-- `process_text(result)` - Process single recognition result
+- `process_text(result)` - Process single recognition result and publish
 - `resolve_overlap(window1, window2)` - Find common subsequence
 - `finalize_pending()` - Flush remaining partial text
 
@@ -873,13 +895,47 @@ Output:
 - Skips duplicates from overlapping windows
 
 **Input:** RecognitionResults from `text_queue`
-**Output:** Calls `formatter.partial_update()` and `formatter.finalization()`
+**Output:** Publishes to `RecognitionResultPublisher` which notifies all subscribers
 
-### 6. TextFormatter (MVC Controller)
+### 6. RecognitionResultPublisher (Observer Pattern)
+
+**File:** `src/RecognitionResultPublisher.py`
+
+**Responsibility:** Manage subscribers and publish text recognition events
+
+**Key Methods:**
+- `subscribe(subscriber)` - Register a TextRecognitionSubscriber
+- `unsubscribe(subscriber)` - Unregister a subscriber
+- `publish_partial_update(result)` - Notify all subscribers of preliminary result
+- `publish_finalization(result)` - Notify all subscribers of finalized result
+- `subscriber_count()` - Get number of registered subscribers
+
+**Thread Safety:**
+- Subscriber list protected by `threading.Lock`
+- Copy-on-notify pattern: list copied under lock, callbacks made outside lock
+- Prevents deadlocks if subscribers register/unregister during callbacks
+
+**Error Isolation:**
+- Each subscriber notification wrapped in try-except
+- Exceptions logged but don't affect other subscribers
+- Publishing continues even if individual subscribers fail
+
+**Protocol:** Subscribers must implement `TextRecognitionSubscriber` protocol
+- `on_partial_update(result: RecognitionResult) -> None`
+- `on_finalization(result: RecognitionResult) -> None`
+
+**Current Subscribers:** TextFormatter (GUI display)
+**Future Subscribers:** APISubscriber, VoiceInputWriter, CommandAgent
+
+### 7. TextFormatter (MVC Controller + Subscriber)
 
 **File:** `src/gui/TextFormatter.py`
 
-**Responsibility:** Calculate text formatting logic (NO GUI knowledge, NO tkinter)
+**Responsibility:** Calculate text formatting logic (NO GUI knowledge, NO tkinter), implements TextRecognitionSubscriber
+
+**Protocol Implementation:**
+- `on_partial_update(result)` → delegates to `partial_update(result)`
+- `on_finalization(result)` → delegates to `finalization(result)`
 
 **Key Methods:**
 - `partial_update(result)` - Calculate preliminary formatting, trigger display
@@ -902,7 +958,7 @@ Output:
 
 **Output:** Calls `display.apply_instructions(instructions)` to trigger GUI updates
 
-### 7. TextDisplayWidget (MVC View)
+### 8. TextDisplayWidget (MVC View)
 
 **File:** `src/gui/TextDisplayWidget.py`
 
@@ -1138,7 +1194,7 @@ The system configuration has been tuned through iterative testing to optimize pr
 2. **SoundPreProcessor** → reads `chunk_queue` → RMS normalization + VAD + buffering → preliminary `AudioSegment` → `speech_queue`
 3. **SoundPreProcessor** → calls **AdaptiveWindower** synchronously → aggregates into finalized `AudioSegment` → `speech_queue`
 4. **Recognizer** → reads `speech_queue` → processes both preliminary and finalized AudioSegments → `RecognitionResult` → `text_queue`
-5. **TextMatcher** → filters/processes text, routes to GuiWindow for display
+5. **TextMatcher** → filters/processes text → publishes via **RecognitionResultPublisher** → notifies subscribers (TextFormatter, etc.)
 
 **Key Architecture:**
 - Two-queue design: `chunk_queue` (raw audio) → `speech_queue` (AudioSegments)
@@ -1153,21 +1209,24 @@ Each component has one clear responsibility:
 - **SoundPreProcessor:** VAD, RMS normalization, speech buffering
 - **AdaptiveWindower:** Window aggregation
 - **Recognizer:** Speech recognition
-- **TextMatcher:** Text processing and overlap resolution (routes to formatter)
-- **TextFormatter:** Formatting logic (MVC controller, NO GUI knowledge)
+- **TextMatcher:** Text processing and overlap resolution (publishes results)
+- **RecognitionResultPublisher:** Subscriber management and event notification (Observer pattern)
+- **TextFormatter:** Formatting logic (MVC controller + subscriber, NO GUI knowledge)
 - **TextDisplayWidget:** GUI rendering + thread-safety (MVC view)
 
 ### 2. Open/Closed Principle (OCP)
 
 System is open for extension, closed for modification:
-- Can add SilenceObserver without modifying existing classes
+- Can add new subscribers (APISubscriber, VoiceInputWriter) without modifying TextMatcher or publisher
+- RecognitionResultPublisher enables extending functionality via subscription
 - TextMatcher exposes `finalize_pending()` as extension point
 
 ### 3. Dependency Inversion Principle (DIP)
 
 High-level modules don't depend on low-level details:
 - SoundPreProcessor receives windower interface, not concrete class
-- TextMatcher doesn't know about timeout implementation
+- TextMatcher depends on RecognitionResultPublisher abstraction, not concrete subscribers
+- Subscribers depend on TextRecognitionSubscriber protocol, not publisher internals
 - AudioSource has no knowledge of VAD or windowing logic
 
 ### 4. Type Safety
@@ -1201,7 +1260,27 @@ Decouples state changes from component reactions:
 - **Thread Safety**: State mutations protected, observers notified outside lock
 - **Separation of Concerns**: Controller doesn't know implementation details
 
-### 7. MVC Pattern for Pause/Resume
+### 7. Observer Pattern for Text Recognition Distribution
+
+Decouples TextMatcher from its consumers (GUI, API, etc.):
+- **RecognitionResultPublisher (Subject)**: Manages subscribers, publishes events
+- **TextRecognitionSubscriber (Protocol)**: Defines subscriber interface
+- **Subscribers**: TextFormatter (GUI), Future: APISubscriber, VoiceInputWriter, CommandAgent
+- **TextMatcher**: Publishes results, doesn't know about subscribers
+
+**Benefits:**
+- **Extensibility**: Add new subscribers (API, voice input) without modifying TextMatcher
+- **Testability**: Publisher and subscribers tested independently
+- **Error Isolation**: Subscriber exceptions don't affect other subscribers
+- **Thread Safety**: Copy-on-notify prevents deadlocks during callbacks
+- **Separation of Concerns**: TextMatcher focuses on overlap resolution, publisher handles distribution
+
+**Protocol-Based Design:**
+- Uses Python `typing.Protocol` for structural subtyping (duck typing)
+- TextFormatter implements protocol without explicit inheritance
+- Type-safe via mypy static checking
+
+### 8. MVC Pattern for Pause/Resume
 
 Classic Model-View-Controller separation:
 - **Model**: ApplicationState (state + observers)
@@ -1215,7 +1294,7 @@ User action → View → Controller → Model → Observers → Components
 
 **Key Principle:** Controller NEVER manipulates components directly
 
-### 8. MVC Pattern for Text Display
+### 9. MVC Pattern for Text Display
 
 Separation of formatting logic from GUI rendering:
 - **Model**: RecognitionResult (data from recognizer)
@@ -1275,6 +1354,9 @@ This architecture provides:
 ✅ **State management** - Thread-safe ApplicationState with dual observer types
 ✅ **Graceful pause** - Microphone release, pending audio finalized
 ✅ **Clean resume** - Fresh stream creation, no data leakage
+✅ **Text recognition distribution** - Observer pattern decouples TextMatcher from subscribers
+✅ **Protocol-based subscribers** - Duck typing via Python Protocol for flexible extensions
+✅ **Multiple output targets** - Single recognition pipeline serves GUI, API, voice input, etc.
 
 ### Key Innovations
 
@@ -1308,4 +1390,12 @@ This architecture provides:
 - Lock-protected state mutations with deadlock prevention
 - Enables pause/resume without tight coupling between controller and components
 
-The dual-path design (preliminary + finalized) balances responsiveness with accuracy, while the Strategy Pattern for hardware abstraction ensures optimal performance across different GPU architectures and CPU-only systems. The context-aware recognition improvements deliver better short-word quality and eliminate hallucinations without sacrificing real-time performance.
+**Observer-Based Text Recognition Distribution:**
+- RecognitionResultPublisher decouples TextMatcher from consumers
+- Protocol-based subscriber interface (TextRecognitionSubscriber)
+- Thread-safe copy-on-notify pattern prevents deadlocks
+- Error isolation: subscriber exceptions don't affect others
+- Enables multiple output targets (GUI, API, voice input) from single pipeline
+- Open for extension: add new subscribers without modifying existing code
+
+The dual-path design (preliminary + finalized) balances responsiveness with accuracy, while the Strategy Pattern for hardware abstraction ensures optimal performance across different GPU architectures and CPU-only systems. The context-aware recognition improvements deliver better short-word quality and eliminate hallucinations without sacrificing real-time performance. The Observer Pattern for text distribution enables flexible output routing without coupling.

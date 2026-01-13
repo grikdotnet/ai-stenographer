@@ -1,6 +1,7 @@
 import logging
 from typing import List, Set, Optional, TYPE_CHECKING
 from src.types import RecognitionResult, DisplayInstructions
+from src.protocols import TextRecognitionSubscriber
 
 if TYPE_CHECKING:
     from src.gui.TextDisplayWidget import TextDisplayWidget
@@ -11,13 +12,21 @@ def _format_chunk_ids(chunk_ids: list) -> str:
     return f"[{chunk_ids[0]}-{chunk_ids[-1]}]" if chunk_ids else "[]"
 
 
-class TextFormatter:
+class TextFormatter(TextRecognitionSubscriber):
     """Formatting logic for text display.
 
     TextFormatter is a stateful controller that:
     - Tracks formatting state
     - Calculates DisplayInstructions
     - Triggers TextDisplayWidget updates
+
+    Implements TextRecognitionSubscriber protocol:
+    - on_partial_update() → partial_update()
+    - on_finalization() → finalization()
+
+    Thread Safety:
+        Methods are called from TextMatcher's background thread.
+        Delegates to TextDisplayWidget which handles thread-safe GUI updates.
     """
 
     PARAGRAPH_PAUSE_THRESHOLD: float = 2.0  # seconds
@@ -37,6 +46,24 @@ class TextFormatter:
         self.last_finalized_text: str = ""
         self.last_finalized_end_time: float = 0.0
 
+    # TextRecognitionSubscriber protocol implementation
+    def on_partial_update(self, result: RecognitionResult) -> None:
+        """Handle preliminary recognition result (protocol method).
+
+        Args:
+            result: RecognitionResult with status='preliminary'
+        """
+        self.partial_update(result)
+
+    def on_finalization(self, result: RecognitionResult) -> None:
+        """Handle finalized recognition result (protocol method).
+
+        Args:
+            result: RecognitionResult with status='final' or 'flush'
+        """
+        self.finalization(result)
+
+    # Implementation methods
     def partial_update(self, result: RecognitionResult) -> None:
         """Calculate partial update. Detect pauses and insert paragraph breaks.
 

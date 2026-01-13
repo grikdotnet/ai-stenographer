@@ -15,6 +15,7 @@ from .SoundPreProcessor import SoundPreProcessor
 from .AdaptiveWindower import AdaptiveWindower
 from .Recognizer import Recognizer
 from .TextMatcher import TextMatcher
+from .RecognitionResultPublisher import RecognitionResultPublisher
 from .gui.ApplicationWindow import ApplicationWindow
 from .VoiceActivityDetector import VoiceActivityDetector
 from .ExecutionProviderManager import ExecutionProviderManager
@@ -130,12 +131,21 @@ class STTPipeline:
             verbose=verbose
         )
 
+        # Create publisher for text recognition results
+        self.text_recognition_publisher: RecognitionResultPublisher = RecognitionResultPublisher(
+            verbose=verbose
+        )
+
+        # Create TextMatcher with publisher (dependency injection)
         self.text_matcher: TextMatcher = TextMatcher(
-            self.text_queue,
-            formatter,
+            text_queue=self.text_queue,
+            publisher=self.text_recognition_publisher,
             app_state=self.app_state,
             verbose=verbose
         )
+
+        # Register formatter as subscriber
+        self.text_recognition_publisher.subscribe(formatter)
 
         # Update components list
         self.components: List[Any] = [
