@@ -1,175 +1,94 @@
-## **Milestone 2: Text Quality Improvements (High Priority - Q1)**
+## **Milestone 3: Buikd for Microsoft Store
 
-**Goal:** Make recognized text readable with paragraphs and confidence-based selection
+**Goal:** Build and publish the application in Mocrosoft Store
 
-### Tasks
 
-#### 2.1 Implement paragraph segmentation
-
-- Use existing silence duration tracking ([AudioSource.py:151](src/AudioSource.py#L151), [165-170](src/AudioSource.py#L165-L170))
-- Add configurable paragraph threshold (e.g., 2.0s silence)
-- Create ParagraphBreakMarker to insert breaks in TextMatcher
-- Update GuiWindow to render paragraph breaks
-
-#### 2.2 Confidence-based text selection in overlaps
-
-- Extract confidence scores from Parakeet model output
-- Add `confidence: float` field to RecognitionResult dataclass
-- Update TextMatcher.resolve_overlap() to prefer higher-confidence text
-- Log confidence scores in verbose mode
-
-#### 2.3 STT hallucination handling (multiple approaches)
-
-- **Approach A:** Post-processing filter in TextMatcher
-- **Approach B:** Confidence thresholding (drop low-confidence filler words)
-- **Approach C:** Pattern detection in RecognitionResult
-- **Approach D:** Configurable word blacklist in config JSON
-- Research which approach works best, may combine multiple
-
-2.4 Evaluate TEN VAD vs Silero
-https://huggingface.co/TEN-framework/ten-vad
-
-2.5 Evaluate canary-1b-v2
-https://huggingface.co/nvidia/canary-1b-v2
-
-### Details
-
-- **Dependencies:** None (parallel to M1)
-- **Estimated effort:** 3-4 weeks
-- **Risk:** Low
-- **Success criteria:** Readable paragraphs, fewer hallucinations, better overlap resolution
-
----
-
-## **Milestone 3: UI/UX Enhancements (Medium Priority - Q2)**
-
-**Goal:** Polish user interface with better feedback and display modes
+## **Milestone 4: Add features**
 
 ### Tasks
 
-#### 3.1 Improve model download progress display
-
-- Capture HuggingFace Hub CLI output from stdout/stderr
-- Parse progress info (download speed, ETA, bytes transferred)
-- Update ModelDownloadDialog with real-time progress text
-- Show both models' progress independently
-
-#### 3.2 Timestamp insertion feature (STANDALONE)
+#### 4.1 Timestamp insertion
 
 - Add "Insert Timestamp" button in GuiWindow
 - Format timestamps with configurable format (default: `[HH:MM:SS]`)
-- Insert at current cursor position in text
-- **Note:** Hotkey support moved to M4
+- Design the main window to show timestamps
 
-#### 3.3 Subtitle/overlay display mode
+#### 4.2 Subtitle/overlay display mode
 
 - Create SubtitleWindow class (Tkinter transparent overlay)
-- Large font, high contrast, always-on-top
+- Large font, high contrast
 - Toggle button in main GuiWindow
-- Position configurable (top/bottom/center)
+- Position configurable
 
-### Details
-
-- **Dependencies:** None
-- **Estimated effort:** 3 weeks
-- **Risk:** Low
-- **Success criteria:** Better download UX, timestamp insertion works, subtitle mode functional
-
----
-
-## **Milestone 4: System Integration & Hotkeys (High Priority - Q2)**
-
-**Goal:** Enable background operation with global hotkeys and text insertion into other apps
-
-### Tasks
-
-#### 4.1 Global hotkey framework
-
-- Research cross-platform hotkey libraries (pynput, keyboard, system-specific)
-- Implement HotkeyManager class
-- Register configurable hotkeys (e.g., Ctrl+Shift+Space)
-- Handle conflicts and permissions (accessibility on macOS/Linux)
-
-#### 4.2 Text insertion into other applications
+#### 4.3 Text insertion into other applications
 
 - Create TextInserter class (keyboard simulation)
 - Detect active window/cursor position
 - Simulate keyboard input to insert recognized text
-- Handle different OS clipboard mechanisms
-
-#### 4.3 Hotkey-driven workflow modes
-
+- Implement Hotkey
 - Push-to-talk mode (hold hotkey, speak, release → insert text)
 - Toggle mode (press hotkey to start/stop recognition)
 - Clipboard mode (copy instead of insert)
 
-**4.4 Background mode optimization**
+---
 
-- Minimize GUI when running in background
-- System tray icon with status indicator
-- Low-latency wake-up from hotkey
+## **Milestone 5: Speech recognition improvements
+### Tasks
 
-### Details
+#### 5.1 STT hallucination handling (multiple approaches)
 
-- **Dependencies:** M1 (needs stable CPU usage for background operation)
-- **Estimated effort:** 4 weeks
-- **Risk:** Medium-High (OS permissions, keyboard simulation security restrictions)
-- **Success criteria:** Global hotkeys work, text inserts into other apps, background mode stable
+- **Approach A:** Post-processing filter
+- **Approach B:** Confidence thresholding
+- **Approach C:** Pattern detection in TextMatcher
+- **Approach D:** Phrase blacklist
+
+#### 5.2 Evaluate canary-1b-v2
+https://huggingface.co/nvidia/canary-1b-v2
 
 ---
 
-## **Milestone 5: MacOS Port (High Priority - Q3)**
+## **Milestone 6: MacOS Port (High Priority - Q3)**
 
 **Goal:** Full MacOS support for both Intel and Apple Silicon architectures
 
 ### Tasks
 
-**5.1 Platform compatibility research**
+**6.1 Platform compatibility research**
 
-- Test all Python dependencies on macOS (sounddevice, tkinter, onnxruntime)
-- Research universal binary vs. architecture-specific builds
-- Investigate ONNX Runtime support for Apple Silicon
-- Check OpenVINO support for macOS (may not be available)
+- Add CoreML execution provider
+- Test all Python dependencies on macOS (sounddevice, tkinter)
+- Research universal binary vs. architecture-specific builds (Intel/M)
 
-**5.2 Build system for macOS**
+**6.2 Build system for macOS**
 
-- Update [build_distribution.py](build_distribution.py) for .app bundle creation
-- Create PyInstaller spec for macOS
+- Create a build script for MacOS
+- Make build scripts include different execution providers for different platforms
 - Handle Info.plist configuration
 - Research notarization requirements and costs
 
-**5.3 MacOS-specific integrations**
+**6.3 MacOS-specific integrations**
 
-- Implement macOS hotkey support (different from Windows/Linux)
+- Implement macOS hotkey support
 - Request Accessibility permissions for text insertion
 - Optional: Menu bar app integration
-- Test on both Intel and Apple Silicon Macs
 
-**5.4 Architecture decision**
+**6.4 Architecture decision**
 
 - Determine if single universal binary is feasible
 - If not, create separate Intel/ARM64 builds
 - Document hardware requirements per architecture
 
-### Details
-
-- **Dependencies:** M1 (hardware acceleration), M4 (hotkey system)
-- **Estimated effort:** 5-6 weeks
-- **Risk:** High (Apple code signing costs ~$99/year, notarization complexity, architecture differences)
-- **Success criteria:** App runs on macOS (Intel + ARM64), passes notarization, hotkeys work
-
 ---
 
-## **Milestone 6: LLM Integration (High Priority - Q3-Q4)**
+## **Milestone 7: LLM Integration**
 
 **Goal:** Post-process recognized text with local LLM for cleanup, formatting, summarization
 
 ### Tasks
 
-**6.1 LLM integration architecture**
+**7.1 LLM integration architecture**
 
 - Design plugin-based LLMProcessor interface
-- Support multiple backends (llama.cpp, ollama, OpenAI API)
 - Define async processing pipeline (non-blocking STT)
 - Create configuration schema for LLM settings
 
@@ -193,183 +112,3 @@ https://huggingface.co/nvidia/canary-1b-v2
 - Performance tuning (quantization, context length)
 - Monitor LLM latency vs. STT latency (balance speed vs. quality)
 
-### Details
-
-- **Dependencies:** M2 (needs clean text input), M1 (CPU headroom for LLM)
-- **Estimated effort:** 6-8 weeks
-- **Risk:** Medium (LLM model size/distribution, performance on older hardware)
-- **Success criteria:** Text cleanup works, summarization functional, <1s LLM latency
-
----
-
-## **Priority Matrix**
-
-| Priority | Milestone | Blocking Issues | User Impact |
-|----------|-----------|-----------------|-------------|
-| **0** | M0: Distribution Optimization | Quick win, improves distribution quality | Low |
-| **1** | M1: Performance | **CRITICAL** - App unusable on battery | High |
-| **2** | M2: Text Quality | Foundation for M6 | High |
-| **3** | M4: System Integration | Key differentiator feature | High |
-| **4** | M3: UI/UX | Polish, user experience | Medium |
-| **5** | M5: MacOS Port | Platform expansion | High (for Mac users) |
-| **6** | M6: LLM Integration | Major feature, depends on M1/M2 | Very High |
-
----
-
-## **Recommended Execution Order**
-
-### **Phase 0 - Quick Wins (Days 1-2)**
-
-- **Days 1-2:** M0 Distribution Optimization (zip packaging) - Quick improvement
-
-### **Phase 1 - Critical Fixes (Weeks 1-7)**
-
-- **Weeks 1-4:** M1 Performance (NPU/GPU acceleration) - BLOCKING
-- **Weeks 5-7:** M2 Text Quality (paragraphs, confidence, hallucinations)
-
-### **Phase 2 - Core Features (Weeks 8-15)**
-
-- **Weeks 8-11:** M4 System Integration (hotkeys, text insertion)
-- **Weeks 12-15:** M6.1-6.2 LLM Integration (architecture + text cleanup)
-
-### **Phase 3 - Polish & Expansion (Weeks 16-24)**
-
-- **Weeks 16-18:** M3 UI/UX (progress bars, timestamps, subtitles)
-- **Weeks 19-21:** M6.3-6.4 LLM Advanced Features (summarization, models)
-- **Weeks 22-27:** M5 MacOS Port (platform expansion)
-
-### **Phase 4 - Final Polish (Weeks 28-30)**
-
-- Bug fixes, documentation, performance tuning
-- Integration testing across all milestones
-- Release preparation
-
----
-
-## **Risk Assessment & Mitigation**
-
-### High-Risk Items
-
-1. **OpenVINO NPU support**
-   - Risk: May not work well on specific Intel NPU models
-   - Mitigation: Test early with sample models, maintain CPU fallback
-
-2. **MacOS notarization**
-   - Risk: $99/year + Apple bureaucracy complexity
-   - Mitigation: Budget for Apple Developer Program, follow notarization guides
-
-3. **Hotkey permissions**
-   - Risk: Modern OSes restrict background keyboard access
-   - Mitigation: Research existing tools (Talon, Dragon), request proper permissions
-
-4. **LLM model size**
-   - Risk: Could bloat distribution to 5-10GB
-   - Mitigation: Separate LLM models as optional downloads, use quantized models
-
-5. **Confidence scores from Parakeet**
-   - Risk: Model may not expose confidence easily
-   - Mitigation: Research onnx_asr API, may need raw logits processing
-
----
-
-## **Key Architectural Changes**
-
-### Milestone 1 - New Components
-
-- `ExecutionProviderManager` - Manages NPU/GPU/CPU fallback
-- `OpenVINOProvider` - OpenVINO integration layer
-
-### Milestone 2 - Updates
-
-- `RecognitionResult` - Add `confidence: float` field
-- `TextMatcher` - Add `ParagraphBreakMarker` logic
-- `GuiWindow` - Render paragraph breaks
-
-### Milestone 4 - New Components
-
-- `HotkeyManager` - Global hotkey registration
-- `TextInserter` - Keyboard simulation for text insertion
-
-### Milestone 6 - New Components
-
-- `LLMProcessor` - Plugin interface for LLM backends
-- `TextCleanupProcessor` - Sentence formation, grammar
-- `SummarizationProcessor` - Meeting notes, summaries
-
----
-
-## **Testing Strategy**
-
-Each milestone should maintain the TDD approach:
-
-1. **Write tests first** - Define expected behavior
-2. **Implement to pass tests** - Focus on logic, not implementation details
-3. **Integration tests** - Test component interactions
-4. **Performance tests** - Measure CPU, latency, memory
-
-### Test Coverage Targets
-
-- M1: Performance benchmarks (CPU < 20%, no overflows)
-- M2: Text quality metrics (paragraph detection, confidence accuracy)
-- M3: UI tests (progress display, timestamp insertion)
-- M4: Hotkey tests (registration, text insertion simulation)
-- M5: Platform tests (macOS compatibility matrix)
-- M6: LLM tests (cleanup quality, latency < 1s)
-
----
-
-## **Success Metrics**
-
-### Milestone 1
-
-- ✅ CPU usage < 20% on battery
-- ✅ Zero audio buffer overflows
-- ✅ Recognition accuracy ≥ baseline
-
-### Milestone 2
-
-- ✅ Paragraphs correctly separated on 2s+ silence
-- ✅ Confidence-based selection improves overlap quality
-- ✅ Hallucinations reduced by >50%
-
-### Milestone 3
-
-- ✅ Download progress shows real-time updates
-- ✅ Timestamp insertion works in GUI
-- ✅ Subtitle mode renders correctly over other apps
-
-### Milestone 4
-
-- ✅ Hotkeys work in background
-- ✅ Text inserts into other apps (notepad, browser, etc.)
-- ✅ Push-to-talk latency < 500ms
-
-### Milestone 5
-
-- ✅ App runs on macOS Intel + Apple Silicon
-- ✅ Passes Apple notarization
-- ✅ Hotkeys work on macOS with proper permissions
-
-### Milestone 6
-
-- ✅ Text cleanup improves readability (user study)
-- ✅ Summarization produces useful meeting notes
-- ✅ LLM latency < 1s per paragraph
-
----
-
-
-## **Future Considerations (Beyond Milestones)**
-
-- Android/iOS mobile app (voice notes)
-- Browser extension (dictation in web apps)
-- Multi-speaker diarization (who said what)
-- Custom vocabulary/domain adaptation
-- Cloud sync for transcriptions
-- API for third-party integrations
-
----
-
-**Document Version:** 1.1
-**Last Updated:** 2025-10-16
-**Status:** Planning Phase (M0 in progress)
