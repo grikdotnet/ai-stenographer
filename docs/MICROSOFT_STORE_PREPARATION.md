@@ -1,8 +1,6 @@
 # Microsoft Store Preparation Guide
 
 **Status:** Planning Phase
-**Target Version:** 1.0.0
-**Last Updated:** December 16, 2025
 
 ## Overview
 
@@ -408,6 +406,8 @@ Generate self-signed certificate for testing (Store will re-sign for production)
 
 **Generation Steps:**
 
+SDK_PATH = "C:\Program Files (x86)\Windows Kits\10\App Certification Kit"
+
 ```powershell
 # Create self-signed certificate for testing
 $cert = New-SelfSignedCertificate `
@@ -585,11 +585,6 @@ Remove-AppxPackage -Package (Get-AppxPackage -Name "AI.Stenographer").PackageFul
 
 ### Partner Center Requirements
 
-**Account Setup:**
-- Microsoft Partner Center account (one-time $19 registration fee)
-- Tax information (W-9 or W-8BEN)
-- Payout account (if planning paid features)
-
 **App Listing Information:**
 - **Category:** Productivity → Dictation ([Category selection](https://learn.microsoft.com/en-us/windows/apps/publish/publish-your-app/msix/app-package-requirements))
 - **Description:** Real-time offline speech-to-text dictation with local AI processing
@@ -609,69 +604,6 @@ Remove-AppxPackage -Package (Get-AppxPackage -Name "AI.Stenographer").PackageFul
 - Internet capability justified (model downloads disclosed)
 - No crashes during testing
 - Functional on Windows 10 version 1809+ and Windows 11
-
----
-
-## Migration from Portable to Store Version
-
-### Path Migration Logic
-
-When user already has portable version installed:
-
-```python
-# In main.py startup sequence
-def migrate_from_portable():
-    """
-    Detects portable installation and offers to migrate models to AppData.
-
-    Searches common locations:
-    - Desktop/AI-Stenographer/
-    - Downloads/AI-Stenographer/
-    - C:/AI-Stenographer/
-    """
-    if ENVIRONMENT != "store":
-        return
-
-    portable_candidates = [
-        Path.home() / "Desktop" / "AI-Stenographer" / "_internal" / "models",
-        Path.home() / "Downloads" / "AI-Stenographer" / "_internal" / "models",
-        Path("C:/AI-Stenographer/_internal/models"),
-    ]
-
-    for candidate in portable_candidates:
-        if candidate.exists() and (candidate / "parakeet").exists():
-            # Found existing models (~2GB)
-            response = messagebox.askyesno(
-                "Migrate Models",
-                f"Found existing AI models at:\n{candidate}\n\n"
-                "Copy to Store location to avoid re-downloading 2GB?\n"
-                "(This may take a few minutes)"
-            )
-
-            if response:
-                copy_models(candidate, MODELS_DIR)
-                break
-```
-
----
-
-## Timeline & Effort Estimate
-
-### Development Phase (2-3 weeks)
-- **Week 1:** Tasks 1-3 (Manifest, Launcher, Path Resolution) - 5 days
-- **Week 2:** Tasks 4-6 (Assets, Privacy Policy, Certificate) - 3 days
-- **Week 2:** Task 7 (Build Script) - 4 days
-- **Week 3:** Task 8 (Testing & Validation) - 3 days
-- **Week 3:** Buffer for fixes and refinement - 2 days
-
-### Submission Phase (1-2 weeks)
-- Partner Center account setup - 1 day
-- Store listing preparation (screenshots, description) - 2 days
-- Initial submission - 1 day
-- Microsoft certification review - 3-7 days (variable)
-- Address certification feedback (if any) - 1-3 days
-
-**Total Time:** 3-5 weeks from start to approved listing
 
 ---
 
@@ -698,24 +630,6 @@ MIGRATE_FROM_PORTABLE = True       # Auto-detect and migrate existing models
 
 ---
 
-## Risk Assessment
-
-### Low Risk
-- ✅ Microphone capability (justified, disclosed in privacy policy)
-- ✅ Internet capability (model download only, disclosed)
-- ✅ Self-signed certificate for testing (Store re-signs for production)
-- ✅ Python embeddable package compatibility (proven in portable build)
-
-### Medium Risk
-- ⚠️ MSIX entry point architecture (mitigated with C++ launcher stub)
-- ⚠️ Path resolution changes (backward compatibility with migration logic)
-- ⚠️ First-time Store submission (may require certification iterations)
-
-### High Risk
-- ❌ None identified
-
----
-
 ## Next Steps
 
 1. **User Decision:** Approve this plan and confirm timeline
@@ -734,7 +648,6 @@ MIGRATE_FROM_PORTABLE = True       # Auto-detect and migrate existing models
 - [main.py](file://c:/workspaces/stt/main.py) - Entry point (requires path resolution updates)
 - [EULA.txt](file://c:/workspaces/stt/EULA.txt) - End-user license agreement
 - [LICENSE.txt](file://c:/workspaces/stt/LICENSE.txt) - Software license
-- [MILESTONES.md](file://c:/workspaces/stt/MILESTONES.md) - Project roadmap (add M0.5: Store Publication)
 
 **To Be Created:**
 - `msix/AppxManifest.xml` - Store package manifest

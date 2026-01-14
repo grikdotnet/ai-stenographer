@@ -1,5 +1,6 @@
 # main.py
 import sys
+import os
 import logging
 from pathlib import Path
 from typing import Dict
@@ -37,9 +38,14 @@ def is_distribution_mode(script_path: Path) -> bool:
 
 def resolve_paths(script_path: Path) -> Dict[str, Path]:
     """
-    Resolves application paths for both distribution and development modes.
+    Resolves application paths for development, portable, and Store environments.
 
-    Distribution structure:
+    Environments:
+    - Development: Uses project directory (./models, ./config)
+    - Portable: Uses _internal relative paths (distribution ZIP)
+    - Store: Uses AppData for writable data (MSIX sandboxed)
+
+    Distribution structure (Portable):
         STT-Stenographer/              # ROOT_DIR
         ├── stenographer.jpg           # User-visible assets
         ├── icon.ico
@@ -59,16 +65,46 @@ def resolve_paths(script_path: Path) -> Dict[str, Path]:
         ├── models/                    # MODELS_DIR
         └── stenographer.jpg
 
+    Store structure (MSIX):
+        C:/Program Files/WindowsApps/.../ # APP_DIR (read-only)
+        %LOCALAPPDATA%/AI-Stenographer/   # MODELS_DIR, CONFIG_DIR (writable)
+
     Args:
         script_path: Path to main script (.py or .pyc)
 
     Returns:
-        Dictionary with resolved paths
+        Dictionary with resolved paths including ENVIRONMENT key
     """
     script_path = script_path.resolve()
 
-    if is_distribution_mode(script_path):
-        # Distribution mode: _internal/app/main.pyc
+    # Detect Microsoft Store environment (MSIX package)
+    is_store = os.environ.get('MSIX_PACKAGE_IDENTITY') is not None
+    is_frozen = getattr(sys, 'frozen', False)
+
+    if is_store:
+        # Microsoft Store environment (sandboxed)
+        # All writable data goes to AppData
+        app_data = Path(os.environ['LOCALAPPDATA']) / "AI-Stenographer"
+        app_data.mkdir(parents=True, exist_ok=True)
+
+        # App binaries are in read-only WindowsApps directory
+        if is_frozen:
+            app_dir = Path(sys.executable).parent
+        else:
+            app_dir = script_path.parent
+
+        return {
+            "APP_DIR": app_dir,
+            "INTERNAL_DIR": app_dir / "_internal",
+            "ROOT_DIR": app_dir,
+            "MODELS_DIR": app_data / "models",
+            "CONFIG_DIR": app_data / "config",
+            "ASSETS_DIR": app_dir,  # Assets bundled with app
+            "LOGS_DIR": app_data / "logs",
+            "ENVIRONMENT": "store"
+        }
+    elif is_distribution_mode(script_path):
+        # Portable distribution mode: _internal/app/main.pyc
         app_dir = script_path.parent              # _internal/app/
         internal_dir = app_dir.parent             # _internal/
         root_dir = internal_dir.parent            # STT-Stenographer/
@@ -81,6 +117,7 @@ def resolve_paths(script_path: Path) -> Dict[str, Path]:
             "CONFIG_DIR": app_dir / "config",
             "ASSETS_DIR": app_dir / "assets",
             "LOGS_DIR": root_dir / "logs",
+            "ENVIRONMENT": "portable"
         }
     else:
         # Development mode: ./main.py
@@ -94,15 +131,13 @@ def resolve_paths(script_path: Path) -> Dict[str, Path]:
             "CONFIG_DIR": project_dir / "config",
             "ASSETS_DIR": project_dir,  # Assets in project root during dev
             "LOGS_DIR": project_dir / "logs",
+            "ENVIRONMENT": "development"
         }
 
 
 def get_asset_path(asset_name: str, paths: Dict[str, Path]) -> Path:
     """
     Gets path to user-visible asset file.
-
-    In distribution, user-visible assets (stenographer.jpg, icon.ico) are in
-    the root directory, not in _internal.
 
     Args:
         asset_name: Asset filename (e.g., "stenographer.jpg")
@@ -122,9 +157,6 @@ def get_asset_path(asset_name: str, paths: Dict[str, Path]) -> Path:
 def get_config_path(config_name: str, paths: Dict[str, Path]) -> Path:
     """
     Gets path to configuration file.
-
-    Config files are always in _internal/app/config/ (distribution)
-    or ./config/ (development).
 
     Args:
         config_name: Config filename (e.g., "stt_config.json")
