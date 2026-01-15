@@ -1,207 +1,11 @@
 # main.py
 import sys
-import os
 import logging
 from pathlib import Path
-from typing import Dict
 from logging.handlers import RotatingFileHandler
+from src.PathResolver import PathResolver
 from src.ModelManager import ModelManager
-from src.ModelDownloadDialog import show_download_dialog
 from src.gui.LoadingWindow import LoadingWindow
-
-
-# ============================================================================
-# PATH RESOLUTION FOR _INTERNAL DISTRIBUTION STRUCTURE
-# ============================================================================
-def is_distribution_mode(script_path: Path) -> bool:
-    """
-    Detects if running from distribution (_internal structure) or development.
-
-    Distribution structure:
-        STT-Stenographer/_internal/app/main.pyc
-
-    Development structure:
-        stt-project/main.py
-
-    Args:
-        script_path: Path to main script (.py or .pyc)
-
-    Returns:
-        True if running from _internal distribution structure
-    """
-    script_path = script_path.resolve()
-
-    # Check if path contains "_internal/app"
-    parts = script_path.parts
-    return "_internal" in parts and "app" in parts
-
-
-def _get_msix_local_cache_path() -> Path:
-    """
-    Gets the LocalCache path for MSIX packaged apps.
-
-    MSIX packages have virtualized file system - %LOCALAPPDATA% doesn't work
-    directly. Uses Windows.Storage.ApplicationData API to get the real path.
-
-    Returns:
-        Path to LocalCache folder (writable storage for MSIX apps)
-    """
-    try:
-        # Try Windows.Storage API (requires winrt package)
-        from winrt.windows.storage import ApplicationData
-        return Path(ApplicationData.current.local_cache_folder.path)
-    except ImportError:
-        # Fallback: construct path from package identity
-        # Package folder is at: %LOCALAPPDATA%\Packages\<PackageFamilyName>\LocalCache
-        local_app_data = Path(os.environ['LOCALAPPDATA'])
-        packages_dir = local_app_data / "Packages"
-
-        # Find our package folder (starts with "AI.Stenographer_")
-        if packages_dir.exists():
-            for folder in packages_dir.iterdir():
-                if folder.is_dir() and folder.name.startswith("AI.Stenographer_"):
-                    return folder / "LocalCache" / "Local" / "AI-Stenographer"
-
-        # Ultimate fallback - shouldn't happen but let's not crash
-        return local_app_data / "AI-Stenographer"
-
-
-def resolve_paths(script_path: Path) -> Dict[str, Path]:
-    """
-    Resolves application paths for development, portable, and Store environments.
-
-    Environments:
-    - Development: Uses project directory (./models, ./config)
-    - Portable: Uses _internal relative paths (distribution ZIP)
-    - Store: Uses AppData for writable data (MSIX sandboxed)
-
-    Args:
-        script_path: Path to main script (.py or .pyc)
-
-    Returns:
-        Dictionary with resolved paths including ENVIRONMENT key
-    """
-    script_path = script_path.resolve()
-
-    # Detect Microsoft Store environment (MSIX package)
-    # Method 1: Environment variable set by launcher
-    is_store = os.environ.get('MSIX_PACKAGE_IDENTITY') is not None
-    # Method 2: Fallback - detect WindowsApps installation path
-    if not is_store:
-        is_store = 'WindowsApps' in str(script_path)
-    is_frozen = getattr(sys, 'frozen', False)
-
-    if is_store:
-        # Microsoft Store sandboxed environment
-        app_data = _get_msix_local_cache_path()
-        app_data.mkdir(parents=True, exist_ok=True)
-
-        app_dir = script_path.parent          # _internal/app/
-        internal_dir = app_dir.parent         # _internal/
-        root_dir = internal_dir.parent        # Package root
-
-        return {
-            "APP_DIR": app_dir,
-            "INTERNAL_DIR": internal_dir,
-            "ROOT_DIR": root_dir,
-            "MODELS_DIR": app_data / "models",
-            "CONFIG_DIR": app_data / "config",
-            "ASSETS_DIR": app_dir,  # Assets bundled with app
-            "LOGS_DIR": app_data / "logs",
-            "ENVIRONMENT": "store"
-        }
-    elif is_distribution_mode(script_path):
-        # Portable distribution mode: _internal/app/main.pyc
-        app_dir = script_path.parent              # _internal/app/
-        internal_dir = app_dir.parent             # _internal/
-        root_dir = internal_dir.parent            # STT-Stenographer/
-
-        return {
-            "APP_DIR": app_dir,
-            "INTERNAL_DIR": internal_dir,
-            "ROOT_DIR": root_dir,
-            "MODELS_DIR": internal_dir / "models",
-            "CONFIG_DIR": app_dir / "config",
-            "ASSETS_DIR": app_dir / "assets",
-            "LOGS_DIR": root_dir / "logs",
-            "ENVIRONMENT": "portable"
-        }
-    else:
-        # Development mode: ./main.py
-        project_dir = script_path.parent
-
-        return {
-            "APP_DIR": project_dir,
-            "INTERNAL_DIR": project_dir,  # No _internal in dev
-            "ROOT_DIR": project_dir,
-            "MODELS_DIR": project_dir / "models",
-            "CONFIG_DIR": project_dir / "config",
-            "ASSETS_DIR": project_dir,  # Assets in project root during dev
-            "LOGS_DIR": project_dir / "logs",
-            "ENVIRONMENT": "development"
-        }
-
-
-def get_asset_path(asset_name: str, paths: Dict[str, Path]) -> Path:
-    """
-    Gets path to user-visible asset file.
-
-    Args:
-        asset_name: Asset filename (e.g., "stenographer.jpg")
-        paths: Resolved paths from resolve_paths()
-
-    Returns:
-        Path to asset file
-    """
-    if is_distribution_mode(paths["APP_DIR"] / "main.pyc"):
-        # Distribution: assets in root directory (user-visible)
-        return paths["ROOT_DIR"] / asset_name
-    else:
-        # Development: assets in project root
-        return paths["ROOT_DIR"] / asset_name
-
-
-def get_config_path(config_name: str, paths: Dict[str, Path]) -> Path:
-    """
-    Gets path to configuration file, copying from bundled defaults if needed.
-
-    Args:
-        config_name: Config filename (e.g., "stt_config.json")
-        paths: Resolved paths from resolve_paths()
-
-    Returns:
-        Path to config file
-    """
-    config_path = paths["CONFIG_DIR"] / config_name
-
-    # For Store mode, copy bundled config to AppData on first run
-    if paths["ENVIRONMENT"] == "store" and not config_path.exists():
-        # Bundled config is at APP_DIR/config/ (i.e., _internal/app/config/)
-        bundled_config = paths["APP_DIR"] / "config" / config_name
-        logging.info(f"APP_DIR: {paths['APP_DIR']}")
-        if bundled_config.exists():
-            import shutil
-            config_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(bundled_config, config_path)
-        else:
-            logging.warning(f"Bundled config not found at {bundled_config}")
-
-    return config_path
-
-
-def ensure_models_dir(paths: Dict[str, Path]) -> Path:
-    """
-    Ensures models directory exists and returns its path.
-
-    Args:
-        paths: Resolved paths from resolve_paths()
-
-    Returns:
-        Path to models directory
-    """
-    models_dir = paths["MODELS_DIR"]
-    models_dir.mkdir(parents=True, exist_ok=True)
-    return models_dir
 
 
 def setup_logging(logs_dir: Path, verbose: bool = False, is_frozen: bool = False):
@@ -264,18 +68,19 @@ if hasattr(sys.modules['__main__'], '__file__'):
 else:
     SCRIPT_PATH = Path(__file__).resolve()
 
-# Resolve all paths
-PATHS = resolve_paths(SCRIPT_PATH)
+# Initialize path resolver
+path_resolver = PathResolver(SCRIPT_PATH)
+PATHS = path_resolver.paths
 
 # Export convenient globals
-APP_DIR = PATHS["APP_DIR"]
-ROOT_DIR = PATHS["ROOT_DIR"]
-MODELS_DIR = PATHS["MODELS_DIR"]
-CONFIG_DIR = PATHS["CONFIG_DIR"]
-LOGS_DIR = PATHS["LOGS_DIR"]
+APP_DIR = PATHS.app_dir
+ROOT_DIR = PATHS.root_dir
+MODELS_DIR = PATHS.models_dir
+CONFIG_DIR = PATHS.config_dir
+LOGS_DIR = PATHS.logs_dir
 
-# Ensure models directory exists
-ensure_models_dir(PATHS)
+# Ensure writable directories exist
+path_resolver.ensure_local_dir_structure()
 
 if __name__ == "__main__":
     loading_window = None
@@ -298,7 +103,7 @@ if __name__ == "__main__":
                 input_file = arg.split("=", 1)[1]
 
         # Show loading window with stenographer image
-        image_path = get_asset_path("stenographer.jpg", PATHS)
+        image_path = path_resolver.get_asset_path("stenographer.jpg")
         loading_window = LoadingWindow(image_path, "Initializing...")
 
         # Check for missing models BEFORE importing pipeline
@@ -325,7 +130,7 @@ if __name__ == "__main__":
         pipeline = STTPipeline(
             model_path=str(MODELS_DIR / "parakeet"),
             models_dir=MODELS_DIR,
-            config_path=str(get_config_path("stt_config.json", PATHS)),
+            config_path=str(path_resolver.get_config_path("stt_config.json")),
             verbose=verbose,
             window_duration=window_duration,
             input_file=input_file

@@ -7,12 +7,12 @@ import sys
 import os
 from pathlib import Path
 
-# Import resolve_paths from main (one level up from tests/)
+# Import PathResolver from src (one level up from tests/)
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from main import resolve_paths
+from src.PathResolver import PathResolver
 
 
-def test_environment(name: str, env_vars: dict, script_path: Path, set_frozen: bool = False):
+def __test_environment(name: str, env_vars: dict, script_path: Path, set_frozen: bool = False):
     """Test path resolution in a specific environment."""
     print(f"\n{'='*60}")
     print(f"Testing: {name}")
@@ -35,18 +35,23 @@ def test_environment(name: str, env_vars: dict, script_path: Path, set_frozen: b
         sys.frozen = True
 
     try:
-        paths = resolve_paths(script_path)
+        resolver = PathResolver(script_path)
+        paths = resolver.paths
 
-        print(f"\nEnvironment: {paths.get('ENVIRONMENT', 'unknown')}")
+        print(f"\nEnvironment: {paths.environment}")
         print(f"\nResolved Paths:")
-        for key, value in paths.items():
-            if key != 'ENVIRONMENT':
-                print(f"  {key:15} = {value}")
+        print(f"  {'app_dir':15} = {paths.app_dir}")
+        print(f"  {'internal_dir':15} = {paths.internal_dir}")
+        print(f"  {'root_dir':15} = {paths.root_dir}")
+        print(f"  {'models_dir':15} = {paths.models_dir}")
+        print(f"  {'config_dir':15} = {paths.config_dir}")
+        print(f"  {'assets_dir':15} = {paths.assets_dir}")
+        print(f"  {'logs_dir':15} = {paths.logs_dir}")
 
         # Check if paths are writable
         print(f"\nWritability Check:")
-        for key in ['MODELS_DIR', 'CONFIG_DIR', 'LOGS_DIR']:
-            path = paths[key]
+        for key in ['models_dir', 'config_dir', 'logs_dir']:
+            path = getattr(paths, key)
             try:
                 path.mkdir(parents=True, exist_ok=True)
                 test_file = path / ".write_test"
@@ -78,7 +83,7 @@ def main():
     print("="*60)
 
     # Test 1: Development mode (current environment)
-    test_environment(
+    _test_environment(
         "Development Mode",
         {},
         Path(__file__).parent / "main.py",
@@ -87,7 +92,7 @@ def main():
 
     # Test 2: Portable distribution mode
     portable_path = Path("C:/AI-Stenographer/_internal/app/main.pyc")
-    test_environment(
+    _test_environment(
         "Portable Distribution Mode",
         {},
         portable_path,
@@ -96,7 +101,7 @@ def main():
 
     # Test 3: Microsoft Store mode
     store_path = Path("C:/Program Files/WindowsApps/AI.Stenographer_1.0.0.0_x64/_internal/app/main.pyc")
-    test_environment(
+    _test_environment(
         "Microsoft Store Mode (MSIX)",
         {
             'MSIX_PACKAGE_IDENTITY': 'AI.Stenographer_1.0.0.0_x64__8wekyb3d8bbwe',

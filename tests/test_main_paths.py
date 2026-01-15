@@ -1,5 +1,5 @@
 """
-Tests for main.py path resolution in _internal distribution structure.
+Tests for PathResolver in _internal distribution structure.
 
 Tests verify that paths resolve correctly when running from:
 - Development: ./main.py (source code)
@@ -21,8 +21,9 @@ STT-Stenographer/
 import pytest
 from pathlib import Path
 import sys
-import tempfile
-import shutil
+import os
+
+from src.PathResolver import PathResolver, ResolvedPaths
 
 
 class TestPathResolution:
@@ -43,17 +44,15 @@ class TestPathResolution:
         main_pyc = app_dir / "main.pyc"
         main_pyc.write_bytes(b"fake bytecode")
 
-        # Import path resolution logic (to be implemented)
-        from main import resolve_paths
+        resolver = PathResolver(main_pyc)
+        paths = resolver.paths
 
-        paths = resolve_paths(main_pyc)
-
-        assert paths["APP_DIR"] == app_dir
-        assert paths["INTERNAL_DIR"] == internal_dir
-        assert paths["ROOT_DIR"] == root_dir
-        assert paths["MODELS_DIR"] == models_dir
-        assert paths["CONFIG_DIR"] == app_dir / "config"
-        assert paths["ASSETS_DIR"] == app_dir / "assets"
+        assert paths.app_dir == app_dir
+        assert paths.internal_dir == internal_dir
+        assert paths.root_dir == root_dir
+        assert paths.models_dir == models_dir
+        assert paths.config_dir == app_dir / "config"
+        assert paths.assets_dir == app_dir / "assets"
 
     def test_paths_from_development_source(self, tmp_path):
         """Should resolve paths correctly when running from development ./main.py."""
@@ -64,15 +63,13 @@ class TestPathResolution:
         main_py = project_dir / "main.py"
         main_py.write_text("# main")
 
-        # Import path resolution logic
-        from main import resolve_paths
-
-        paths = resolve_paths(main_py)
+        resolver = PathResolver(main_py)
+        paths = resolver.paths
 
         # In development, use current directory structure
-        assert paths["APP_DIR"] == project_dir
-        assert paths["MODELS_DIR"] == project_dir / "models"
-        assert paths["CONFIG_DIR"] == project_dir / "config"
+        assert paths.app_dir == project_dir
+        assert paths.models_dir == project_dir / "models"
+        assert paths.config_dir == project_dir / "config"
 
     def test_assets_loading_from_internal(self, tmp_path):
         """Should load stenographer.jpg from correct location in distribution."""
@@ -94,10 +91,8 @@ class TestPathResolution:
         main_pyc = app_dir / "main.pyc"
         main_pyc.write_bytes(b"fake")
 
-        from main import resolve_paths, get_asset_path
-
-        paths = resolve_paths(main_pyc)
-        image_path = get_asset_path("stenographer.jpg", paths)
+        resolver = PathResolver(main_pyc)
+        image_path = resolver.get_asset_path("stenographer.jpg")
 
         # Should use root directory image (visible to user)
         assert image_path == root_image
@@ -120,17 +115,15 @@ class TestPathResolution:
         main_pyc = app_dir / "main.pyc"
         main_pyc.write_bytes(b"fake")
 
-        from main import resolve_paths, get_config_path
-
-        paths = resolve_paths(main_pyc)
-        config_path = get_config_path("stt_config.json", paths)
+        resolver = PathResolver(main_pyc)
+        config_path = resolver.get_config_path("stt_config.json")
 
         assert config_path == config_file
         assert config_path.exists()
 
-    def test_models_directory_creation(self, tmp_path):
-        """Should create models directory in _internal/models/ if it doesn't exist."""
-        # Create distribution structure WITHOUT models dir
+    def test_local_dir_structure_creation(self, tmp_path):
+        """Should create models and config directories if they don't exist."""
+        # Create distribution structure WITHOUT models/config dirs
         root_dir = tmp_path / "STT-Stenographer"
         app_dir = root_dir / "_internal" / "app"
         app_dir.mkdir(parents=True)
@@ -139,14 +132,17 @@ class TestPathResolution:
         main_pyc = app_dir / "main.pyc"
         main_pyc.write_bytes(b"fake")
 
-        from main import resolve_paths, ensure_models_dir
+        resolver = PathResolver(main_pyc)
+        resolver.ensure_local_dir_structure()
 
-        paths = resolve_paths(main_pyc)
-        models_dir = ensure_models_dir(paths)
+        # Both directories should exist
+        assert resolver.paths.models_dir.exists()
+        assert resolver.paths.models_dir.is_dir()
+        assert resolver.paths.models_dir == root_dir / "_internal" / "models"
 
-        assert models_dir.exists()
-        assert models_dir.is_dir()
-        assert models_dir == root_dir / "_internal" / "models"
+        assert resolver.paths.config_dir.exists()
+        assert resolver.paths.config_dir.is_dir()
+        assert resolver.paths.config_dir == app_dir / "config"
 
     def test_paths_work_with_bytecode_no_source(self, tmp_path):
         """Should resolve paths correctly when .py source files don't exist (bytecode-only)."""
@@ -167,11 +163,11 @@ class TestPathResolution:
         assert not (app_dir / "main.py").exists()
         assert not (src_dir / "pipeline.py").exists()
 
-        from main import resolve_paths
+        resolver = PathResolver(main_pyc)
+        paths = resolver.paths
 
         # Should work without .py files
-        paths = resolve_paths(main_pyc)
-        assert paths["APP_DIR"] == app_dir
+        assert paths.app_dir == app_dir
 
     def test_working_directory_independence(self, tmp_path):
         """Should resolve paths correctly regardless of current working directory."""
@@ -187,17 +183,16 @@ class TestPathResolution:
         other_dir = tmp_path / "other"
         other_dir.mkdir()
 
-        import os
         original_cwd = os.getcwd()
         try:
             os.chdir(str(other_dir))
 
-            from main import resolve_paths
+            resolver = PathResolver(main_pyc)
+            paths = resolver.paths
 
             # Should resolve to absolute paths, not relative to CWD
-            paths = resolve_paths(main_pyc)
-            assert paths["ROOT_DIR"].is_absolute()
-            assert paths["ROOT_DIR"] == root_dir
+            assert paths.root_dir.is_absolute()
+            assert paths.root_dir == root_dir
 
         finally:
             os.chdir(original_cwd)
@@ -215,11 +210,10 @@ class TestPathResolutionDevelopmentMode:
         main_py = dev_dir / "main.py"
         main_py.write_text("# main")
 
-        from main import is_distribution_mode
+        resolver = PathResolver(main_py)
 
-        # Should return False for development (no _internal structure)
-        is_dist = is_distribution_mode(main_py)
-        assert is_dist is False
+        # Should return "development" for development (no _internal structure)
+        assert resolver.mode == "development"
 
     def test_distribution_mode_detection(self, tmp_path):
         """Should detect when running from _internal distribution structure."""
@@ -231,11 +225,10 @@ class TestPathResolutionDevelopmentMode:
         main_pyc = app_dir / "main.pyc"
         main_pyc.write_bytes(b"fake")
 
-        from main import is_distribution_mode
+        resolver = PathResolver(main_pyc)
 
-        # Should return True (has _internal structure)
-        is_dist = is_distribution_mode(main_pyc)
-        assert is_dist is True
+        # Should return "portable" (has _internal structure)
+        assert resolver.mode == "portable"
 
     def test_development_uses_relative_paths(self, tmp_path):
         """In development mode, should use relative paths from project root."""
@@ -251,10 +244,9 @@ class TestPathResolutionDevelopmentMode:
         main_py = dev_dir / "main.py"
         main_py.write_text("# main")
 
-        from main import resolve_paths
-
-        paths = resolve_paths(main_py)
+        resolver = PathResolver(main_py)
+        paths = resolver.paths
 
         # Should use project directory structure
-        assert paths["MODELS_DIR"] == models_dir
-        assert paths["CONFIG_DIR"] == config_dir
+        assert paths.models_dir == models_dir
+        assert paths.config_dir == config_dir
