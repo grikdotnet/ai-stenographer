@@ -1,6 +1,4 @@
-// AIStenographer.cpp
-// Native launcher for AI Stenographer MSIX package
-// Launches the Python runtime with the main application bytecode
+// Native launcher for Python runtime with the main application bytecode
 
 #include <windows.h>
 #include <shlwapi.h>

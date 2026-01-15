@@ -14,7 +14,7 @@ Avoid tests of parameters passed to methods, variables assignments and checks th
 Create dockblocks to describe logic and algorithms. Comment logic instead of commenting code.
 Add little comments in code, explain logic rather than operations.
 
-Before doing anything check whether the tofo item is in the task definition, or it is made up. Before doing anything on your own initiative, ask for the user confirmation.
+Before doing anything check whether the todo item is in the task definition, or it is made up. Before doing anything on your own initiative, ask for the user confirmation.
 
 Define types of parameters and return where possible.
 
