@@ -36,6 +36,36 @@ def is_distribution_mode(script_path: Path) -> bool:
     return "_internal" in parts and "app" in parts
 
 
+def _get_msix_local_cache_path() -> Path:
+    """
+    Gets the LocalCache path for MSIX packaged apps.
+
+    MSIX packages have virtualized file system - %LOCALAPPDATA% doesn't work
+    directly. Uses Windows.Storage.ApplicationData API to get the real path.
+
+    Returns:
+        Path to LocalCache folder (writable storage for MSIX apps)
+    """
+    try:
+        # Try Windows.Storage API (requires winrt package)
+        from winrt.windows.storage import ApplicationData
+        return Path(ApplicationData.current.local_cache_folder.path)
+    except ImportError:
+        # Fallback: construct path from package identity
+        # Package folder is at: %LOCALAPPDATA%\Packages\<PackageFamilyName>\LocalCache
+        local_app_data = Path(os.environ['LOCALAPPDATA'])
+        packages_dir = local_app_data / "Packages"
+
+        # Find our package folder (starts with "AI.Stenographer_")
+        if packages_dir.exists():
+            for folder in packages_dir.iterdir():
+                if folder.is_dir() and folder.name.startswith("AI.Stenographer_"):
+                    return folder / "LocalCache" / "Local" / "AI-Stenographer"
+
+        # Ultimate fallback - shouldn't happen but let's not crash
+        return local_app_data / "AI-Stenographer"
+
+
 def resolve_paths(script_path: Path) -> Dict[str, Path]:
     """
     Resolves application paths for development, portable, and Store environments.
@@ -44,30 +74,6 @@ def resolve_paths(script_path: Path) -> Dict[str, Path]:
     - Development: Uses project directory (./models, ./config)
     - Portable: Uses _internal relative paths (distribution ZIP)
     - Store: Uses AppData for writable data (MSIX sandboxed)
-
-    Distribution structure (Portable):
-        STT-Stenographer/              # ROOT_DIR
-        ├── stenographer.jpg           # User-visible assets
-        ├── icon.ico
-        └── _internal/                 # INTERNAL_DIR
-            ├── app/                   # APP_DIR
-            │   ├── main.pyc
-            │   ├── src/
-            │   ├── config/            # CONFIG_DIR
-            │   └── assets/            # ASSETS_DIR (not used currently)
-            └── models/                # MODELS_DIR
-
-    Development structure:
-        stt-project/                   # APP_DIR = ROOT_DIR
-        ├── main.py
-        ├── src/
-        ├── config/                    # CONFIG_DIR
-        ├── models/                    # MODELS_DIR
-        └── stenographer.jpg
-
-    Store structure (MSIX):
-        C:/Program Files/WindowsApps/.../ # APP_DIR (read-only)
-        %LOCALAPPDATA%/AI-Stenographer/   # MODELS_DIR, CONFIG_DIR (writable)
 
     Args:
         script_path: Path to main script (.py or .pyc)
@@ -78,25 +84,26 @@ def resolve_paths(script_path: Path) -> Dict[str, Path]:
     script_path = script_path.resolve()
 
     # Detect Microsoft Store environment (MSIX package)
+    # Method 1: Environment variable set by launcher
     is_store = os.environ.get('MSIX_PACKAGE_IDENTITY') is not None
+    # Method 2: Fallback - detect WindowsApps installation path
+    if not is_store:
+        is_store = 'WindowsApps' in str(script_path)
     is_frozen = getattr(sys, 'frozen', False)
 
     if is_store:
-        # Microsoft Store environment (sandboxed)
-        # All writable data goes to AppData
-        app_data = Path(os.environ['LOCALAPPDATA']) / "AI-Stenographer"
+        # Microsoft Store sandboxed environment
+        app_data = _get_msix_local_cache_path()
         app_data.mkdir(parents=True, exist_ok=True)
 
-        # App binaries are in read-only WindowsApps directory
-        if is_frozen:
-            app_dir = Path(sys.executable).parent
-        else:
-            app_dir = script_path.parent
+        app_dir = script_path.parent          # _internal/app/
+        internal_dir = app_dir.parent         # _internal/
+        root_dir = internal_dir.parent        # Package root
 
         return {
             "APP_DIR": app_dir,
-            "INTERNAL_DIR": app_dir / "_internal",
-            "ROOT_DIR": app_dir,
+            "INTERNAL_DIR": internal_dir,
+            "ROOT_DIR": root_dir,
             "MODELS_DIR": app_data / "models",
             "CONFIG_DIR": app_data / "config",
             "ASSETS_DIR": app_dir,  # Assets bundled with app
@@ -156,7 +163,7 @@ def get_asset_path(asset_name: str, paths: Dict[str, Path]) -> Path:
 
 def get_config_path(config_name: str, paths: Dict[str, Path]) -> Path:
     """
-    Gets path to configuration file.
+    Gets path to configuration file, copying from bundled defaults if needed.
 
     Args:
         config_name: Config filename (e.g., "stt_config.json")
@@ -165,7 +172,21 @@ def get_config_path(config_name: str, paths: Dict[str, Path]) -> Path:
     Returns:
         Path to config file
     """
-    return paths["CONFIG_DIR"] / config_name
+    config_path = paths["CONFIG_DIR"] / config_name
+
+    # For Store mode, copy bundled config to AppData on first run
+    if paths["ENVIRONMENT"] == "store" and not config_path.exists():
+        # Bundled config is at APP_DIR/config/ (i.e., _internal/app/config/)
+        bundled_config = paths["APP_DIR"] / "config" / config_name
+        logging.info(f"APP_DIR: {paths['APP_DIR']}")
+        if bundled_config.exists():
+            import shutil
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(bundled_config, config_path)
+        else:
+            logging.warning(f"Bundled config not found at {bundled_config}")
+
+    return config_path
 
 
 def ensure_models_dir(paths: Dict[str, Path]) -> Path:
@@ -195,31 +216,24 @@ def setup_logging(logs_dir: Path, verbose: bool = False, is_frozen: bool = False
         verbose: If True, set DEBUG level; otherwise INFO
         is_frozen: If True, skip console handler (frozen app has no console)
     """
-    # Reconfigure sys.stdout to use UTF-8 encoding BEFORE creating handlers
-    # This prevents UnicodeEncodeError on Windows when logging non-ASCII characters
+    # Reconfigure sys.stdout to use UTF-8 encoding
     if not is_frozen and hasattr(sys.stdout, 'buffer'):
         import io
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace', line_buffering=True)
         sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace', line_buffering=True)
 
-    # Create logs directory
     logs_dir.mkdir(parents=True, exist_ok=True)
 
-    # Determine log level
-    level = logging.DEBUG if verbose else logging.INFO
+    level = logging.DEBUG if verbose else logging.WARNING
 
-    # Configure root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
 
-    # Clear any existing handlers
     root_logger.handlers.clear()
 
-    # Create formatter
     formatter = logging.Formatter('[%(asctime)s] [%(levelname)s] %(message)s')
 
     # Add rotating file handler (10MB max, keep 5 files)
-    # Use UTF-8 encoding for log file to support Unicode
     log_file = logs_dir / "stenographer.log"
     file_handler = RotatingFileHandler(
         log_file,

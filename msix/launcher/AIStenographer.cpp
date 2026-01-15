@@ -2,9 +2,25 @@
 
 #include <windows.h>
 #include <shlwapi.h>
+#include <appmodel.h>
 #include <string>
 
 #pragma comment(lib, "shlwapi.lib")
+#pragma comment(lib, "kernel32.lib")
+
+/**
+ * Detects if the application is running inside an MSIX package.
+ *
+ * Uses GetCurrentPackageFullName() API - returns ERROR_INSUFFICIENT_BUFFER
+ * when running in a package context, APPMODEL_ERROR_NO_PACKAGE otherwise.
+ *
+ * @return true if running as MSIX package, false otherwise
+ */
+bool IsRunningAsMSIX() {
+    UINT32 length = 0;
+    LONG result = GetCurrentPackageFullName(&length, nullptr);
+    return (result == ERROR_INSUFFICIENT_BUFFER);
+}
 
 /**
  * Main entry point for the AI Stenographer launcher.
@@ -51,14 +67,42 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // Build command line: "pythonw.exe" "main.pyc"
     std::wstring cmdLine = L"\"" + pythonPath + L"\" \"" + appPath + L"\"";
 
+    // Build environment block with MSIX indicator if running in package context
+    // Environment block format: VAR1=VALUE1\0VAR2=VALUE2\0\0 (double null terminated)
+    std::wstring envString;
+    wchar_t* envBlock = NULL;
+    DWORD creationFlags = 0;
+
+    if (IsRunningAsMSIX()) {
+        // Add MSIX_PACKAGE_IDENTITY to signal Store mode to Python application
+        envString = L"MSIX_PACKAGE_IDENTITY=1";
+        envString += L'\0';
+
+        // Append current environment variables
+        wchar_t* currentEnv = GetEnvironmentStringsW();
+        if (currentEnv) {
+            wchar_t* p = currentEnv;
+            while (*p) {
+                size_t len = wcslen(p);
+                envString += p;
+                envString += L'\0';
+                p += len + 1;
+            }
+            FreeEnvironmentStringsW(currentEnv);
+        }
+        envString += L'\0';  // Double null terminator
+        envBlock = &envString[0];
+        creationFlags = CREATE_UNICODE_ENVIRONMENT;
+    }
+
     if (!CreateProcessW(
         NULL,                   // Application name (NULL = use command line)
         &cmdLine[0],           // Command line (modifiable buffer required)
         NULL,                   // Process security attributes
         NULL,                   // Thread security attributes
         FALSE,                  // Inherit handles
-        0,                      // Creation flags
-        NULL,                   // Environment block
+        creationFlags,          // Creation flags (CREATE_UNICODE_ENVIRONMENT if MSIX)
+        envBlock,               // Environment block (with MSIX indicator if in package)
         exePath,               // Working directory (executable directory)
         &si,                   // Startup info
         &pi))                  // Process information
