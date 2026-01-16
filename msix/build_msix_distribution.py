@@ -23,7 +23,6 @@ AI.Stenographer_1.0.0.0_x64/
 ├── Assets/                     # Store icons
 │   ├── Square44x44Logo.png
 │   ├── Square150x150Logo.png
-│   ├── Wide310x150Logo.png
 │   └── StoreLogo.png
 ├── _internal/
 │   ├── runtime/               # Python 3.13.5 embeddable
@@ -82,9 +81,12 @@ BUILD_TYPE = "store"
 PYTHON_VERSION = "3.13.5"
 
 # MSIX package metadata (must match AppxManifest.xml)
-APP_VERSION = "1.0.0.0"
-PUBLISHER_NAME = "CN=Grigori Kochanov"
-PACKAGE_NAME = "AI.Stenographer"
+APP_VERSION = "1.5.1.0"
+PUBLISHER_NAME = "CN=3F8691C4-05D3-45C7-AB1E-113776D7E567"
+PACKAGE_NAME = "GrigoriKochanov.AIStenographer"
+
+# Skip signing for Store submission (Microsoft re-signs with trusted certificate)
+SKIP_SIGNING = True
 
 # Certificate configuration
 CERT_PASSWORD = "test123"  # Test certificate password
@@ -208,7 +210,6 @@ def copy_msix_specific_files(staging_dir: Path, msix_dir: Path, project_root: Pa
         required_assets = [
             "Square44x44Logo.png",
             "Square150x150Logo.png",
-            "Wide310x150Logo.png",
             "StoreLogo.png",
         ]
 
@@ -428,7 +429,6 @@ def validate_package_structure(staging_dir: Path) -> bool:
     required_assets = [
         "Square44x44Logo.png",
         "Square150x150Logo.png",
-        "Wide310x150Logo.png",
         "StoreLogo.png",
     ]
 
@@ -942,14 +942,18 @@ def main():
         print("\nError: Failed to create MSIX package")
         return 1
 
-    # Step 27: Sign MSIX package
+    # Step 27: Sign MSIX package (optional - skipped for Store submission)
     print("\n" + "=" * 80)
     print("STEP 27: Sign MSIX Package")
     print("=" * 80)
-    cert_path = msix_dir / "AIStenographer_TestCert.pfx"
-    if not sign_msix_package(msix_output, cert_path, sdk_dir):
-        print("\nError: Failed to sign MSIX package")
-        return 1
+    if SKIP_SIGNING:
+        print("  [SKIPPED] Signing disabled for Store submission")
+        print("  Microsoft Store will re-sign with trusted certificate")
+    else:
+        cert_path = msix_dir / "AIStenographer_TestCert.pfx"
+        if not sign_msix_package(msix_output, cert_path, sdk_dir):
+            print("\nError: Failed to sign MSIX package")
+            return 1
 
     # Build complete - print summary
     print("\n" + "=" * 80)
@@ -960,14 +964,21 @@ def main():
     print(f"Version: {APP_VERSION}")
     print(f"Publisher: {PUBLISHER_NAME}")
     print(f"\nStaging Directory: {staging_dir}")
-    print(f"\nTo install for testing:")
-    print(f"  1. Install test certificate:")
-    print(f"     Import-Certificate -FilePath \"{cert_path.with_suffix('.cer')}\" -CertStoreLocation \"Cert:\\LocalMachine\\Root\"")
-    print(f"  2. Install MSIX package:")
-    print(f"     Add-AppxPackage -Path \"{msix_output}\"")
-    print(f"  3. Launch from Start Menu: \"AI Stenographer\"")
-    print(f"\nNote: Test certificate is for development only.")
-    print(f"Microsoft Store will re-sign with trusted certificate during submission.")
+
+    if SKIP_SIGNING:
+        print(f"\nFor Microsoft Store submission:")
+        print(f"  Upload {msix_output.name} to Partner Center")
+        print(f"  Microsoft will sign the package during certification")
+    else:
+        cert_path = msix_dir / "AIStenographer_TestCert.pfx"
+        print(f"\nTo install for testing:")
+        print(f"  1. Install test certificate:")
+        print(f"     Import-Certificate -FilePath \"{cert_path.with_suffix('.cer')}\" -CertStoreLocation \"Cert:\\LocalMachine\\Root\"")
+        print(f"  2. Install MSIX package:")
+        print(f"     Add-AppxPackage -Path \"{msix_output}\"")
+        print(f"  3. Launch from Start Menu: \"AI Stenographer\"")
+        print(f"\nNote: Test certificate is for development only.")
+        print(f"Microsoft Store will re-sign with trusted certificate during submission.")
     print("=" * 80)
 
     return 0

@@ -33,7 +33,7 @@ occurs entirely on your local device. No cloud services are used.
 5. Data Storage
 
 The application stores:
-- AI models: %LOCALAPPDATA%\AI-Stenographer\models\ (~2GB)
+- AI models: %LOCALAPPDATA%\AI-Stenographer\models\ (~1.2GB)
 - Configuration: %LOCALAPPDATA%\AI-Stenographer\config\ (<1MB)
 
 No user data, transcripts, or audio is stored.
