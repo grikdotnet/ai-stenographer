@@ -1,4 +1,4 @@
-## **Milestone 3: Buikd for Microsoft Store
+## **Milestone 3: Build for Microsoft Store
 
 **Goal:** Build and publish the application in Mocrosoft Store
 

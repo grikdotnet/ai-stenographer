@@ -1,0 +1,85 @@
+Privacy Policy
+
+Last updated: January 13, 2026
+Publisher: Grigori Kochanov
+Application: AI Stenographer
+
+1. Data Collection
+
+AI Stenographer does NOT collect, store, or transmit any personal data,
+audio recordings, or transcribed text to external servers.
+
+2. Microphone Access
+
+The application requires microphone access to perform real-time speech
+recognition. All audio processing occurs locally on your device. Audio
+data is never saved to disk or transmitted over the network.
+
+3. Internet Access
+
+Internet access is used solely to download AI models (~2GB) from
+HuggingFace Hub on first launch. After initial download, the application
+can operate fully offline.
+
+Downloaded models:
+- NVIDIA Parakeet TDT 0.6B (speech-to-text)
+- Silero VAD (voice activity detection)
+
+4. Local Processing
+
+All speech recognition, voice activity detection, and text processing
+occurs entirely on your local device. No cloud services are used.
+
+5. Data Storage
+
+The application stores:
+- AI models: %LOCALAPPDATA%\AI-Stenographer\models\ (~1.2GB)
+- Configuration: %LOCALAPPDATA%\AI-Stenographer\config\ (<1MB)
+
+No user data, transcripts, or audio is stored.
+
+6. Third-Party Services
+
+Model downloads use HuggingFace Hub CDN. No account or authentication
+is required. Downloads are anonymous and use HTTPS.
+
+HuggingFace Hub privacy policy:
+https://huggingface.co/privacy
+
+7. Children's Privacy
+
+The application does not knowingly collect data from children under 13.
+
+8. Changes to This Policy
+
+Updates will be posted with version releases. Continued use implies
+acceptance of policy changes.
+
+9. Contact
+
+For privacy concerns or questions:
+- Email: public@grik.net
+- GitHub Issues: https://github.com/grikdotnet/ai-stenographer/issues
+
+10. Open Source
+
+AI Stenographer is open source software. You can review the complete
+source code at: https://github.com/grikdotnet/ai-stenographer
+
+11. Your Rights
+
+You have the right to:
+- Use the application entirely offline (after initial model download)
+- Delete all application data at any time by uninstalling
+- Review the source code to verify privacy claims
+- Modify the application for personal use
+
+12. Compliance
+
+This application complies with:
+- General Data Protection Regulation (GDPR) - No personal data processing
+- California Consumer Privacy Act (CCPA) - No data sale or collection
+- Microsoft Store policies - All capabilities properly declared
+
+By using AI Stenographer, you acknowledge that you have read and
+understood this Privacy Policy.
