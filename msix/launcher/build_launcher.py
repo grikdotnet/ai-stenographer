@@ -2,11 +2,13 @@
 """
 Build script for AI Stenographer native launcher.
 Compiles AIStenographer.cpp to AIStenographer.exe using MSVC.
+Includes resource compilation for embedded splash image.
 """
 
 import subprocess
 import sys
 from pathlib import Path
+
 
 def main():
     """
@@ -15,8 +17,9 @@ def main():
     Algorithm:
     1. Set up MSVC and Windows SDK paths
     2. Configure compiler environment
-    3. Invoke cl.exe to compile the C++ source
-    4. Clean up intermediate files
+    3. Compile the resource file (.rc -> .res)
+    4. Invoke cl.exe to compile the C++ source with resources
+    5. Clean up intermediate files
 
     Returns:
         0 on success, 1 on failure
@@ -36,6 +39,7 @@ def main():
     sdk_version = "10.0.26100.0"
     sdk_include = sdk_root / f"Include/{sdk_version}"
     sdk_lib = sdk_root / f"Lib/{sdk_version}"
+    sdk_bin = sdk_root / f"bin/{sdk_version}/x64"
 
     # Verify compiler exists
     cl_exe = msvc_bin / "cl.exe"
@@ -44,20 +48,64 @@ def main():
         print("Please verify Visual Studio Build Tools 2022 is installed")
         return 1
 
-    print("[1/3] Setting up build environment...")
+    # Verify resource compiler exists
+    rc_exe = sdk_bin / "rc.exe"
+    if not rc_exe.exists():
+        print(f"ERROR: Resource compiler not found at: {rc_exe}")
+        print("Please verify Windows SDK is installed")
+        return 1
+
+    print("[1/4] Setting up build environment...")
 
     # Build environment variables
     import os
     env = os.environ.copy()
     env.update({
-        "PATH": f"{msvc_bin};{env.get('PATH', '')}",
+        "PATH": f"{msvc_bin};{sdk_bin};{env.get('PATH', '')}",
         "INCLUDE": f"{msvc_include};{sdk_include}/ucrt;{sdk_include}/shared;{sdk_include}/um",
         "LIB": f"{msvc_lib};{sdk_lib}/ucrt/x64;{sdk_lib}/um/x64",
         "TMP": str(Path.home() / "AppData/Local/Temp"),
         "TEMP": str(Path.home() / "AppData/Local/Temp")
     })
 
-    print("[2/3] Compiling AIStenographer.cpp...")
+    launcher_dir = Path(__file__).parent
+
+    print("[2/4] Compiling resources (AIStenographer.rc)...")
+
+    # Resource compiler command
+    rc_cmd = [
+        str(rc_exe),
+        "/nologo",
+        f"/I{sdk_include}/um",
+        f"/I{sdk_include}/shared",
+        "/fo", str(launcher_dir / "AIStenographer.res"),
+        str(launcher_dir / "AIStenographer.rc")
+    ]
+
+    try:
+        result = subprocess.run(
+            rc_cmd,
+            env=env,
+            cwd=launcher_dir,
+            capture_output=True,
+            text=True
+        )
+
+        if result.stdout:
+            print(result.stdout)
+        if result.stderr:
+            print(result.stderr, file=sys.stderr)
+
+        if result.returncode != 0:
+            print()
+            print(f"ERROR: Resource compilation failed with error code {result.returncode}")
+            return result.returncode
+
+    except Exception as e:
+        print(f"ERROR: Failed to run resource compiler: {e}")
+        return 1
+
+    print("[3/4] Compiling AIStenographer.cpp...")
 
     # Compiler command
     cmd = [
@@ -70,10 +118,14 @@ def main():
         "/D", "_UNICODE",   # Unicode build
         "/Fe:AIStenographer.exe",  # Output filename
         "AIStenographer.cpp",
+        "AIStenographer.res",      # Link the compiled resources
         "/link",            # Linker options follow
         "/SUBSYSTEM:WINDOWS",  # Windows GUI application
         "shlwapi.lib",      # Shell API library
-        "user32.lib"        # User interface library (MessageBox)
+        "user32.lib",       # User interface library (MessageBox)
+        "gdi32.lib",        # GDI library
+        "gdiplus.lib",      # GDI+ for image loading
+        "ole32.lib"         # OLE for IStream
     ]
 
     # Run compilation
@@ -81,7 +133,7 @@ def main():
         result = subprocess.run(
             cmd,
             env=env,
-            cwd=Path(__file__).parent,
+            cwd=launcher_dir,
             capture_output=True,
             text=True
         )
@@ -101,12 +153,13 @@ def main():
         print(f"ERROR: Failed to run compiler: {e}")
         return 1
 
-    print("[3/3] Cleaning up intermediate files...")
+    print("[4/4] Cleaning up intermediate files...")
 
-    # Clean up object file
-    obj_file = Path(__file__).parent / "AIStenographer.obj"
-    if obj_file.exists():
-        obj_file.unlink()
+    # Clean up object and resource files
+    for ext in [".obj", ".res"]:
+        intermediate = launcher_dir / f"AIStenographer{ext}"
+        if intermediate.exists():
+            intermediate.unlink()
 
     print()
     print("=" * 60)
@@ -115,12 +168,13 @@ def main():
     print("=" * 60)
 
     # Display file info
-    exe_file = Path(__file__).parent / "AIStenographer.exe"
+    exe_file = launcher_dir / "AIStenographer.exe"
     if exe_file.exists():
         size = exe_file.stat().st_size
         print(f"File size: {size:,} bytes ({size / 1024:.1f} KB)")
 
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
