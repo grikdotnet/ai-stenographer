@@ -12,7 +12,7 @@ Creates MSIX package using:
 Key Differences from Portable Distribution:
 - Uses native .exe launcher instead of .lnk shortcut
 - Includes AppxManifest.xml for Store compliance
-- Includes Store assets (icons, splash screen)
+- Includes Store assets (icons)
 - Models stored in AppData (not _internal)
 - Entire package signed with certificate
 
@@ -24,8 +24,7 @@ AI.Stenographer_1.0.0.0_x64/
 │   ├── Square44x44Logo.png
 │   ├── Square150x150Logo.png
 │   ├── Wide310x150Logo.png
-│   ├── StoreLogo.png
-│   └── SplashScreen.png
+│   └── StoreLogo.png
 ├── _internal/
 │   ├── runtime/               # Python 3.13.5 embeddable
 │   ├── Lib/site-packages/     # Dependencies
@@ -211,7 +210,6 @@ def copy_msix_specific_files(staging_dir: Path, msix_dir: Path, project_root: Pa
             "Square150x150Logo.png",
             "Wide310x150Logo.png",
             "StoreLogo.png",
-            "SplashScreen.png"
         ]
 
         missing_assets = []
@@ -432,7 +430,6 @@ def validate_package_structure(staging_dir: Path) -> bool:
         "Square150x150Logo.png",
         "Wide310x150Logo.png",
         "StoreLogo.png",
-        "SplashScreen.png"
     ]
 
     missing_assets = []
