@@ -1,26 +1,8 @@
-## **Milestone 3: Build for Microsoft Store
-
-**Goal:** Build and publish the application in Mocrosoft Store
-
-
 ## **Milestone 4: Add features**
 
 ### Tasks
 
-#### 4.1 Timestamp insertion
-
-- Add "Insert Timestamp" button in GuiWindow
-- Format timestamps with configurable format (default: `[HH:MM:SS]`)
-- Design the main window to show timestamps
-
-#### 4.2 Subtitle/overlay display mode
-
-- Create SubtitleWindow class (Tkinter transparent overlay)
-- Large font, high contrast
-- Toggle button in main GuiWindow
-- Position configurable
-
-#### 4.3 Text insertion into other applications
+#### 4.1 Text insertion into other applications
 
 - Create TextInserter class (keyboard simulation)
 - Detect active window/cursor position
@@ -29,6 +11,19 @@
 - Push-to-talk mode (hold hotkey, speak, release → insert text)
 - Toggle mode (press hotkey to start/stop recognition)
 - Clipboard mode (copy instead of insert)
+
+#### 4.2 Subtitle/overlay display mode
+
+- Create SubtitleWindow class (Tkinter transparent overlay)
+- Large font, high contrast
+- Toggle button in main GuiWindow
+- Position configurable
+
+#### 4.3 Timestamp insertion
+
+- Add "Insert Timestamp" button in GuiWindow
+- Format timestamps with configurable format (default: `[HH:MM:SS]`)
+- Design the main window to show timestamps
 
 ---
 
