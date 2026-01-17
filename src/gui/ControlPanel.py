@@ -45,14 +45,14 @@ class ControlPanel(ttk.Frame):
         self.app_state = app_state
         self.controller = controller
 
-        # Create button
+        # Create Pause/Resume button
         self.button = ttk.Button(
             self,
             text='Loading...',
             command=self._on_button_click,
             state='disabled'
         )
-        self.button.pack()
+        self.button.pack(side=tk.LEFT)
 
         # Register as GUI observer
         self.app_state.register_gui_observer(self._on_state_change)
