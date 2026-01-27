@@ -21,5 +21,9 @@
   "recognition": {
     "model_name": "parakeet",
     "inference": "auto"
+  },
+  "quick_entry": {
+    "hotkey": "ctrl+space",
+    "enabled": true
   }
 }

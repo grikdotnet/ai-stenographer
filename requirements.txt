@@ -4,3 +4,4 @@ onnxruntime-directml
 onnx-asr==0.10.0
 Pillow
 huggingface_hub[hf_xet]
+pynput>=1.7.6

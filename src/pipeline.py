@@ -16,6 +16,8 @@ from .AdaptiveWindower import AdaptiveWindower
 from .Recognizer import Recognizer
 from .TextMatcher import TextMatcher
 from .RecognitionResultPublisher import RecognitionResultPublisher
+from .gui.TextInsertionService import TextInsertionService
+from .quickentry.QuickEntryService import QuickEntryService
 from .gui.ApplicationWindow import ApplicationWindow
 from .VoiceActivityDetector import VoiceActivityDetector
 from .ExecutionProviderManager import ExecutionProviderManager
@@ -26,7 +28,13 @@ if TYPE_CHECKING:
     from onnx_asr.adapters import TimestampedResultsAsrAdapter
 
 class STTPipeline:
-    def __init__(self, model_path: str = "./models/parakeet", models_dir: Path = None, verbose: bool = False, window_duration: float = 2.0, config_path: str = "./config/stt_config.json", input_file: str = None) -> None:
+    def __init__(self,
+                 model_path: str = "./models/parakeet",
+                 models_dir: Path = None,
+                 verbose: bool = False,
+                 config_path: str = "./config/stt_config.json",
+                 input_file: str = None
+                 ) -> None:
         """Initialize STT pipeline with hardware-accelerated recognition.
 
         Strategy pattern: GPU type detection selects optimal session configuration
@@ -36,7 +44,6 @@ class STTPipeline:
             model_path: Path to Parakeet model directory
             models_dir: Path to models directory (for VAD)
             verbose: Enable verbose logging
-            window_duration: Window duration for recognition (seconds)
             config_path: Path to configuration JSON file
             input_file: Optional path to WAV file for testing (instead of microphone)
         """
@@ -72,8 +79,24 @@ class STTPipeline:
         # Create ApplicationState first (needed by both pipeline and GUI)
         self.app_state: ApplicationState = ApplicationState(config=self.config)
 
-        # Create GUI window
-        app_window: ApplicationWindow = ApplicationWindow(self.app_state, self.config, verbose=verbose)
+        # Create publisher for text recognition results (needed before TextInsertionService)
+        self.text_recognition_publisher: RecognitionResultPublisher = RecognitionResultPublisher(
+            verbose=verbose
+        )
+
+        # Create text insertion service (subscribes to publisher)
+        self.text_insertion_service: TextInsertionService = TextInsertionService(
+            self.text_recognition_publisher,
+            verbose=verbose
+        )
+
+        # Create GUI window with insertion controller
+        app_window: ApplicationWindow = ApplicationWindow(
+            self.app_state,
+            self.config,
+            verbose=verbose,
+            insertion_controller=self.text_insertion_service.controller
+        )
         self.root: tk.Tk = app_window.get_root()
         formatter = app_window.get_formatter()
 
@@ -131,11 +154,6 @@ class STTPipeline:
             verbose=verbose
         )
 
-        # Create publisher for text recognition results
-        self.text_recognition_publisher: RecognitionResultPublisher = RecognitionResultPublisher(
-            verbose=verbose
-        )
-
         # Create TextMatcher with publisher (dependency injection)
         self.text_matcher: TextMatcher = TextMatcher(
             text_queue=self.text_queue,
@@ -144,8 +162,18 @@ class STTPipeline:
             verbose=verbose
         )
 
-        # Register formatter as subscriber
+        # Register formatter as subscriber (TextInserter already subscribed via TextInsertionService)
         self.text_recognition_publisher.subscribe(formatter)
+
+        # Create Quick Entry service (subscribes to publisher)
+        quick_entry_config = self.config.get('quick_entry', {})
+        self.quick_entry_service: QuickEntryService = QuickEntryService(
+            publisher=self.text_recognition_publisher,
+            root=self.root,
+            hotkey=quick_entry_config.get('hotkey', 'ctrl+space'),
+            enabled=quick_entry_config.get('enabled', True),
+            verbose=verbose
+        )
 
         # Update components list
         self.components: List[Any] = [
@@ -201,6 +229,9 @@ class STTPipeline:
         for component in self.components:
             component.start()
 
+        # Start Quick Entry hotkey listener
+        self.quick_entry_service.start()
+
         # Set state to running after all components started
         self.app_state.set_state('running')
         logging.info("Pipeline running. Press Ctrl+C to stop.")
@@ -215,6 +246,9 @@ class STTPipeline:
             return
 
         self._is_stopped = True
+
+        # Stop Quick Entry hotkey listener
+        self.quick_entry_service.stop()
 
         logging.info("Stopping pipeline...")
         self.app_state.set_state('shutdown')  # Triggers all observers

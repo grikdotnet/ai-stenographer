@@ -42,13 +42,10 @@ if __name__ == "__main__":
         # Setup logging BEFORE anything else
         setup_logging(LOGS_DIR, verbose=verbose, is_frozen=is_frozen)
 
-        window_duration = 2.0  # Default: 2 seconds
         input_file = None      # Default: use microphone
 
         for arg in sys.argv:
-            if arg.startswith("--window="):
-                window_duration = float(arg.split("=")[1])
-            elif arg.startswith("--input-file="):
+            if arg.startswith("--input-file="):
                 input_file = arg.split("=", 1)[1]
 
         # Show loading window with stenographer image
@@ -81,7 +78,6 @@ if __name__ == "__main__":
             models_dir=MODELS_DIR,
             config_path=str(path_resolver.get_config_path("stt_config.json")),
             verbose=verbose,
-            window_duration=window_duration,
             input_file=input_file
         )
 

@@ -5,13 +5,17 @@ Owns tkinter root and creates all GUI components directly.
 """
 import tkinter as tk
 from tkinter import scrolledtext
-from typing import Dict
+from typing import Dict, Optional, TYPE_CHECKING
 from src.ApplicationState import ApplicationState
 from src.gui.HeaderPanel import HeaderPanel
 from src.gui.ControlPanel import ControlPanel
+from src.gui.InsertionModePanel import InsertionModePanel
 from src.controllers.PauseController import PauseController
 from src.gui.TextDisplayWidget import TextDisplayWidget
 from src.gui.TextFormatter import TextFormatter
+
+if TYPE_CHECKING:
+    from src.controllers.InsertionController import InsertionController
 
 
 class ApplicationWindow:
@@ -19,13 +23,20 @@ class ApplicationWindow:
     Owns tkinter root and creates all GUI components directly.
     """
 
-    def __init__(self, app_state: ApplicationState, config: Dict, verbose: bool = False):
+    def __init__(
+        self,
+        app_state: ApplicationState,
+        config: Dict,
+        verbose: bool = False,
+        insertion_controller: Optional['InsertionController'] = None
+    ):
         """Initialize TK root and all GUI components.
 
         Args:
             app_state: ApplicationState instance for state management
             config: Application configuration dictionary
             verbose: Enable verbose logging
+            insertion_controller: Optional controller for text insertion toggle button
         """
         self.root = tk.Tk()
         self.root.title("Speech-to-Text Display")
@@ -48,6 +59,11 @@ class ApplicationWindow:
             pause_controller
         )
         control_panel.pack(side=tk.LEFT, anchor='w')
+
+        # Create insertion mode panel if controller provided
+        if insertion_controller is not None:
+            insertion_panel = InsertionModePanel(button_frame, insertion_controller)
+            insertion_panel.pack(side=tk.LEFT, anchor='w', padx=(10, 0))
 
         status_label = tk.Label(
             button_frame,
