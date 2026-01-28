@@ -7,10 +7,9 @@
 
 #### 5.2 STT hallucination handling (multiple approaches)
 
-- **Approach A:** Post-processing filter
-- **Approach B:** Confidence thresholding
-- **Approach C:** Pattern detection in TextMatcher
-- **Approach D:** Phrase blacklist
+- Post-processing filter
+- Obtain and use confidence scores
+- Phrase blacklist
 
 #### 5.3 Evaluate canary-1b-v2
 https://huggingface.co/nvidia/canary-1b-v2
