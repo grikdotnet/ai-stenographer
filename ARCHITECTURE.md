@@ -8,6 +8,56 @@ Application state management with pause/resume functionality is handled through 
 
 ---
 
+## Module Organization
+
+The codebase is organized into domain-based subfolders within `src/`:
+
+### Root (`src/`)
+- **ApplicationState.py**: State manager with observer pattern
+- **RecognitionResultPublisher.py**: Observer pattern publisher
+- **Pipeline.py**: Main pipeline orchestration
+- **types.py**: Data type definitions (AudioSegment, RecognitionResult)
+
+### Audio Processing (`src/sound/`)
+- **AudioSource.py**: Microphone audio capture with sounddevice callback
+- **FileAudioSource.py**: WAV file audio source for testing
+- **SoundPreProcessor.py**: VAD processing, RMS normalization, speech buffering
+
+### Speech Recognition (`src/asr/`)
+- **Recognizer.py**: STT model inference with context-aware recognition
+- **AdaptiveWindower.py**: Aggregates segments into 3s recognition windows
+- **VoiceActivityDetector.py**: Detects speech vs silence
+- **ModelManager.py**: Model download and management
+- **DownloadProgressReporter.py**: Model download progress tracking
+- **ExecutionProviderManager.py**: GPU/CPU detection and selection
+- **SessionOptionsFactory.py**: ONNX Runtime session configuration
+- **SessionOptionsStrategy.py**: Hardware-specific optimization strategies
+
+### Post-Processing (`src/postprocessing/`)
+- **TextMatcher.py**: Overlap resolution, duplicate detection, result publishing
+- **TextNormalizer.py**: Text normalization for fuzzy matching
+
+### GUI (`src/gui/`)
+- **TextDisplayWidget.py**: Tkinter text display with thread-safety
+- **TextFormatter.py**: Text formatting logic (MVC controller)
+- **ControlPanel.py**: Pause/Resume button widget
+- **ModelDownloadDialog.py**: Model download dialog
+
+### Controllers (`src/controllers/`)
+- **PauseController.py**: MVC controller for pause/resume
+- **InsertionController.py**: MVC controller for text insertion mode
+
+### Quick Entry (`src/quickentry/`)
+- **QuickEntryService.py**: Quick entry service orchestration
+- **QuickEntryController.py**: MVC controller for quick entry
+- **QuickEntrySubscriber.py**: Subscriber to recognition results
+- **QuickEntryPopup.py**: Popup window for quick entry
+- **GlobalHotkeyListener.py**: Global hotkey detection
+- **FocusTracker.py**: Window focus tracking
+- **windows_effects.py**: Windows-specific visual effects
+
+---
+
 ## Architecture Diagram
 
 ### High-Level Flow
@@ -598,7 +648,7 @@ Uses **Strategy Pattern** for hardware-specific ONNX Runtime optimizations.
 
 ## Design Principles
 
-### Core Pipeline Flow
+### Speech Recognition Pipeline Flow
 
 1. **AudioSource** → captures 32ms frames (non-blocking) → raw audio dict → `chunk_queue`
 2. **SoundPreProcessor** → reads `chunk_queue` → RMS normalization + VAD + buffering → preliminary `AudioSegment` → `speech_queue`
