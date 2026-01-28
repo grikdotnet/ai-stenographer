@@ -1,43 +1,18 @@
-## **Milestone 4: Add features**
-
-### Tasks
-
-#### 4.1 Text insertion into other applications
-
-- Create TextInserter class (keyboard simulation)
-- Detect active window/cursor position
-- Simulate keyboard input to insert recognized text
-- Implement Hotkey
-- Push-to-talk mode (hold hotkey, speak, release → insert text)
-- Toggle mode (press hotkey to start/stop recognition)
-- Clipboard mode (copy instead of insert)
-
-#### 4.2 Subtitle/overlay display mode
-
-- Create SubtitleWindow class (Tkinter transparent overlay)
-- Large font, high contrast
-- Toggle button in main GuiWindow
-- Position configurable
-
-#### 4.3 Timestamp insertion
-
-- Add "Insert Timestamp" button in GuiWindow
-- Format timestamps with configurable format (default: `[HH:MM:SS]`)
-- Design the main window to show timestamps
-
----
 
 ## **Milestone 5: Speech recognition improvements
 ### Tasks
 
-#### 5.1 STT hallucination handling (multiple approaches)
+#### 5.1 ASR improvements
+- Fix error in detection of the start word
+
+#### 5.2 STT hallucination handling (multiple approaches)
 
 - **Approach A:** Post-processing filter
 - **Approach B:** Confidence thresholding
 - **Approach C:** Pattern detection in TextMatcher
 - **Approach D:** Phrase blacklist
 
-#### 5.2 Evaluate canary-1b-v2
+#### 5.3 Evaluate canary-1b-v2
 https://huggingface.co/nvidia/canary-1b-v2
 
 ---
