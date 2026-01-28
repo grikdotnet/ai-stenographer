@@ -114,7 +114,7 @@ class TestLoadingWindowIntegration:
         mock_pipeline.return_value = mock_pipeline_instance
 
         # Simulate main.py logic with loading window
-        image_path = Path("stenographer.jpg")
+        image_path = Path("stenographer.gif")
         loading_window = mock_loading_window(image_path, "Initializing...")
 
         loading_window.update_message("Checking models...")
@@ -170,7 +170,7 @@ class TestLoadingWindowIntegration:
         mock_pipeline.return_value = mock_pipeline_instance
 
         # Simulate main.py logic
-        image_path = Path("stenographer.jpg")
+        image_path = Path("stenographer.gif")
         loading_window = mock_loading_window(image_path, "Initializing...")
 
         loading_window.update_message("Checking models...")
@@ -225,7 +225,7 @@ class TestLoadingWindowIntegration:
         mock_pipeline.side_effect = Exception("Model loading failed")
 
         # Simulate main.py logic with error handling
-        image_path = Path("stenographer.jpg")
+        image_path = Path("stenographer.gif")
         loading_window = mock_loading_window(image_path, "Initializing...")
 
         try:

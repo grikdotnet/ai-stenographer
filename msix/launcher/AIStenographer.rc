@@ -1,8 +1,8 @@
 // Resource script for AI Stenographer launcher
-// Embeds stenographer.jpg as a binary resource
+// Embeds stenographer.gif as a binary resource
 
 #include "resource.h"
 
 // Embed the splash image as RCDATA (binary resource)
 // Path is relative to the .rc file location
-IDR_SPLASH_IMAGE RCDATA "..\\..\\stenographer.jpg"
+IDR_SPLASH_IMAGE RCDATA "..\\..\\stenographer.gif"

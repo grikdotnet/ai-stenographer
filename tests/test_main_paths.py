@@ -7,7 +7,7 @@ Tests verify that paths resolve correctly when running from:
 
 Path structure in distribution:
 STT-Stenographer/
-├── stenographer.jpg
+├── stenographer.gif
 ├── icon.ico
 └── _internal/
     ├── runtime/
@@ -72,7 +72,7 @@ class TestPathResolution:
         assert paths.config_dir == project_dir / "config"
 
     def test_assets_loading_from_internal(self, tmp_path):
-        """Should load stenographer.jpg from correct location in distribution."""
+        """Should load stenographer.gif from correct location in distribution."""
         # Create distribution structure
         root_dir = tmp_path / "STT-Stenographer"
         app_dir = root_dir / "_internal" / "app"
@@ -80,11 +80,11 @@ class TestPathResolution:
         assets_dir.mkdir(parents=True)
 
         # Create fake image in root (user-visible)
-        root_image = root_dir / "stenographer.jpg"
+        root_image = root_dir / "stenographer.gif"
         root_image.write_bytes(b"ROOT_IMAGE")
 
         # Create fake image in assets (not used)
-        assets_image = assets_dir / "stenographer.jpg"
+        assets_image = assets_dir / "stenographer.gif"
         assets_image.write_bytes(b"ASSETS_IMAGE")
 
         # Create fake main.pyc
@@ -92,7 +92,7 @@ class TestPathResolution:
         main_pyc.write_bytes(b"fake")
 
         resolver = PathResolver(main_pyc)
-        image_path = resolver.get_asset_path("stenographer.jpg")
+        image_path = resolver.get_asset_path("stenographer.gif")
 
         # Should use root directory image (visible to user)
         assert image_path == root_image

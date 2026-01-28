@@ -5,7 +5,6 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from pathlib import Path
 from typing import Optional, List, Dict, Callable
-from PIL import Image, ImageTk
 import threading
 import os
 
@@ -26,7 +25,7 @@ COLORS = {
 
 # Model size information
 MODEL_SIZES = {
-    'parakeet': '~1.5 GB',
+    'parakeet': '~1.2 GB',
     'silero_vad': '2 MB'
 }
 
@@ -59,7 +58,7 @@ def format_bytes(bytes_value: int) -> str:
 class LoadingWindow:
     """Displays loading screen with image and progress messages.
 
-    Shows stenographer.jpg image centered in an 800x800 window
+    Shows stenographer.gif image centered in an 800x800 window
     with loading status messages below. Window is modal and centered on screen.
     """
 
@@ -67,13 +66,13 @@ class LoadingWindow:
         """Create loading window with image and initial message.
 
         Args:
-            image_path: Path to image file to display (e.g., stenographer.jpg)
+            image_path: Path to image file to display (e.g., stenographer.gif)
             initial_message: Initial loading message to show
         """
         self.root: tk.Tk = tk.Tk()
         self.root.title("Loading AI Stenographer...")
         self.root.overrideredirect(True)  # Remove title bar and borders
-        self.root.geometry("700x800")  # 700px for image width, 800px for image + text
+        self.root.geometry("700x700")
         self.root.resizable(False, False)
 
         self._center_window()
@@ -85,7 +84,7 @@ class LoadingWindow:
         container = tk.Frame(self.root, bg="white", bd=0, highlightthickness=0)
         container.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
 
-        self.photo_image: Optional[ImageTk.PhotoImage] = None
+        self.photo_image: Optional[tk.PhotoImage] = None
         self.image_label: tk.Label = self._create_image_label(container, image_path)
 
         self.message_label: tk.Label = tk.Label(
@@ -131,9 +130,7 @@ class LoadingWindow:
         """
         try:
             if image_path.exists():
-                image = Image.open(image_path)
-
-                self.photo_image = ImageTk.PhotoImage(image)
+                self.photo_image = tk.PhotoImage(file=str(image_path))
 
                 label = tk.Label(parent, image=self.photo_image, bg="white", bd=0, highlightthickness=0)
                 label.pack(side=tk.TOP, anchor='n', pady=0, padx=0)  # Pack at top with no padding

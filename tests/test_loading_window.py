@@ -11,7 +11,7 @@ from src.asr.ModelManager import ModelManager
 @pytest.fixture
 def image_path():
     """Path to test image."""
-    return Path("stenographer.jpg")
+    return Path("stenographer.gif")
 
 
 def test_create_loading_window(image_path):
@@ -33,7 +33,7 @@ def test_create_loading_window(image_path):
 def test_show_image_existing_file(image_path):
     """Test displaying existing image file."""
     if not image_path.exists():
-        pytest.skip("stenographer.jpg not found")
+        pytest.skip("stenographer.gif not found")
 
     window = LoadingWindow(image_path, "Loading...")
 
@@ -148,7 +148,7 @@ def test_window_centered_on_screen(image_path):
 def test_image_centered_in_window(image_path):
     """Test that image is centered in window."""
     if not image_path.exists():
-        pytest.skip("stenographer.jpg not found")
+        pytest.skip("stenographer.gif not found")
 
     window = LoadingWindow(image_path, "Loading...")
 

@@ -22,6 +22,15 @@ AI-Stenographer/
     ├── runtime/        # Python executables (signed)
     ├── Lib/            # Dependencies
     ├── app/            # Application code (.pyc)
+    │   ├── src/        # Source code with domain-based organization
+    │   │   ├── sound/           # Audio processing (AudioSource, SoundPreProcessor)
+    │   │   ├── asr/             # Speech recognition (Recognizer, AdaptiveWindower, VAD)
+    │   │   ├── postprocessing/  # Text processing (TextMatcher, TextNormalizer)
+    │   │   ├── gui/             # GUI components (TextDisplayWidget, TextFormatter)
+    │   │   ├── controllers/     # MVC controllers (PauseController, InsertionController)
+    │   │   └── quickentry/      # Quick entry feature (global hotkey, popup)
+    │   ├── config/     # Configuration files
+    │   └── assets/     # Static assets
     └── models/         # Downloaded at runtime
 """
 import sys
@@ -475,7 +484,7 @@ def main():
         print("Application may not work correctly")
 
     # Step 15: Test critical imports
-    critical_modules = ["numpy", "onnxruntime", "sounddevice", "onnx_asr", "tkinter"]
+    critical_modules = ["numpy", "onnxruntime", "sounddevice", "onnx_asr", "tkinter", "pynput"]
     import_results = test_imports(python_exe, critical_modules)
     failed_imports = [m for m, success in import_results.items() if not success]
 
@@ -1305,13 +1314,13 @@ def copy_assets_and_config(project_root: Path, build_dir: Path, app_dir: Path) -
             print(f"  [SKIP] config/ directory not found")
 
 
-        steno_src = project_root / "stenographer.jpg"
+        steno_src = project_root / "stenographer.gif"
         if steno_src.exists():
-            steno_dest = build_dir / "stenographer.jpg"
+            steno_dest = build_dir / "stenographer.gif"
             shutil.copy2(steno_src, steno_dest)
-            print(f"  Copied stenographer.jpg")
+            print(f"  Copied stenographer.gif")
         else:
-            print(f"  [SKIP] stenographer.jpg not found")
+            print(f"  [SKIP] stenographer.gif not found")
 
         return True
 

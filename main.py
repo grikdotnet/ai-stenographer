@@ -49,7 +49,7 @@ if __name__ == "__main__":
                 input_file = arg.split("=", 1)[1]
 
         # Show loading window with stenographer image
-        image_path = path_resolver.get_asset_path("stenographer.jpg")
+        image_path = path_resolver.get_asset_path("stenographer.gif")
         loading_window = LoadingWindow(image_path, "Initializing...")
 
         # Check for missing models BEFORE importing pipeline

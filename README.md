@@ -1,4 +1,4 @@
-![AI Stenographer](./stenographer.jpg)
+![AI Stenographer](./stenographer.gif)
 
 # AI Stenographer
 
