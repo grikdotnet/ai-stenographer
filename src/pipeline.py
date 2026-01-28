@@ -21,7 +21,7 @@ from .RecognitionResultPublisher import RecognitionResultPublisher
 from .gui.TextInsertionService import TextInsertionService
 from .quickentry.QuickEntryService import QuickEntryService
 from .gui.ApplicationWindow import ApplicationWindow
-from .ExecutionProviderManager import ExecutionProviderManager
+from .asr.ExecutionProviderManager import ExecutionProviderManager
 from .ApplicationState import ApplicationState
 
 if TYPE_CHECKING:

@@ -10,6 +10,12 @@ from src.asr.SessionOptionsStrategy import (
     CPUStrategy
 )
 from src.asr.ModelManager import ModelManager
+from src.asr.ExecutionProviderManager import ExecutionProviderManager
+from src.asr.DownloadProgressReporter import (
+    DownloadProgressReporter,
+    ProgressAggregator,
+    create_bound_progress_reporter
+)
 
 __all__ = [
     'Recognizer',
@@ -20,5 +26,9 @@ __all__ = [
     'IntegratedGPUStrategy',
     'DiscreteGPUStrategy',
     'CPUStrategy',
-    'ModelManager'
+    'ModelManager',
+    'ExecutionProviderManager',
+    'DownloadProgressReporter',
+    'ProgressAggregator',
+    'create_bound_progress_reporter'
 ]

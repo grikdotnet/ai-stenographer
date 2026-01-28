@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.pipeline import STTPipeline
-from src.ExecutionProviderManager import ExecutionProviderManager
+from src.asr.ExecutionProviderManager import ExecutionProviderManager
 from src.asr.SessionOptionsStrategy import IntegratedGPUStrategy, DiscreteGPUStrategy, CPUStrategy
 
 
@@ -20,7 +20,7 @@ class TestPipelineSessionOptionsStrategy:
     @patch('src.gui.ApplicationWindow.ApplicationWindow')
     @patch('src.pipeline.AudioSource')
     @patch('src.pipeline.VoiceActivityDetector')
-    @patch('src.ExecutionProviderManager.ExecutionProviderManager._enumerate_adapters_dxgi')
+    @patch('src.asr.ExecutionProviderManager.ExecutionProviderManager._enumerate_adapters_dxgi')
     def test_pipeline_uses_integrated_gpu_strategy(self, mock_dxgi, mock_vad, mock_audio, mock_app_window, mock_load_model):
         """Pipeline should use IntegratedGPUStrategy for integrated GPU."""
         # Mock ApplicationWindow
@@ -57,7 +57,7 @@ class TestPipelineSessionOptionsStrategy:
     @patch('src.gui.ApplicationWindow.ApplicationWindow')
     @patch('src.pipeline.AudioSource')
     @patch('src.pipeline.VoiceActivityDetector')
-    @patch('src.ExecutionProviderManager.ExecutionProviderManager._enumerate_adapters_dxgi')
+    @patch('src.asr.ExecutionProviderManager.ExecutionProviderManager._enumerate_adapters_dxgi')
     def test_pipeline_uses_discrete_gpu_strategy(self, mock_dxgi, mock_vad, mock_audio, mock_app_window, mock_load_model):
         """Pipeline should use DiscreteGPUStrategy for discrete GPU."""
         # Mock ApplicationWindow
@@ -152,7 +152,7 @@ class TestPipelineSessionOptionsStrategy:
     @patch('src.gui.ApplicationWindow.ApplicationWindow')
     @patch('src.pipeline.AudioSource')
     @patch('src.pipeline.VoiceActivityDetector')
-    @patch('src.ExecutionProviderManager.ExecutionProviderManager._enumerate_adapters_dxgi')
+    @patch('src.asr.ExecutionProviderManager.ExecutionProviderManager._enumerate_adapters_dxgi')
     def test_session_options_correctly_applied_by_strategy(self, mock_dxgi, mock_vad, mock_audio, mock_app_window, mock_load_model):
         """Session options from strategy should be passed to model loading."""
         # Mock ApplicationWindow

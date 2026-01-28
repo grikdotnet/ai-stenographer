@@ -11,7 +11,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.asr.Recognizer import Recognizer
-from src.ExecutionProviderManager import ExecutionProviderManager
+from src.asr.ExecutionProviderManager import ExecutionProviderManager
 import src.types as stt_types
 from onnx_asr.asr import TimestampedResult
 

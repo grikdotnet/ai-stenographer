@@ -7,7 +7,7 @@ from typing import List, Callable, Optional
 from huggingface_hub import snapshot_download, hf_hub_download
 from huggingface_hub.utils import disable_progress_bars, enable_progress_bars
 import shutil
-from ..DownloadProgressReporter import create_bound_progress_reporter, ProgressAggregator
+from .DownloadProgressReporter import create_bound_progress_reporter, ProgressAggregator
 
 # Disable tqdm progress bars to prevent freezing with pythonw.exe (no console)
 disable_progress_bars()
