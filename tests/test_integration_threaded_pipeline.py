@@ -4,10 +4,10 @@ import queue
 import numpy as np
 import time
 from unittest.mock import Mock
-from src.AudioSource import AudioSource
-from src.SoundPreProcessor import SoundPreProcessor
-from src.VoiceActivityDetector import VoiceActivityDetector
-from src.AdaptiveWindower import AdaptiveWindower
+from src.sound.AudioSource import AudioSource
+from src.sound.SoundPreProcessor import SoundPreProcessor
+from src.asr.VoiceActivityDetector import VoiceActivityDetector
+from src.asr.AdaptiveWindower import AdaptiveWindower
 from src.types import AudioSegment
 
 

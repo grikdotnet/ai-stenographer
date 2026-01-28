@@ -1,4 +1,4 @@
-# src/AudioSource.py
+# src/sound/AudioSource.py
 from __future__ import annotations
 import sounddevice as sd
 import queue
@@ -126,5 +126,4 @@ class AudioSource:
             self.start()
         elif new_state == 'shutdown':
             self.stop()
-
 

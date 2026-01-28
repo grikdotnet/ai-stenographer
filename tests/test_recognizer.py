@@ -4,7 +4,7 @@ import queue
 import time
 import numpy as np
 from unittest.mock import MagicMock, Mock
-from src.Recognizer import Recognizer
+from src.asr.Recognizer import Recognizer
 from src.types import AudioSegment, RecognitionResult
 from onnx_asr.asr import TimestampedResult
 

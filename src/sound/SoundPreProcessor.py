@@ -1,4 +1,4 @@
-# src/SoundPreProcessor.py
+# src/sound/SoundPreProcessor.py
 """
 Tests for this module:
 - tests/test_sound_preprocessor.py - Core functionality (VAD, buffering, context extraction)
@@ -14,11 +14,11 @@ from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Dict, Any, TYPE_CHECKING, Optional
-from src.types import AudioSegment
+from ..types import AudioSegment
 
 if TYPE_CHECKING:
-    from src.VoiceActivityDetector import VoiceActivityDetector
-    from src.AdaptiveWindower import AdaptiveWindower
+    from src.asr.VoiceActivityDetector import VoiceActivityDetector
+    from src.asr.AdaptiveWindower import AdaptiveWindower
     from src.ApplicationState import ApplicationState
 
 

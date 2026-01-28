@@ -1,9 +1,9 @@
-# src/AdaptiveWindower.py
+# src/asr/AdaptiveWindower.py
 import numpy as np
 import logging
 import queue
 from typing import Dict, List, Any, Optional
-from src.types import AudioSegment
+from ..types import AudioSegment
 
 
 def _format_chunk_ids(chunk_ids: list) -> str:

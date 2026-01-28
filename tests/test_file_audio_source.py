@@ -4,7 +4,7 @@ import numpy as np
 import queue
 import time
 from pathlib import Path
-from src.FileAudioSource import FileAudioSource
+from src.sound.FileAudioSource import FileAudioSource
 
 
 def test_file_audio_source_feeds_chunks_to_queue(config, download_test_audio):

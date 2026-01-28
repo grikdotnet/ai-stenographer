@@ -1,12 +1,12 @@
 import pytest
 from unittest.mock import Mock, MagicMock
-from src.SessionOptionsStrategy import (
+from src.asr.SessionOptionsStrategy import (
     SessionOptionsStrategy,
     IntegratedGPUStrategy,
     DiscreteGPUStrategy,
     CPUStrategy
 )
-from src.SessionOptionsFactory import SessionOptionsFactory
+from src.asr.SessionOptionsFactory import SessionOptionsFactory
 
 
 class TestIntegratedGPUStrategy:

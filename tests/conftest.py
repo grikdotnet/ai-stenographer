@@ -175,7 +175,7 @@ def real_vad(config):
         VoiceActivityDetector: Real VAD instance with loaded ONNX model
     """
     from pathlib import Path
-    from src.VoiceActivityDetector import VoiceActivityDetector
+    from src.asr.VoiceActivityDetector import VoiceActivityDetector
     model_path = Path('./models/silero_vad/silero_vad.onnx')
     return VoiceActivityDetector(config=config, model_path=model_path, verbose=False)
 

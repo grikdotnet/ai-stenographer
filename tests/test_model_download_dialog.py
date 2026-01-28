@@ -4,7 +4,7 @@ Tests for ModelDownloadDialog - GUI for downloading missing models.
 import pytest
 import tkinter as tk
 from unittest.mock import patch, MagicMock
-from src.ModelDownloadDialog import show_download_dialog
+from src.gui.ModelDownloadDialog import show_download_dialog
 
 
 class TestModelDownloadDialog:
@@ -18,14 +18,14 @@ class TestModelDownloadDialog:
         missing_models = ['parakeet', 'silero_vad']
 
         # Mock the download to avoid actual download
-        with patch('src.ModelDownloadDialog.ModelManager.download_models', return_value=True):
+        with patch('src.gui.ModelDownloadDialog.ModelManager.download_models', return_value=True):
             # Verify that the dialog can be created
             # Dialog should display license information and models without progress bars
             assert missing_models is not None
 
         root.destroy()
 
-    @patch('src.ModelDownloadDialog.ModelManager.download_models')
+    @patch('src.gui.ModelDownloadDialog.ModelManager.download_models')
     def test_download_button_calls_model_manager(self, mock_download):
         """Verifies ModelManager.download_models() is called when button clicked."""
         mock_download.return_value = True
@@ -42,7 +42,7 @@ class TestModelDownloadDialog:
 
         root.destroy()
 
-    @patch('src.ModelDownloadDialog.ModelManager.download_models')
+    @patch('src.gui.ModelDownloadDialog.ModelManager.download_models')
     def test_progress_callback_updates_ui(self, mock_download):
         """Progress callback receives 5 parameters and updates UI with progress bars."""
         # Track callback calls
@@ -69,7 +69,7 @@ class TestModelDownloadDialog:
 
         root.destroy()
 
-    @patch('src.ModelDownloadDialog.ModelManager.download_models')
+    @patch('src.gui.ModelDownloadDialog.ModelManager.download_models')
     def test_successful_download_closes_dialog(self, mock_download):
         """Dialog closes with True result after successful download."""
         mock_download.return_value = True
@@ -82,7 +82,7 @@ class TestModelDownloadDialog:
 
         root.destroy()
 
-    @patch('src.ModelDownloadDialog.ModelManager.download_models')
+    @patch('src.gui.ModelDownloadDialog.ModelManager.download_models')
     def test_failed_download_shows_error(self, mock_download):
         """Error message displayed when download fails, dialog stays open."""
         mock_download.return_value = False
@@ -106,7 +106,7 @@ class TestModelDownloadDialog:
 
         root.destroy()
 
-    @patch('src.ModelDownloadDialog.ModelManager.download_models')
+    @patch('src.gui.ModelDownloadDialog.ModelManager.download_models')
     def test_window_close_during_download_terminates_cleanly(self, mock_download):
         """Window close during download sets cancelled flag and exits gracefully."""
         download_state_ref = {'state': None}
@@ -131,7 +131,7 @@ class TestModelDownloadDialog:
 
         root.destroy()
 
-    @patch('src.ModelDownloadDialog.ModelManager.download_models')
+    @patch('src.gui.ModelDownloadDialog.ModelManager.download_models')
     @patch('os._exit')
     def test_window_close_during_active_download_forces_termination(self, mock_exit, mock_download):
         """

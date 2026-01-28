@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest.mock import patch, Mock, MagicMock
 import threading
 from src.gui.LoadingWindow import LoadingWindow
-from src.ModelManager import ModelManager
+from src.asr.ModelManager import ModelManager
 
 
 @pytest.fixture
@@ -221,7 +221,7 @@ def test_transform_to_download_dialog_creates_ui(image_path, model_dir):
     window.close()
 
 
-@patch('src.ModelManager.ModelManager.download_models')
+@patch('src.asr.ModelManager.ModelManager.download_models')
 def test_transform_to_download_dialog_success_flow(mock_download, image_path, model_dir):
     """
     Test successful download flow.
@@ -296,7 +296,7 @@ def test_transform_to_download_dialog_user_cancels(image_path, model_dir):
 
 
 @patch('tkinter.messagebox.showerror')
-@patch('src.ModelManager.ModelManager.download_models')
+@patch('src.asr.ModelManager.ModelManager.download_models')
 def test_transform_to_download_dialog_download_failure(mock_download, mock_error, image_path, model_dir):
     """
     Test download failure handling.
@@ -332,7 +332,7 @@ def test_transform_to_download_dialog_download_failure(mock_download, mock_error
     window.close()
 
 
-@patch('src.ModelManager.ModelManager.download_models')
+@patch('src.asr.ModelManager.ModelManager.download_models')
 def test_transform_to_download_dialog_progress_updates(mock_download, image_path, model_dir):
     """
     Test progress bar updates during download.

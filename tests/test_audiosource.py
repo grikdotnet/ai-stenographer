@@ -3,7 +3,7 @@ import pytest
 import queue
 import numpy as np
 from unittest.mock import Mock, patch
-from src.AudioSource import AudioSource
+from src.sound.AudioSource import AudioSource
 
 
 class TestAudioSource:

@@ -4,7 +4,7 @@ Tests for ModelManager - handles model download and validation.
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call
-from src.ModelManager import ModelManager
+from src.asr.ModelManager import ModelManager
 
 
 class TestModelManager:
@@ -21,13 +21,13 @@ class TestModelManager:
         silero_dir.mkdir()
         (silero_dir / "silero_vad.onnx").write_text("mock")
 
-        with patch('src.ModelManager.MODEL_DIR', tmp_path):
+        with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
             missing = ModelManager.get_missing_models()
             assert missing == []
 
     def test_get_missing_models_both_missing(self, tmp_path):
         """Returns both model names when both are missing."""
-        with patch('src.ModelManager.MODEL_DIR', tmp_path):
+        with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
             missing = ModelManager.get_missing_models()
             assert set(missing) == {'parakeet', 'silero_vad'}
 
@@ -38,12 +38,12 @@ class TestModelManager:
         silero_dir.mkdir()
         (silero_dir / "silero_vad.onnx").write_text("mock")
 
-        with patch('src.ModelManager.MODEL_DIR', tmp_path):
+        with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
             missing = ModelManager.get_missing_models()
             assert missing == ['parakeet']
 
-    @patch('src.ModelManager.hf_hub_download')
-    @patch('src.ModelManager.snapshot_download')
+    @patch('src.asr.ModelManager.hf_hub_download')
+    @patch('src.asr.ModelManager.snapshot_download')
     def test_download_parakeet_success(self, mock_snapshot, mock_hf, tmp_path):
         """Successfully downloads Parakeet model."""
         # Setup mock to create files when called
@@ -67,15 +67,15 @@ class TestModelManager:
         mock_snapshot.side_effect = create_parakeet_files
         mock_hf.side_effect = create_silero_files
 
-        with patch('src.ModelManager.MODEL_DIR', tmp_path):
+        with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
             result = ModelManager.download_models()
 
             assert result is True
             mock_snapshot.assert_called_once()
             assert (tmp_path / "parakeet" / "encoder-model.onnx").exists()
 
-    @patch('src.ModelManager.snapshot_download')
-    @patch('src.ModelManager.hf_hub_download')
+    @patch('src.asr.ModelManager.snapshot_download')
+    @patch('src.asr.ModelManager.hf_hub_download')
     def test_download_silero_success(self, mock_download, mock_snapshot, tmp_path):
         """Successfully downloads Silero VAD model."""
         # Setup mock to create files when called
@@ -99,15 +99,15 @@ class TestModelManager:
         mock_snapshot.side_effect = create_parakeet_files
         mock_download.side_effect = create_silero_files
 
-        with patch('src.ModelManager.MODEL_DIR', tmp_path):
+        with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
             result = ModelManager.download_models()
 
             assert result is True
             mock_download.assert_called_once()
             assert (tmp_path / "silero_vad" / "silero_vad.onnx").exists()
 
-    @patch('src.ModelManager.snapshot_download')
-    @patch('src.ModelManager.hf_hub_download')
+    @patch('src.asr.ModelManager.snapshot_download')
+    @patch('src.asr.ModelManager.hf_hub_download')
     def test_download_with_progress_callback(self, mock_hf, mock_snapshot, tmp_path):
         """Verifies progress callback receives 5-parameter updates during download."""
         callback_calls = []
@@ -137,7 +137,7 @@ class TestModelManager:
         mock_snapshot.side_effect = create_parakeet
         mock_hf.side_effect = create_silero
 
-        with patch('src.ModelManager.MODEL_DIR', tmp_path):
+        with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
             ModelManager.download_models(progress_callback=progress_callback)
 
             # Check callback was called with 5 parameters
@@ -155,10 +155,10 @@ class TestModelManager:
             complete_calls = [c for c in callback_calls if c[2] == 'complete']
             assert len(complete_calls) > 0
 
-    @patch('src.ModelManager.snapshot_download')
+    @patch('src.asr.ModelManager.snapshot_download')
     def test_download_failure_cleanup(self, mock_snapshot, tmp_path):
         """Verifies partial files are removed on download error."""
-        with patch('src.ModelManager.MODEL_DIR', tmp_path):
+        with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
             # Create partial file
             parakeet_dir = tmp_path / "parakeet"
             parakeet_dir.mkdir()
@@ -176,11 +176,11 @@ class TestModelManager:
 
     def test_validate_model_missing_file(self, tmp_path):
         """Returns False when model file doesn't exist."""
-        with patch('src.ModelManager.MODEL_DIR', tmp_path):
+        with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
             assert ModelManager.validate_model('parakeet') is False
             assert ModelManager.validate_model('silero_vad') is False
 
-    @patch('src.ModelManager.hf_hub_download')
+    @patch('src.asr.ModelManager.hf_hub_download')
     def test_silero_download_creates_correct_path(self, mock_download, tmp_path):
         """Verifies Silero VAD is downloaded to the path expected by application."""
         # Mock download to simulate HuggingFace behavior
@@ -195,7 +195,7 @@ class TestModelManager:
 
         mock_download.side_effect = create_silero
 
-        with patch('src.ModelManager.MODEL_DIR', tmp_path):
+        with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
             ModelManager._download_silero(tmp_path)
 
             # After download, file should be at location expected by application
@@ -206,7 +206,7 @@ class TestModelManager:
             hf_path = tmp_path / "silero_vad" / "onnx"
             assert not hf_path.exists(), f"HuggingFace onnx directory should be removed"
 
-    @patch('src.ModelManager.snapshot_download')
+    @patch('src.asr.ModelManager.snapshot_download')
     def test_parakeet_download_ignores_unused_files(self, mock_snapshot, tmp_path):
         """Verifies Parakeet download uses ignore_patterns to skip unused files."""
         def create_parakeet(*args, **kwargs):
@@ -223,7 +223,7 @@ class TestModelManager:
 
         mock_snapshot.side_effect = create_parakeet
 
-        with patch('src.ModelManager.MODEL_DIR', tmp_path):
+        with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
             ModelManager._download_parakeet(tmp_path)
 
             # Verify the main model file exists

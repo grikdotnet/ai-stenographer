@@ -2,7 +2,7 @@
 import pytest
 import numpy as np
 import queue
-from src.AdaptiveWindower import AdaptiveWindower
+from src.asr.AdaptiveWindower import AdaptiveWindower
 from src.types import AudioSegment
 
 

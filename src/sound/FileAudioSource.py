@@ -1,4 +1,4 @@
-# src/FileAudioSource.py
+# src/sound/FileAudioSource.py
 from __future__ import annotations
 import queue
 import numpy as np

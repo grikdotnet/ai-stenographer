@@ -8,7 +8,7 @@ import pytest
 import numpy as np
 import queue
 from unittest.mock import Mock
-from src.SoundPreProcessor import SoundPreProcessor
+from src.sound.SoundPreProcessor import SoundPreProcessor
 from src.types import AudioSegment
 
 

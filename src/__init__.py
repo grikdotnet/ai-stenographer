@@ -1,7 +1,7 @@
 # src/__init__.py
-from .AudioSource import AudioSource
-from .Recognizer import Recognizer
-from .TextMatcher import TextMatcher
+from .sound.AudioSource import AudioSource
+from .asr.Recognizer import Recognizer
+from .postprocessing.TextMatcher import TextMatcher
 from .gui.ApplicationWindow import ApplicationWindow
 from .pipeline import STTPipeline
 

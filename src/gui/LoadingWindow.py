@@ -196,7 +196,7 @@ class LoadingWindow:
             True if download succeeded, False if user cancelled
         """
         # Import ModelManager here to avoid circular dependencies
-        from src.ModelManager import ModelManager
+        from src.asr.ModelManager import ModelManager
 
         # Store the container frame reference
         container = None

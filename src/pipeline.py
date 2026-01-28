@@ -9,19 +9,19 @@ from pathlib import Path
 from typing import List, Any, Dict, TYPE_CHECKING
 import tkinter as tk
 
-from .AudioSource import AudioSource
-from .FileAudioSource import FileAudioSource
-from .SoundPreProcessor import SoundPreProcessor
-from .AdaptiveWindower import AdaptiveWindower
-from .Recognizer import Recognizer
-from .TextMatcher import TextMatcher
+from .sound.AudioSource import AudioSource
+from .sound.FileAudioSource import FileAudioSource
+from .sound.SoundPreProcessor import SoundPreProcessor
+from .asr.AdaptiveWindower import AdaptiveWindower
+from .asr.Recognizer import Recognizer
+from .asr.VoiceActivityDetector import VoiceActivityDetector
+from .asr.SessionOptionsFactory import SessionOptionsFactory
+from .postprocessing.TextMatcher import TextMatcher
 from .RecognitionResultPublisher import RecognitionResultPublisher
 from .gui.TextInsertionService import TextInsertionService
 from .quickentry.QuickEntryService import QuickEntryService
 from .gui.ApplicationWindow import ApplicationWindow
-from .VoiceActivityDetector import VoiceActivityDetector
 from .ExecutionProviderManager import ExecutionProviderManager
-from .SessionOptionsFactory import SessionOptionsFactory
 from .ApplicationState import ApplicationState
 
 if TYPE_CHECKING:

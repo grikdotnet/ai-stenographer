@@ -1,11 +1,11 @@
-# src/TextMatcher.py
+# src/postprocessing/TextMatcher.py
 import queue
 import threading
 import logging
 from typing import Optional, TYPE_CHECKING
 from .TextNormalizer import TextNormalizer
-from .types import RecognitionResult
-from .RecognitionResultPublisher import RecognitionResultPublisher
+from ..types import RecognitionResult
+from ..RecognitionResultPublisher import RecognitionResultPublisher
 from dataclasses import replace
 
 if TYPE_CHECKING:
@@ -234,7 +234,7 @@ class TextMatcher:
                 self.process_text(result)
             except queue.Empty:
                 continue
-    
+
     def start(self) -> None:
         """Start processing texts in a background thread.
 

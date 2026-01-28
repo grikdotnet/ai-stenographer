@@ -1,4 +1,4 @@
-# src/TextNormalizer.py
+# src/postprocessing/TextNormalizer.py
 import string
 import unicodedata
 from typing import Dict

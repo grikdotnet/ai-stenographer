@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, Mock
 # Add the parent directory to the path so we can import src modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from src.TextMatcher import TextMatcher
-from src.TextNormalizer import TextNormalizer
+from src.postprocessing.TextMatcher import TextMatcher
+from src.postprocessing.TextNormalizer import TextNormalizer
 from src.types import RecognitionResult
 
 class TestTextMatcher(unittest.TestCase):

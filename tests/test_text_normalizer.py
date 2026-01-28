@@ -1,6 +1,6 @@
 # tests/test_text_normalizer.py
 import unittest
-from src.TextNormalizer import TextNormalizer
+from src.postprocessing.TextNormalizer import TextNormalizer
 
 
 class TestTextNormalization(unittest.TestCase):

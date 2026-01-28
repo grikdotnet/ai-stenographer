@@ -4,7 +4,7 @@ This module implements the Factory pattern for creating SessionOptionsStrategy i
 based on detected hardware type. Provides centralized strategy instantiation and lookup.
 """
 from typing import Dict, Any
-from src.SessionOptionsStrategy import (
+from .SessionOptionsStrategy import (
     SessionOptionsStrategy,
     IntegratedGPUStrategy,
     DiscreteGPUStrategy,

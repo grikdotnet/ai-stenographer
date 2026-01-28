@@ -3,7 +3,7 @@ import sys
 import logging
 from pathlib import Path
 from src.PathResolver import PathResolver
-from src.ModelManager import ModelManager
+from src.asr.ModelManager import ModelManager
 from src.gui.LoadingWindow import LoadingWindow
 from src.LoggingSetup import setup_logging
 

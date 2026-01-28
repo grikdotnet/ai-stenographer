@@ -10,7 +10,7 @@ from pathlib import Path
 class TestMainIntegration:
     """Integration tests for main.py startup with model checking."""
 
-    @patch('src.ModelManager.ModelManager.get_missing_models')
+    @patch('src.asr.ModelManager.ModelManager.get_missing_models')
     @patch('src.pipeline.STTPipeline')
     def test_startup_with_models_present(self, mock_pipeline, mock_get_missing):
         """No dialog shown when all models are present, pipeline starts normally."""
@@ -34,8 +34,8 @@ class TestMainIntegration:
         mock_pipeline.assert_called_once()
         mock_instance.run.assert_called_once()
 
-    @patch('src.ModelDownloadDialog.show_download_dialog')
-    @patch('src.ModelManager.ModelManager.get_missing_models')
+    @patch('src.gui.ModelDownloadDialog.show_download_dialog')
+    @patch('src.asr.ModelManager.ModelManager.get_missing_models')
     @patch('src.pipeline.STTPipeline')
     def test_startup_with_models_missing_user_confirms(self, mock_pipeline, mock_get_missing, mock_dialog):
         """Dialog shown when models missing, downloads, then pipeline starts."""
@@ -65,8 +65,8 @@ class TestMainIntegration:
         mock_pipeline.assert_called_once()
         mock_instance.run.assert_called_once()
 
-    @patch('src.ModelDownloadDialog.show_download_dialog')
-    @patch('src.ModelManager.ModelManager.get_missing_models')
+    @patch('src.gui.ModelDownloadDialog.show_download_dialog')
+    @patch('src.asr.ModelManager.ModelManager.get_missing_models')
     @patch('src.pipeline.STTPipeline')
     @patch('sys.exit')
     def test_startup_with_models_missing_user_cancels(self, mock_exit, mock_pipeline, mock_get_missing, mock_dialog):
@@ -98,7 +98,7 @@ class TestLoadingWindowIntegration:
     """Integration tests for LoadingWindow display during startup."""
 
     @patch('src.gui.LoadingWindow.LoadingWindow')
-    @patch('src.ModelManager.ModelManager.get_missing_models')
+    @patch('src.asr.ModelManager.ModelManager.get_missing_models')
     @patch('src.pipeline.STTPipeline')
     def test_loading_window_shown_during_startup(self, mock_pipeline, mock_get_missing, mock_loading_window):
         """LoadingWindow is created and shows progress messages during startup."""
@@ -149,8 +149,8 @@ class TestLoadingWindowIntegration:
         mock_pipeline_instance.run.assert_called_once()
 
     @patch('src.gui.LoadingWindow.LoadingWindow')
-    @patch('src.ModelDownloadDialog.show_download_dialog')
-    @patch('src.ModelManager.ModelManager.get_missing_models')
+    @patch('src.gui.ModelDownloadDialog.show_download_dialog')
+    @patch('src.asr.ModelManager.ModelManager.get_missing_models')
     @patch('src.pipeline.STTPipeline')
     def test_loading_window_with_model_download(self, mock_pipeline, mock_get_missing, mock_dialog, mock_loading_window):
         """LoadingWindow closes before download dialog, reopens after."""
@@ -210,7 +210,7 @@ class TestLoadingWindowIntegration:
         mock_pipeline_instance.run.assert_called_once()
 
     @patch('src.gui.LoadingWindow.LoadingWindow')
-    @patch('src.ModelManager.ModelManager.get_missing_models')
+    @patch('src.asr.ModelManager.ModelManager.get_missing_models')
     @patch('src.pipeline.STTPipeline')
     def test_loading_window_closed_on_error(self, mock_pipeline, mock_get_missing, mock_loading_window):
         """LoadingWindow is closed even when exception occurs."""

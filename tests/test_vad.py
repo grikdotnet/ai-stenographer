@@ -1,7 +1,7 @@
 # tests/test_vad.py
 import numpy as np
 from pathlib import Path
-from src.VoiceActivityDetector import VoiceActivityDetector
+from src.asr.VoiceActivityDetector import VoiceActivityDetector
 
 
 class TestVoiceActivityDetector:

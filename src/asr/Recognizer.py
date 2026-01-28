@@ -1,10 +1,10 @@
-# src/Recognizer.py
+# src/asr/Recognizer.py
 import queue
 import threading
 import logging
 import numpy as np
 from typing import Any, Optional, TYPE_CHECKING
-from src.types import ChunkQueueItem, RecognitionResult
+from ..types import ChunkQueueItem, RecognitionResult
 
 if TYPE_CHECKING:
     from onnx_asr.adapters import TimestampedResultsAsrAdapter
