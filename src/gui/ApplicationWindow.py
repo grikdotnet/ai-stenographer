@@ -67,9 +67,8 @@ class ApplicationWindow:
 
         status_label = tk.Label(
             button_frame,
-            text="Gray text: Preliminary (may change) | Black text: Final",
-            font=("Arial", 10),
-            fg="gray"
+            text="Press Cntrl+Space to insert text at cursor in other applications",
+            font=("Arial", 10)
         )
         status_label.pack(side=tk.RIGHT, padx=(20, 50))
 
