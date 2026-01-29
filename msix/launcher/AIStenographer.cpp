@@ -8,6 +8,7 @@
 
 #include <windows.h>
 #include <shlwapi.h>
+#include <shlobj_core.h>
 #include <appmodel.h>
 #include <string>
 #include <gdiplus.h>
@@ -15,6 +16,7 @@
 #include "resource.h"
 
 #pragma comment(lib, "shlwapi.lib")
+#pragma comment(lib, "shell32.lib")
 #pragma comment(lib, "kernel32.lib")
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "ole32.lib")
@@ -31,6 +33,7 @@ static HWND g_splashWindow = NULL;
 static Gdiplus::Image* g_splashImage = NULL;
 static ULONG_PTR g_gdiplusToken = 0;
 static DWORD g_startTime = 0;
+static bool g_isFirstRun = false;
 
 /**
  * Detects if the application is running inside an MSIX package.
@@ -44,6 +47,115 @@ bool IsRunningAsMSIX() {
     UINT32 length = 0;
     LONG result = GetCurrentPackageFullName(&length, nullptr);
     return (result == ERROR_INSUFFICIENT_BUFFER);
+}
+
+/**
+ * Constructs the path to the first-run flag file in MSIX AppData directory.
+ *
+ * Algorithm:
+ * 1. Get %LOCALAPPDATA% path
+ * 2. Search for AI.Stenographer_* package folder in Packages directory
+ * 3. Build path to flag file in LocalCache root
+ *
+ * @return Path to .first_run_complete flag file, or empty string if not found
+ */
+std::wstring GetFlagFilePath() {
+    wchar_t localAppData[MAX_PATH];
+    if (!ExpandEnvironmentStringsW(L"%LOCALAPPDATA%", localAppData, MAX_PATH)) {
+        return L"";
+    }
+
+    std::wstring packagesDir = std::wstring(localAppData) + L"\\Packages";
+
+    // Search for *AIStenographer_* package folder
+    // Package name format: <Publisher>.<AppName>_<Hash>
+    // Example: GrigoriKochanov.AIStenographer_33pmfdd1f766m
+    WIN32_FIND_DATAW findData;
+    std::wstring searchPattern = packagesDir + L"\\*AIStenographer_*";
+    HANDLE hFind = FindFirstFileW(searchPattern.c_str(), &findData);
+
+    if (hFind == INVALID_HANDLE_VALUE) {
+        return L"";
+    }
+
+    std::wstring packageFolder = packagesDir + L"\\" + findData.cFileName;
+    FindClose(hFind);
+
+    // Place flag in same directory as Python app data
+    // Matches PathResolver._get_msix_local_cache_path() behavior
+    return packageFolder + L"\\LocalCache\\Local\\AI-Stenographer\\.first_run_complete";
+}
+
+/**
+ * Detects if this is the first run of the application in MSIX environment.
+ *
+ * Algorithm:
+ * 1. Check if running in MSIX package (only relevant for MSIX)
+ * 2. Get flag file path in AppData
+ * 3. Check if flag file exists
+ *
+ * @return true if first run (flag file doesn't exist), false otherwise
+ */
+bool IsFirstRun() {
+    if (!IsRunningAsMSIX()) {
+        return false;  // Only relevant for MSIX
+    }
+
+    std::wstring flagPath = GetFlagFilePath();
+    if (flagPath.empty()) {
+        return true;  // Assume first run if path not found
+    }
+
+    return (GetFileAttributesW(flagPath.c_str()) == INVALID_FILE_ATTRIBUTES);
+}
+
+/**
+ * Creates the first-run flag file to mark successful application startup.
+ *
+ * Algorithm:
+ * 1. Check if running in MSIX package (only relevant for MSIX)
+ * 2. Get flag file path in AppData
+ * 3. Create empty flag file
+ *
+ * The flag is created when Python application successfully starts and creates
+ * its window, indicating that first run completed successfully.
+ */
+void CreateFirstRunFlag() {
+    if (!IsRunningAsMSIX()) {
+        return;
+    }
+
+    std::wstring flagPath = GetFlagFilePath();
+    if (flagPath.empty()) {
+        return;
+    }
+
+    // Ensure parent directory exists (Python app creates it during init)
+    // Get parent directory path
+    size_t lastSlash = flagPath.find_last_of(L"\\");
+    if (lastSlash != std::wstring::npos) {
+        std::wstring parentDir = flagPath.substr(0, lastSlash);
+
+        // Create directory structure if needed (Python should have done this)
+        // Use SHCreateDirectoryExW for recursive creation
+        SHCreateDirectoryExW(NULL, parentDir.c_str(), NULL);
+    }
+
+    // Create empty flag file
+    HANDLE hFile = CreateFileW(
+        flagPath.c_str(),
+        GENERIC_WRITE,
+        0,
+        NULL,
+        CREATE_NEW,  // Only create if doesn't exist
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+
+    if (hFile != INVALID_HANDLE_VALUE) {
+        CloseHandle(hFile);
+    }
+    // Silent failure if file already exists or cannot be created
 }
 
 /**
@@ -127,7 +239,46 @@ LRESULT CALLBACK SplashWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
 
             if (g_splashImage) {
                 Gdiplus::Graphics graphics(hdc);
+
+                // Draw splash image
                 graphics.DrawImage(g_splashImage, 0, 0);
+
+                // Draw first-run message if applicable
+                if (g_isFirstRun) {
+                    // Set up text rendering
+                    graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
+
+                    // Create font (Arial, 14pt, bold)
+                    Gdiplus::FontFamily fontFamily(L"Arial");
+                    Gdiplus::Font font(&fontFamily, 14, Gdiplus::FontStyleBold, Gdiplus::UnitPoint);
+
+                    // Create brushes for text and background
+                    Gdiplus::SolidBrush textBrush(Gdiplus::Color(255, 255, 255, 255));  // White text
+                    Gdiplus::SolidBrush bgBrush(Gdiplus::Color(180, 0, 0, 0));  // Semi-transparent black
+
+                    // Message text
+                    const wchar_t* message = L"Antivirus checks the application during the first run, this may take time";
+
+                    // Measure text size
+                    Gdiplus::RectF layoutRect(0, 0, (float)g_splashImage->GetWidth(), 0);
+                    Gdiplus::RectF boundingBox;
+                    graphics.MeasureString(message, -1, &font, layoutRect, &boundingBox);
+
+                    // Position text at top center with padding
+                    float x = ((float)g_splashImage->GetWidth() - boundingBox.Width) / 2;
+                    float y = 20;  // px from top
+
+                    // Draw background rectangle with padding
+                    float padding = 15;
+                    Gdiplus::RectF bgRect(x - padding, y - padding,
+                                          boundingBox.Width + 2*padding,
+                                          boundingBox.Height + 2*padding);
+                    graphics.FillRectangle(&bgBrush, bgRect);
+
+                    // Draw text
+                    Gdiplus::PointF origin(x, y);
+                    graphics.DrawString(message, -1, &font, origin, &textBrush);
+                }
             }
 
             EndPaint(hwnd, &ps);
@@ -152,7 +303,10 @@ LRESULT CALLBACK SplashWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
                 DWORD elapsed = GetTickCount() - g_startTime;
 
                 if (pythonWindow || elapsed >= MAX_WAIT_MS) {
-                    // Python window found or timeout - close splash
+                    // Python window found or timeout - create flag and close splash
+                    if (pythonWindow && g_isFirstRun) {
+                        CreateFirstRunFlag();
+                    }
                     KillTimer(hwnd, TIMER_CHECK_WINDOW);
                     DestroyWindow(hwnd);
                 }
@@ -337,6 +491,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // Load splash image from embedded resource
     g_splashImage = LoadSplashImageFromResource();
+
+    // Detect first run
+    g_isFirstRun = IsFirstRun();
 
     // Create and show splash window (even if image failed to load)
     g_splashWindow = CreateSplashWindow(hInstance);

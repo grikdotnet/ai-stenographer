@@ -13,7 +13,7 @@
 
 param(
     [string]$CertPassword = "test123",
-    [string]$Subject = "CN=Grigori Kochanov",
+    [string]$Subject = "CN=3F8691C4-05D3-45C7-AB1E-113776D7E567",
     [string]$FriendlyName = "AI Stenographer Test Certificate",
     [string]$OutputDir = ".",
     [switch]$SkipInstall = $false
