@@ -81,7 +81,7 @@ BUILD_TYPE = "store"
 PYTHON_VERSION = "3.13.5"
 
 # MSIX package metadata (must match AppxManifest.xml)
-APP_VERSION = "1.6.0.0"
+APP_VERSION = "1.6.0.2"
 PUBLISHER_NAME = "CN=3F8691C4-05D3-45C7-AB1E-113776D7E567"
 PACKAGE_NAME = "GrigoriKochanov.AIStenographer"
 

@@ -7,7 +7,7 @@
   <Identity
     Name="GrigoriKochanov.AIStenographer"
     Publisher="CN=3F8691C4-05D3-45C7-AB1E-113776D7E567"
-    Version="1.6.0.0" />
+    Version="1.6.0.2" />
 
   <Properties>
     <DisplayName>AI Stenographer</DisplayName>
