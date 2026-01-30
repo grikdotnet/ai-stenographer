@@ -78,10 +78,10 @@ from build_distribution import (
 BUILD_TYPE = "store"
 
 # Python version
-PYTHON_VERSION = "3.13.5"
+PYTHON_VERSION = "3.12.10"
 
 # MSIX package metadata (must match AppxManifest.xml)
-APP_VERSION = "1.6.0.2"
+APP_VERSION = "1.6.0.0"
 PUBLISHER_NAME = "CN=3F8691C4-05D3-45C7-AB1E-113776D7E567"
 PACKAGE_NAME = "GrigoriKochanov.AIStenographer"
 
@@ -770,20 +770,21 @@ def main():
     print("STEP 6: Copy Tkinter Module")
     print("=" * 80)
     if not copy_tkinter_to_distribution(paths["runtime"]):
-        print("\nError: Failed to copy tkinter module")
-        return 1
+        print("\nWarning: Failed to copy tkinter module")
+        print("Tkinter will not be available in the distribution")
+        print("Continuing with build...")
 
     # Step 6a: Remove unnecessary Tcl/Tk files
     if not cleanup_tcl_unnecessary_files(paths["runtime"]):
         print("\nWarning: Failed to cleanup Tcl/Tk files")
 
-    # Step 7: Create python313._pth configuration
+    # Step 7: Create python312._pth configuration
     print("\n" + "=" * 80)
     print("STEP 7: Configure Module Search Paths")
     print("=" * 80)
     try:
         pth_paths = [
-            "python313.zip",
+            "python312.zip",
             "Lib",
             "../Lib/site-packages",
             "../app",

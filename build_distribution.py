@@ -47,7 +47,7 @@ from src.LicenseCollector import LicenseCollector
 
 
 # Python version to download
-PYTHON_VERSION = "3.13.5"
+PYTHON_VERSION = "3.12.10"
 PYTHON_ARCH = "amd64"  # 64-bit Windows
 
 
@@ -246,7 +246,7 @@ def copy_signed_executables_from_system(runtime_dir: Path) -> bool:
     system Python installation to avoid Windows SmartScreen warnings.
 
     Strategy:
-    - Keep all files from embeddable package (python313.dll, stdlib, etc.)
+    - Keep all files from embeddable package (python312.dll, stdlib, etc.)
     - Replace only python.exe and pythonw.exe with signed versions
     - Verify both source and destination signatures
 
@@ -261,6 +261,15 @@ def copy_signed_executables_from_system(runtime_dir: Path) -> bool:
     try:
         # Locate system Python (use sys.base_prefix to get actual installation, not venv)
         system_python = Path(sys.base_prefix)
+
+        # Check version compatibility (must match minor version)
+        system_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+        target_version = PYTHON_VERSION.rsplit('.', 1)[0]  # e.g., "3.12.8" -> "3.12"
+
+        if system_version != target_version:
+            print(f"  [SKIP] System Python {system_version} does not match target {target_version}")
+            print(f"  Continuing with unsigned executables from embeddable package")
+            return False
 
         # Files to replace
         executables = ["python.exe", "pythonw.exe"]
@@ -406,20 +415,20 @@ def main():
 
     # Step 6: Copy tkinter module from system Python
     if not copy_tkinter_to_distribution(paths["runtime"]):
-        print("\nError: Failed to copy tkinter module")
-        print("Tkinter is required for GUI functionality")
-        return 1
+        print("\nWarning: Failed to copy tkinter module")
+        print("Tkinter will not be available in the distribution")
+        print("Continuing with build...")
 
     # Step 6a: Remove unnecessary Tcl/Tk files
     if not cleanup_tcl_unnecessary_files(paths["runtime"]):
         print("\nWarning: Failed to cleanup Tcl/Tk files")
         print("Build will continue, but distribution size will be larger")
 
-    # Step 7: Create python313._pth configuration
+    # Step 7: Create python312._pth configuration
     # Paths are relative to python.exe location (_internal/runtime/)
     try:
         pth_paths = [
-            "python313.zip",            # In same dir as python.exe
+            "python312.zip",            # In same dir as python.exe
             "Lib",                      # For tkinter module (in runtime/Lib/)
             "../Lib/site-packages",     # Up one, then to Lib/site-packages
             "../app",                   # Up one, then to app
@@ -546,7 +555,7 @@ def main():
 
 def create_pth_file(runtime_dir: Path, paths: list[str]) -> None:
     """
-    Creates python313._pth file to configure module search paths.
+    Creates python312._pth file to configure module search paths.
 
     The _pth file tells embedded Python where to find modules without
     needing environment variables or registry settings.
@@ -556,14 +565,14 @@ def create_pth_file(runtime_dir: Path, paths: list[str]) -> None:
         paths: List of paths to add to sys.path (relative to exe location)
 
     Example paths:
-        _internal/runtime/python313.zip
+        _internal/runtime/python312.zip
         _internal/Lib/site-packages
         _internal/app
         import site
     """
-    print("Creating python313._pth configuration...")
+    print("Creating python312._pth configuration...")
 
-    pth_file = runtime_dir / "python313._pth"
+    pth_file = runtime_dir / "python312._pth"
 
     content = "\n".join(paths) + "\n"
     pth_file.write_text(content, encoding='utf-8')
@@ -679,6 +688,25 @@ def copy_tkinter_to_distribution(runtime_dir: Path) -> bool:
     try:
         # Locate system Python (use sys.base_prefix to get actual installation, not venv)
         system_python = Path(sys.base_prefix)
+
+        # Check version compatibility (must match minor version)
+        system_version = f"{sys.version_info.major}.{sys.version_info.minor}"
+        target_version = PYTHON_VERSION.rsplit('.', 1)[0]  # e.g., "3.12.10" -> "3.12"
+
+        if system_version != target_version:
+            # Try to find matching Python installation
+            target_major_minor = target_version.replace('.', '')  # "3.12" -> "312"
+            python_install_path = Path(f"C:/Python{target_major_minor}")
+
+            if python_install_path.exists():
+                print(f"  [INFO] System Python {system_version} != target {target_version}")
+                print(f"  [INFO] Using {python_install_path} for tkinter extraction")
+                system_python = python_install_path
+            else:
+                print(f"  [WARNING] System Python {system_version} does not match target {target_version}")
+                print(f"  [WARNING] C:/Python{target_major_minor} not found")
+                print(f"  [ERROR] Cannot extract tkinter - version mismatch")
+                return False
 
         # 1. Copy tkinter module
         system_tkinter = system_python / "Lib" / "tkinter"

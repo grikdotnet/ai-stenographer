@@ -11,7 +11,9 @@
 #include <shlobj_core.h>
 #include <appmodel.h>
 #include <string>
+#include <vector>
 #include <gdiplus.h>
+#include <pathcch.h>
 
 #include "resource.h"
 
@@ -20,6 +22,7 @@
 #pragma comment(lib, "kernel32.lib")
 #pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "pathcch.lib")
 
 // Timer ID for polling Python window
 #define TIMER_CHECK_WINDOW 1
@@ -60,12 +63,20 @@ bool IsRunningAsMSIX() {
  * @return Path to .first_run_complete flag file, or empty string if not found
  */
 std::wstring GetFlagFilePath() {
-    wchar_t localAppData[MAX_PATH];
-    if (!ExpandEnvironmentStringsW(L"%LOCALAPPDATA%", localAppData, MAX_PATH)) {
+    // Fix buffer overflow vulnerability by using dynamic sizing
+    // Windows Insider 26200 MSIX virtualization can return paths > MAX_PATH
+    DWORD requiredSize = ExpandEnvironmentStringsW(L"%LOCALAPPDATA%", nullptr, 0);
+    if (requiredSize == 0) {
         return L"";
     }
 
-    std::wstring packagesDir = std::wstring(localAppData) + L"\\Packages";
+    // Allocate buffer with extra margin for MSIX path virtualization
+    std::vector<wchar_t> localAppData(requiredSize + 100);
+    if (!ExpandEnvironmentStringsW(L"%LOCALAPPDATA%", localAppData.data(), localAppData.size())) {
+        return L"";
+    }
+
+    std::wstring packagesDir = std::wstring(localAppData.data()) + L"\\Packages";
 
     // Search for *AIStenographer_* package folder
     // Package name format: <Publisher>.<AppName>_<Hash>
@@ -499,8 +510,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     g_splashWindow = CreateSplashWindow(hInstance);
 
     // Get executable directory
-    wchar_t exePath[MAX_PATH];
-    if (!GetModuleFileNameW(NULL, exePath, MAX_PATH)) {
+    // Fix buffer overflow vulnerability by using extended-length path buffer
+    // AppContainer sandbox in Windows 26200 may return paths > MAX_PATH
+    wchar_t exePath[PATHCCH_MAX_CCH];  // 32768 chars - handles extended paths
+    DWORD pathLen = GetModuleFileNameW(NULL, exePath, PATHCCH_MAX_CCH);
+    if (pathLen == 0 || pathLen >= PATHCCH_MAX_CCH) {
         MessageBoxW(NULL, L"Failed to get executable path", L"AI Stenographer - Error", MB_ICONERROR);
         if (g_splashWindow) DestroyWindow(g_splashWindow);
         if (g_splashImage) delete g_splashImage;
