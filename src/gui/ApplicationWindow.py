@@ -1,11 +1,7 @@
-"""
-ApplicationWindow - Top-level application window.
-
-Owns tkinter root and creates all GUI components directly.
-"""
 import tkinter as tk
-from tkinter import scrolledtext
+from tkinter import scrolledtext, ttk
 from typing import Dict, Optional, TYPE_CHECKING
+import webbrowser
 from src.ApplicationState import ApplicationState
 from src.gui.HeaderPanel import HeaderPanel
 from src.gui.ControlPanel import ControlPanel
@@ -16,6 +12,8 @@ from src.gui.TextFormatter import TextFormatter
 
 if TYPE_CHECKING:
     from src.controllers.InsertionController import InsertionController
+
+GITHUB_ISSUES_URL = "https://github.com/grikdotnet/ai-stenographer/issues"
 
 
 class ApplicationWindow:
@@ -47,7 +45,17 @@ class ApplicationWindow:
         main_frame = tk.Frame(self.root, padx=10, pady=10)
         main_frame.pack(fill=tk.BOTH, expand=True)
 
+        # Create header panel first (it creates internal frame)
         header_panel = HeaderPanel(main_frame)
+
+        # Create report button inside header panel's frame
+        report_button = ttk.Button(
+            header_panel.frame,
+            text='⚠️ Report',
+            command=lambda: webbrowser.open(GITHUB_ISSUES_URL)
+        )
+        report_button.pack(side=tk.RIGHT)
+        self._create_tooltip(report_button, "Report inappropriate content and issues")
 
         # Create control panel
         button_frame = tk.Frame(main_frame)
@@ -70,7 +78,7 @@ class ApplicationWindow:
             text="Press Cntrl+Space to insert text at cursor in other applications",
             font=("Arial", 10)
         )
-        status_label.pack(side=tk.RIGHT, padx=(20, 50))
+        status_label.pack(side=tk.RIGHT, padx=(20, 0))
 
         text_widget = scrolledtext.ScrolledText(
             main_frame,
@@ -123,3 +131,39 @@ class ApplicationWindow:
             tk.Tk root window instance
         """
         return self.root
+
+    def _create_tooltip(self, widget: tk.Widget, text: str) -> None:
+        """
+        Create a tooltip that appears on hover.
+
+        Args:
+            widget: Widget to attach tooltip to
+            text: Tooltip text to display
+        """
+        tooltip = None
+
+        def show_tooltip(event):
+            nonlocal tooltip
+            x = widget.winfo_rootx() + 20
+            y = widget.winfo_rooty() + widget.winfo_height() + 5
+            tooltip = tk.Toplevel(widget)
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(f"+{x}+{y}")
+            label = tk.Label(
+                tooltip,
+                text=text,
+                background="#FFFFE0",
+                relief=tk.SOLID,
+                borderwidth=1,
+                font=("Arial", 9)
+            )
+            label.pack()
+
+        def hide_tooltip(event):
+            nonlocal tooltip
+            if tooltip:
+                tooltip.destroy()
+                tooltip = None
+
+        widget.bind("<Enter>", show_tooltip)
+        widget.bind("<Leave>", hide_tooltip)

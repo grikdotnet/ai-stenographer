@@ -1,9 +1,3 @@
-"""
-ControlPanel - Pause/Resume button widget.
-
-This widget observes ApplicationState and updates its appearance accordingly.
-It delegates actions to PauseController following proper MVC architecture.
-"""
 import tkinter as tk
 from tkinter import ttk
 from src.ApplicationState import ApplicationState
@@ -13,12 +7,8 @@ from src.controllers.PauseController import PauseController
 class ControlPanel(ttk.Frame):
     """
     Control panel widget with pause/resume button.
-
-    Follows MVC architecture:
-    - Observes ApplicationState to update button appearance
-    - Delegates actions to PauseController
-    - Disables button on click to prevent rapid clicking
-    - Re-enabled by observer when state change completes
+    Observes ApplicationState and updates its appearance accordingly.
+    Delegates actions to PauseController following proper MVC architecture.
 
     Attributes:
         app_state: ApplicationState instance
@@ -45,14 +35,14 @@ class ControlPanel(ttk.Frame):
         self.app_state = app_state
         self.controller = controller
 
-        # Create button
+        # Create Pause/Resume button
         self.button = ttk.Button(
             self,
             text='Loading...',
             command=self._on_button_click,
             state='disabled'
         )
-        self.button.pack()
+        self.button.pack(side=tk.LEFT)
 
         # Register as GUI observer
         self.app_state.register_gui_observer(self._on_state_change)
