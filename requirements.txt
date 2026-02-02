@@ -2,5 +2,6 @@ sounddevice
 numpy
 onnxruntime-directml
 onnx-asr==0.10.0
-huggingface_hub[hf_xet]
+requests
 pynput>=1.7.6
+tqdm

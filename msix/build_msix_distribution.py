@@ -66,6 +66,7 @@ from build_distribution import (
     compile_site_packages,
     zip_site_packages,
     cleanup_package_metadata,
+    copy_bundled_silero_vad,
     copy_assets_and_config,
 )
 
@@ -301,8 +302,11 @@ DATA STORAGE
 ------------
 The Store version stores data in your AppData folder:
 
-Models (~2GB):
+Models (~1.2GB):
   %LOCALAPPDATA%\\AI-Stenographer\\models\\
+
+  - Parakeet ASR model: Downloaded on first run from CDN
+  - Silero VAD model: Bundled with app, copied on first run
 
 Configuration:
   %LOCALAPPDATA%\\AI-Stenographer\\config\\
@@ -899,6 +903,18 @@ def main():
     if not cleanup_package_metadata(paths["lib"]):
         print("\nError: Failed to clean package metadata")
         return 1
+
+    # Step 21.5: Bundle Silero VAD model
+    print("\n" + "=" * 80)
+    print("STEP 21.5: Bundle Silero VAD Model")
+    print("=" * 80)
+    bundled_models_dir = staging_dir / "_internal" / "models"
+    bundled_models_dir.mkdir(parents=True, exist_ok=True)
+
+    if not copy_bundled_silero_vad(project_root, bundled_models_dir):
+        print("\n[WARNING] Bundled Silero VAD not found - will rely on first-run download")
+    else:
+        print(f"[OK] Bundled Silero VAD model to _internal/models/")
 
     # Step 22: Copy assets and configuration
     print("\n" + "=" * 80)

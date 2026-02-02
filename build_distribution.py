@@ -528,17 +528,22 @@ def main():
         print("\nError: Failed to clean package metadata")
         return 1
 
-    # Step 21: Copy assets and configuration
+    # Step 21: Copy bundled Silero VAD model
+    if not copy_bundled_silero_vad(project_root, paths["models"]):
+        print("\nWarning: Failed to copy bundled Silero VAD model")
+        print("Silero VAD will need to be downloaded on first run")
+
+    # Step 22: Copy assets and configuration
     if not copy_assets_and_config(project_root, build_dir, paths["app"]):
         print("\nError: Failed to copy assets and configuration")
         return 1
 
-    # Step 22: Create README documentation
+    # Step 23: Create README documentation
     if not create_readme(build_dir):
         print("\nError: Failed to create README")
         return 1
 
-    # Step 23: Create launcher shortcut
+    # Step 24: Create launcher shortcut
     if not create_launcher(build_dir):
         print("\nError: Failed to create launcher shortcut")
         return 1
@@ -1309,6 +1314,53 @@ def copy_application_code(src_dir: Path, main_py: Path, app_dir: Path) -> bool:
 
     except Exception as e:
         print(f"  [ERROR] Failed to copy code: {e}")
+        return False
+
+
+def copy_bundled_silero_vad(project_root: Path, models_dir: Path) -> bool:
+    """
+    Copies bundled Silero VAD model to distribution.
+
+    The Silero VAD model is bundled with the repository to avoid downloading
+    it on first run. This copies it from the project's models/ directory to
+    the distribution's _internal/models/ directory.
+
+    Args:
+        project_root: Project root directory
+        models_dir: Target models directory in distribution (_internal/models/)
+
+    Returns:
+        True if successful, False otherwise
+    """
+    print("Copying bundled Silero VAD model...")
+
+    try:
+        silero_src = project_root / "models" / "silero_vad"
+        silero_dest = models_dir / "silero_vad"
+
+        if not silero_src.exists():
+            print(f"  [WARNING] Silero VAD not found: {silero_src}")
+            print(f"  Silero VAD will need to be downloaded on first run")
+            return False
+
+        # Check that the model file exists
+        silero_model = silero_src / "silero_vad.onnx"
+        if not silero_model.exists():
+            print(f"  [WARNING] silero_vad.onnx not found: {silero_model}")
+            return False
+
+        # Copy the entire silero_vad directory
+        if silero_dest.exists():
+            shutil.rmtree(silero_dest)
+
+        shutil.copytree(silero_src, silero_dest)
+        model_size_mb = silero_model.stat().st_size / (1024 * 1024)
+        print(f"  Copied Silero VAD model ({model_size_mb:.1f}MB)")
+
+        return True
+
+    except Exception as e:
+        print(f"  [ERROR] Failed to copy Silero VAD: {e}")
         return False
 
 

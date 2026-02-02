@@ -38,7 +38,6 @@ class LicenseCollector:
         'scipy',
         'torch',
         'torchaudio',
-        'huggingface-hub',
         'requests',
         'PyYAML',
         'tqdm',
@@ -352,13 +351,15 @@ modification, and distribution without requiring source code disclosure.
 
             f.write("2. ML MODELS\n")
             f.write("-" * 70 + "\n")
-            f.write("   This software downloads and uses machine learning models:\n\n")
+            f.write("   This software uses machine learning models:\n\n")
             f.write("   - Parakeet STT Model (nemo-parakeet-tdt-0.6b-v3)\n")
-            f.write("     License: Apache 2.0 (NVIDIA NeMo)\n")
-            f.write("     Source: https://huggingface.co/nvidia/parakeet-tdt-0.6b\n\n")
+            f.write("     License: CC BY 4.0 https://creativecommons.org/licenses/by/4.0/\n")
+            f.write("     Original: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3\n")
+            f.write("     FP16 quantization, ONNX format\n\n")
             f.write("   - Silero VAD Model (silero_vad.onnx)\n")
             f.write("     License: MIT\n")
-            f.write("     Source: https://github.com/snakers4/silero-vad\n\n")
+            f.write("     Source: https://github.com/snakers4/silero-vad\n")
+            f.write("     (Bundled with distribution, no download needed)\n\n")
 
             f.write("3. ATTRIBUTION REQUIREMENT\n")
             f.write("-" * 70 + "\n")

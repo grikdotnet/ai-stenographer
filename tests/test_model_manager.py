@@ -3,7 +3,7 @@ Tests for ModelManager - handles model download and validation.
 """
 import pytest
 from pathlib import Path
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock, Mock
 from src.asr.ModelManager import ModelManager
 
 
@@ -25,90 +25,35 @@ class TestModelManager:
             missing = ModelManager.get_missing_models()
             assert missing == []
 
-    def test_get_missing_models_both_missing(self, tmp_path):
-        """Returns both model names when both are missing."""
+    def test_parakeet_missing(self, tmp_path):
         with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
             missing = ModelManager.get_missing_models()
-            assert set(missing) == {'parakeet', 'silero_vad'}
-
-    def test_get_missing_models_partial(self, tmp_path):
-        """Returns only missing model when one is present."""
-        # Create only Silero VAD
-        silero_dir = tmp_path / "silero_vad"
-        silero_dir.mkdir()
-        (silero_dir / "silero_vad.onnx").write_text("mock")
-
-        with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
-            missing = ModelManager.get_missing_models()
+            # Only Parakeet should be missing (Silero is bundled, never missing)
             assert missing == ['parakeet']
 
-    @patch('src.asr.ModelManager.hf_hub_download')
-    @patch('src.asr.ModelManager.snapshot_download')
-    def test_download_parakeet_success(self, mock_snapshot, mock_hf, tmp_path):
-        """Successfully downloads Parakeet model."""
-        # Setup mock to create files when called
-        def create_parakeet_files(*args, **kwargs):
-            local_dir = Path(kwargs.get('local_dir', args[1] if len(args) > 1 else ''))
-            local_dir.mkdir(parents=True, exist_ok=True)
-            (local_dir / "encoder-model.onnx").write_text("downloaded")
-            return str(local_dir)
-
-        def create_silero_files(*args, **kwargs):
-            local_dir = Path(kwargs.get('local_dir', ''))
-            onnx_dir = local_dir / "onnx"
-            onnx_dir.mkdir(parents=True, exist_ok=True)
-            model_file = onnx_dir / "model.onnx"
-            model_file.write_text("downloaded")
-            # Copy to expected location
-            silero_file = local_dir / "silero_vad.onnx"
-            silero_file.write_text("downloaded")
-            return str(model_file)
-
-        mock_snapshot.side_effect = create_parakeet_files
-        mock_hf.side_effect = create_silero_files
+    @patch('src.asr.ModelManager.requests.get')
+    def test_download_parakeet_success(self, mock_get, tmp_path):
+        """Successfully downloads Parakeet model from CDN."""
+        # Setup mock HTTP response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.headers = {'Content-Length': '1024'}
+        mock_response.iter_content = lambda chunk_size: [b'x' * 1024]
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
 
         with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
             result = ModelManager.download_models()
 
             assert result is True
-            mock_snapshot.assert_called_once()
-            assert (tmp_path / "parakeet" / "encoder-model.onnx").exists()
+            # Should download all 5 Parakeet files
+            assert mock_get.call_count == 5
+            # Verify files were created
+            assert (tmp_path / "parakeet" / "config.json").exists()
+            assert (tmp_path / "parakeet" / "encoder-model.fp16.onnx").exists()
 
-    @patch('src.asr.ModelManager.snapshot_download')
-    @patch('src.asr.ModelManager.hf_hub_download')
-    def test_download_silero_success(self, mock_download, mock_snapshot, tmp_path):
-        """Successfully downloads Silero VAD model."""
-        # Setup mock to create files when called
-        def create_parakeet_files(*args, **kwargs):
-            local_dir = Path(kwargs.get('local_dir', ''))
-            local_dir.mkdir(parents=True, exist_ok=True)
-            (local_dir / "encoder-model.onnx").write_text("downloaded")
-            return str(local_dir)
-
-        def create_silero_files(*args, **kwargs):
-            local_dir = Path(kwargs.get('local_dir', ''))
-            onnx_dir = local_dir / "onnx"
-            onnx_dir.mkdir(parents=True, exist_ok=True)
-            model_file = onnx_dir / "model.onnx"
-            model_file.write_text("downloaded")
-            # Copy to expected location
-            silero_file = local_dir / "silero_vad.onnx"
-            silero_file.write_text("downloaded")
-            return str(model_file)
-
-        mock_snapshot.side_effect = create_parakeet_files
-        mock_download.side_effect = create_silero_files
-
-        with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
-            result = ModelManager.download_models()
-
-            assert result is True
-            mock_download.assert_called_once()
-            assert (tmp_path / "silero_vad" / "silero_vad.onnx").exists()
-
-    @patch('src.asr.ModelManager.snapshot_download')
-    @patch('src.asr.ModelManager.hf_hub_download')
-    def test_download_with_progress_callback(self, mock_hf, mock_snapshot, tmp_path):
+    @patch('src.asr.ModelManager.requests.get')
+    def test_download_with_progress_callback(self, mock_get, tmp_path):
         """Verifies progress callback receives 5-parameter updates during download."""
         callback_calls = []
 
@@ -116,26 +61,13 @@ class TestModelManager:
                             downloaded_bytes: int, total_bytes: int):
             callback_calls.append((model_name, progress, status, downloaded_bytes, total_bytes))
 
-        # Setup mocks to create files
-        def create_parakeet(*args, **kwargs):
-            local_dir = Path(kwargs.get('local_dir', ''))
-            local_dir.mkdir(parents=True, exist_ok=True)
-            (local_dir / "encoder-model.fp16.onnx").write_text("mock")
-            return str(local_dir)
-
-        def create_silero(*args, **kwargs):
-            local_dir = Path(kwargs.get('local_dir', ''))
-            onnx_dir = local_dir / "onnx"
-            onnx_dir.mkdir(parents=True, exist_ok=True)
-            model_file = onnx_dir / "model.onnx"
-            model_file.write_text("mock")
-            # Copy to expected location
-            silero_file = local_dir / "silero_vad.onnx"
-            silero_file.write_text("mock")
-            return str(model_file)
-
-        mock_snapshot.side_effect = create_parakeet
-        mock_hf.side_effect = create_silero
+        # Setup mock HTTP response
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.headers = {'Content-Length': '1024'}
+        mock_response.iter_content = lambda chunk_size: [b'x' * 1024]
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
 
         with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
             ModelManager.download_models(progress_callback=progress_callback)
@@ -146,6 +78,7 @@ class TestModelManager:
                 assert len(call) == 5  # 5 parameters
                 model_name, progress, status, downloaded_bytes, total_bytes = call
                 assert isinstance(model_name, str)
+                assert model_name == 'parakeet'
                 assert isinstance(progress, float)
                 assert isinstance(status, str)
                 assert isinstance(downloaded_bytes, int)
@@ -155,8 +88,49 @@ class TestModelManager:
             complete_calls = [c for c in callback_calls if c[2] == 'complete']
             assert len(complete_calls) > 0
 
-    @patch('src.asr.ModelManager.snapshot_download')
-    def test_download_failure_cleanup(self, mock_snapshot, tmp_path):
+    @patch('src.asr.ModelManager.requests.get')
+    def test_download_http_404_error(self, mock_get, tmp_path):
+        """Handles HTTP 404 errors correctly."""
+        # Setup mock to raise HTTP 404 error
+        import requests
+        mock_response = Mock()
+        mock_response.status_code = 404
+        mock_response.reason = "Not Found"
+        mock_response.raise_for_status.side_effect = requests.exceptions.HTTPError(response=mock_response)
+        mock_get.return_value = mock_response
+
+        with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
+            result = ModelManager.download_models()
+
+            assert result is False
+            # Should have attempted download
+            assert mock_get.call_count > 0
+
+    @patch('src.asr.ModelManager.requests.get')
+    def test_download_timeout_error(self, mock_get, tmp_path):
+        """Handles timeout errors correctly."""
+        # Setup mock to raise timeout error
+        import requests
+        mock_get.side_effect = requests.exceptions.Timeout("Connection timeout")
+
+        with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
+            result = ModelManager.download_models()
+
+            assert result is False
+
+    @patch('src.asr.ModelManager.requests.get')
+    def test_download_connection_error(self, mock_get, tmp_path):
+        """Handles connection errors correctly."""
+        import requests
+        mock_get.side_effect = requests.exceptions.ConnectionError("Network unreachable")
+
+        with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
+            result = ModelManager.download_models()
+
+            assert result is False
+
+    @patch('src.asr.ModelManager.requests.get')
+    def test_download_failure_cleanup(self, mock_get, tmp_path):
         """Verifies partial files are removed on download error."""
         with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
             # Create partial file
@@ -166,7 +140,8 @@ class TestModelManager:
             partial_file.write_text("partial")
 
             # Mock download failure
-            mock_snapshot.side_effect = Exception("Network error")
+            import requests
+            mock_get.side_effect = requests.exceptions.ConnectionError("Network error")
 
             result = ModelManager.download_models()
 
@@ -180,52 +155,28 @@ class TestModelManager:
             assert ModelManager.validate_model('parakeet') is False
             assert ModelManager.validate_model('silero_vad') is False
 
-    @patch('src.asr.ModelManager.hf_hub_download')
-    def test_silero_download_creates_correct_path(self, mock_download, tmp_path):
-        """Verifies Silero VAD is downloaded to the path expected by application."""
-        # Mock download to simulate HuggingFace behavior
-        def create_silero(*args, **kwargs):
-            local_dir = Path(kwargs.get('local_dir', ''))
-            # HuggingFace creates subdirectory matching filename structure
-            onnx_dir = local_dir / "onnx"
-            onnx_dir.mkdir(parents=True, exist_ok=True)
-            model_file = onnx_dir / "model.onnx"
-            model_file.write_text("mock silero model")
-            return str(model_file)
-
-        mock_download.side_effect = create_silero
+    def test_validate_silero_bundled(self, tmp_path):
+        """Validates bundled Silero VAD model correctly."""
+        silero_dir = tmp_path / "silero_vad"
+        silero_dir.mkdir()
+        (silero_dir / "silero_vad.onnx").write_text("bundled model")
 
         with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
-            ModelManager._download_silero(tmp_path)
+            assert ModelManager.validate_model('silero_vad') is True
 
-            # After download, file should be at location expected by application
-            expected_path = tmp_path / "silero_vad" / "silero_vad.onnx"
-            assert expected_path.exists(), f"Expected model at {expected_path}"
-
-            # Original HuggingFace download directory should be removed to save space
-            hf_path = tmp_path / "silero_vad" / "onnx"
-            assert not hf_path.exists(), f"HuggingFace onnx directory should be removed"
-
-    @patch('src.asr.ModelManager.snapshot_download')
-    def test_parakeet_download_ignores_unused_files(self, mock_snapshot, tmp_path):
-        """Verifies Parakeet download uses ignore_patterns to skip unused files."""
-        def create_parakeet(*args, **kwargs):
-            # Verify ignore_patterns is passed
-            assert 'ignore_patterns' in kwargs
-            assert 'README.md' in kwargs['ignore_patterns']
-            assert 'LICENSE' in kwargs['ignore_patterns']
-            assert '*.md' in kwargs['ignore_patterns']
-
-            local_dir = Path(kwargs.get('local_dir', ''))
-            local_dir.mkdir(parents=True, exist_ok=True)
-            (local_dir / "encoder-model.onnx").write_text("mock")
-            return str(local_dir)
-
-        mock_snapshot.side_effect = create_parakeet
+    @patch('src.asr.ModelManager.requests.get')
+    def test_cdn_url_format(self, mock_get, tmp_path):
+        """Verifies CDN URLs are correctly formatted."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.headers = {'Content-Length': '100'}
+        mock_response.iter_content = lambda chunk_size: [b'x' * 100]
+        mock_response.raise_for_status = Mock()
+        mock_get.return_value = mock_response
 
         with patch('src.asr.ModelManager.MODEL_DIR', tmp_path):
             ModelManager._download_parakeet(tmp_path)
-
-            # Verify the main model file exists
-            expected_path = tmp_path / "parakeet" / "encoder-model.onnx"
-            assert expected_path.exists(), f"Expected model at {expected_path}"
+            # Check that all URLs start with the CDN base URL
+            for call_args in mock_get.call_args_list:
+                url = call_args[0][0]
+                assert url.startswith("https://parakeet.grik.net/"), f"Invalid URL: {url}"

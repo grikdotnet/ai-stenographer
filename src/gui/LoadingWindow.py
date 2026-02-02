@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, Callable
 import threading
 import os
+from src.PathResolver import PathResolver
 
 
 # Color scheme matching ModelDownloadDialog
@@ -381,7 +382,28 @@ class LoadingWindow:
                             result['success'] = True
                             self.root.quit()
                         else:
-                            messagebox.showerror("Error", "Download failed. Please try again.", parent=self.root)
+                            # Get detailed error information from ModelManager
+                            from src.asr.ModelManager import ModelManager
+                            last_error = ModelManager.get_last_error()
+
+                            # Build detailed error message
+                            error_parts = [
+                                "Model download failed.",
+                                "",
+                            ]
+
+                            if last_error:
+                                error_parts.extend([f"Error details: {last_error}", ""])
+
+                            error_parts.extend([
+                                "Common causes:",
+                                "• Corporate proxy or firewall blocking downloads",
+                                "• Network timeout or slow connection",
+                            ])
+
+                            error_msg = "\n".join(error_parts)
+
+                            messagebox.showerror("Model Download Failed", error_msg, parent=self.root)
                             download_btn.config(state=tk.NORMAL)
                             exit_btn.config(state=tk.NORMAL)
 

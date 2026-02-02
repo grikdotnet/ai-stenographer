@@ -137,6 +137,41 @@ class PathResolver:
     def get_config_path(self, config_name: str) -> Path:
         return self._paths.config_dir / config_name
 
+    def _copy_bundled_silero_if_needed(self) -> None:
+        """
+        Copies bundled Silero VAD to AppData if not present (MSIX mode only).
+
+        In MSIX builds, Silero VAD is bundled in the read-only application directory
+        at _internal/models/silero_vad/. On first run, this copies it to the writable
+        AppData location so ModelManager can find it without downloading.
+        """
+        if self._mode != "msix":
+            return
+
+        target_silero = self._paths.models_dir / "silero_vad" / "silero_vad.onnx"
+        if target_silero.exists():
+            return  # Already copied or downloaded
+
+        # Locate bundled Silero in app directory
+        # _internal/app/../models/silero_vad = _internal/models/silero_vad
+        bundled_silero = self._paths.app_dir.parent / "models" / "silero_vad"
+
+        if not bundled_silero.exists():
+            logging.warning("Bundled Silero VAD not found in app directory")
+            return  # ModelManager will handle download fallback
+
+        # Copy bundled Silero to AppData
+        target_dir = self._paths.models_dir / "silero_vad"
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        try:
+            for file in bundled_silero.iterdir():
+                if file.is_file():
+                    shutil.copy2(file, target_dir / file.name)
+            logging.info(f"Copied bundled Silero VAD to {target_dir}")
+        except Exception as e:
+            logging.error(f"Failed to copy bundled Silero: {e}")
+
     def ensure_local_dir_structure(self) -> None:
         """
         Ensures directories models and config exist.
@@ -144,15 +179,18 @@ class PathResolver:
         """
         self._paths.models_dir.mkdir(parents=True, exist_ok=True)
         self._paths.config_dir.mkdir(parents=True, exist_ok=True)
+        self._paths.logs_dir.mkdir(parents=True, exist_ok=True)
 
+        # MSIX-specific: Copy bundled configs
         if self._mode == "msix":
             bundled_config_dir = self._paths.app_dir / "config"
-            if not bundled_config_dir.exists():
-                return
+            if bundled_config_dir.exists():
+                for bundled_config in bundled_config_dir.iterdir():
+                    if bundled_config.is_file():
+                        target = self._paths.config_dir / bundled_config.name
+                        if not target.exists():
+                            shutil.copy2(bundled_config, target)
+                            logging.info(f"Copied bundled config: {bundled_config.name}")
 
-            for bundled_config in bundled_config_dir.iterdir():
-                if bundled_config.is_file():
-                    target = self._paths.config_dir / bundled_config.name
-                    if not target.exists():
-                        shutil.copy2(bundled_config, target)
-                        logging.info(f"Copied bundled config: {bundled_config.name}")
+            # Copy bundled Silero VAD to AppData (MSIX only)
+            self._copy_bundled_silero_if_needed()
