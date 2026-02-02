@@ -1,7 +1,11 @@
 // Resource script for AI Stenographer launcher
-// Embeds stenographer.gif as a binary resource
+// Embeds stenographer.gif as a binary resource and includes manifest
 
 #include "resource.h"
+#include <windows.h>
+
+// Embed the application manifest for Common Controls v6 support
+1 RT_MANIFEST "AIStenographer.manifest"
 
 // Embed the splash image as RCDATA (binary resource)
 // Path is relative to the .rc file location

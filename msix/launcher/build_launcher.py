@@ -125,7 +125,9 @@ def main():
         "user32.lib",       # User interface library (MessageBox)
         "gdi32.lib",        # GDI library
         "gdiplus.lib",      # GDI+ for image loading
-        "ole32.lib"         # OLE for IStream
+        "ole32.lib",        # OLE for IStream
+        "comctl32.lib",     # Common controls (TaskDialog)
+        "shell32.lib"       # Shell API (ShellExecute)
     ]
 
     # Run compilation
