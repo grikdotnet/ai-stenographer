@@ -10,7 +10,7 @@ It can work in the background on a modern notebook, consuming 0.5% of CPU, just 
 
 It allows entering text with voice to any other application.
 
-![Quick Entry](./QuicjEntry.png)
+![Quick Entry](./QuickEntry.png)
 
 ## Features
 
