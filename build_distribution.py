@@ -666,7 +666,7 @@ def verify_pip(python_exe: Path) -> bool:
         return False
 
 
-def copy_tkinter_to_distribution(runtime_dir: Path) -> bool:
+def copy_tkinter_to_distribution(runtime_dir: Path, allow_fallback: bool = True) -> bool:
     """
     Copies tkinter module and Tcl/Tk libraries from system Python.
 
@@ -684,6 +684,9 @@ def copy_tkinter_to_distribution(runtime_dir: Path) -> bool:
 
     Args:
         runtime_dir: Path to embedded Python runtime directory
+        allow_fallback: If True, attempt to find matching Python installation when
+                       version mismatch occurs. Set to False in tests to prevent
+                       finding real system Python installations.
 
     Returns:
         True if tkinter was successfully copied, False otherwise
@@ -699,18 +702,23 @@ def copy_tkinter_to_distribution(runtime_dir: Path) -> bool:
         target_version = PYTHON_VERSION.rsplit('.', 1)[0]  # e.g., "3.12.10" -> "3.12"
 
         if system_version != target_version:
-            # Try to find matching Python installation
-            target_major_minor = target_version.replace('.', '')  # "3.12" -> "312"
-            python_install_path = Path(f"C:/Python{target_major_minor}")
+            if allow_fallback:
+                # Try to find matching Python installation
+                target_major_minor = target_version.replace('.', '')  # "3.12" -> "312"
+                python_install_path = Path(f"C:/Python{target_major_minor}")
 
-            if python_install_path.exists():
-                print(f"  [INFO] System Python {system_version} != target {target_version}")
-                print(f"  [INFO] Using {python_install_path} for tkinter extraction")
-                system_python = python_install_path
+                if python_install_path.exists():
+                    print(f"  [INFO] System Python {system_version} != target {target_version}")
+                    print(f"  [INFO] Using {python_install_path} for tkinter extraction")
+                    system_python = python_install_path
+                else:
+                    print(f"  [WARNING] System Python {system_version} does not match target {target_version}")
+                    print(f"  [WARNING] C:/Python{target_major_minor} not found")
+                    print(f"  [ERROR] Cannot extract tkinter - version mismatch")
+                    return False
             else:
-                print(f"  [WARNING] System Python {system_version} does not match target {target_version}")
-                print(f"  [WARNING] C:/Python{target_major_minor} not found")
-                print(f"  [ERROR] Cannot extract tkinter - version mismatch")
+                # Fallback disabled (for testing)
+                print(f"  [ERROR] System Python {system_version} does not match target {target_version}")
                 return False
 
         # 1. Copy tkinter module

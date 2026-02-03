@@ -18,7 +18,7 @@ from ..types import AudioSegment
 
 if TYPE_CHECKING:
     from src.asr.VoiceActivityDetector import VoiceActivityDetector
-    from src.asr.AdaptiveWindower import AdaptiveWindower
+    from src.sound.AdaptiveWindower import AdaptiveWindower
     from src.ApplicationState import ApplicationState
 
 
@@ -192,6 +192,7 @@ class SoundPreProcessor:
         self.thread: threading.Thread | None = None
         self.verbose: bool = verbose
         self.app_state = app_state
+        self.dropped_segments: int = 0
 
         # Register as component observer if app_state provided
         if self.app_state:
@@ -359,7 +360,7 @@ class SoundPreProcessor:
                     if s.silence_energy >= self.silence_energy_threshold:
                         # ACCUMULATING_SILENCE → IDLE
                         segment = self._build_audio_segment(breakpoint_idx=s.silence_start_idx)
-                        self.speech_queue.put(segment)
+                        self._put_segment_nonblocking(segment)
                         self.windower.process_segment(segment)
                         self._reset_segment_state()
 
@@ -409,6 +410,18 @@ class SoundPreProcessor:
         self.current_gain = self.gain_smoothing * self.current_gain + (1 - self.gain_smoothing) * target_gain
 
         return audio_chunk * self.current_gain
+
+    def _put_segment_nonblocking(self, segment: AudioSegment) -> None:
+        """Enqueue segment to speech_queue with drop-on-full behavior."""
+        try:
+            self.speech_queue.put_nowait(segment)
+        except queue.Full:
+            self.dropped_segments += 1
+            if self.verbose:
+                logging.warning(
+                    f"SoundPreProcessor: speech_queue full, dropped segment "
+                    f"(total drops: {self.dropped_segments})"
+                )
 
     # ========================================================================
     # Helper Methods for State Machine
@@ -598,7 +611,7 @@ class SoundPreProcessor:
                 logging.debug(f"SoundPreProcessor: silence breakpoint at chunk {breakpoint_idx}, offset={offset:.2f}s)")
 
             segment = self._build_audio_segment(breakpoint_idx=breakpoint_idx)
-            self.speech_queue.put(segment)
+            self._put_segment_nonblocking(segment)
             self.windower.process_segment(segment)
 
             # Capture breakpoint chunk as left context for next segment
@@ -618,7 +631,7 @@ class SoundPreProcessor:
                 logging.debug(f"SoundPreProcessor: no silence breakpoint found, using hard cut")
 
             segment = self._build_audio_segment(breakpoint_idx=None)
-            self.speech_queue.put(segment)
+            self._put_segment_nonblocking(segment)
             self.windower.process_segment(segment)
 
             if self.verbose:
@@ -639,7 +652,7 @@ class SoundPreProcessor:
         s = self.audio_state
         if self.is_speech_active and len(s.speech_buffer) > 0:
             segment = self._build_audio_segment(breakpoint_idx=None)
-            self.speech_queue.put(segment)
+            self._put_segment_nonblocking(segment)
             self.windower.flush(segment)  # Process and flush in one call
             self._reset_segment_state()
             self.state = ProcessingStatesEnum.IDLE

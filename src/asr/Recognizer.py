@@ -49,6 +49,7 @@ class Recognizer:
         self.thread: Optional[threading.Thread] = None
         self.verbose: bool = verbose
         self.app_state: 'ApplicationState' = app_state
+        self.dropped_results: int = 0
 
         # Register as component observer
         self.app_state.register_component_observer(self.on_state_change)
@@ -152,8 +153,20 @@ class Recognizer:
             audio_rms=audio_rms,
             confidence_variance=confidence_variance
         )
-        self.text_queue.put(recognition_result)
+        self._put_result_nonblocking(recognition_result)
         return recognition_result
+
+    def _put_result_nonblocking(self, result: RecognitionResult) -> None:
+        """Enqueue recognition result to text_queue with drop-on-full behavior."""
+        try:
+            self.text_queue.put_nowait(result)
+        except queue.Full:
+            self.dropped_results += 1
+            if self.verbose:
+                logging.warning(
+                    f"Recognizer: text_queue full, dropped result "
+                    f"(total drops: {self.dropped_results})"
+                )
 
     def _filter_tokens_with_confidence(self,
                                         text: str,

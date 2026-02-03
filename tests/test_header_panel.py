@@ -43,5 +43,5 @@ def test_header_panel_title_label_is_packed(root):
     frame = tk.Frame(root)
     panel = HeaderPanel(frame)
 
-    # Verify label is a child of the frame
-    assert panel.title_label.master == frame
+    # Verify label is a child of HeaderPanel's internal frame
+    assert panel.title_label.master == panel.frame

@@ -7,7 +7,7 @@ from unittest.mock import Mock
 from src.sound.AudioSource import AudioSource
 from src.sound.SoundPreProcessor import SoundPreProcessor
 from src.asr.VoiceActivityDetector import VoiceActivityDetector
-from src.asr.AdaptiveWindower import AdaptiveWindower
+from src.sound.AdaptiveWindower import AdaptiveWindower
 from src.types import AudioSegment
 
 

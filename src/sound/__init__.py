@@ -2,5 +2,6 @@
 from src.sound.AudioSource import AudioSource
 from src.sound.FileAudioSource import FileAudioSource
 from src.sound.SoundPreProcessor import SoundPreProcessor
+from src.sound.AdaptiveWindower import AdaptiveWindower
 
-__all__ = ['AudioSource', 'FileAudioSource', 'SoundPreProcessor']
+__all__ = ['AudioSource', 'FileAudioSource', 'SoundPreProcessor', 'AdaptiveWindower']

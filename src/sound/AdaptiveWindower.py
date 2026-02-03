@@ -32,6 +32,7 @@ class AdaptiveWindower:
         self.speech_queue: queue.Queue = speech_queue
         self.config: Dict[str, Any] = config
         self.verbose: bool = verbose
+        self.dropped_windows: int = 0
 
         self.sample_rate: int = config['audio']['sample_rate']
         self.window_duration: float = config['windowing']['window_duration']  # 3.0 seconds
@@ -39,6 +40,18 @@ class AdaptiveWindower:
         # Segment buffer for windowing
         self.segments: List[AudioSegment] = []
         self.first_window_emitted: bool = False
+
+    def _put_window_nonblocking(self, window: AudioSegment) -> None:
+        """Enqueue finalized window to speech_queue with drop-on-full behavior."""
+        try:
+            self.speech_queue.put_nowait(window)
+        except queue.Full:
+            self.dropped_windows += 1
+            if self.verbose:
+                logging.warning(
+                    f"AdaptiveWindower: speech_queue full, dropped window "
+                    f"(total drops: {self.dropped_windows})"
+                )
 
     def process_segment(self, segment: AudioSegment) -> None:
         """Process incoming VAD segment and create windows when ready.
@@ -104,7 +117,7 @@ class AdaptiveWindower:
             logging.debug(f"AdaptiveWindower: created window duration={duration_ms:.0f}ms,"
                           +f" chunk_ids={_format_chunk_ids(unique_chunk_ids)}, samples={len(window_audio)}")
 
-        self.speech_queue.put(window)
+        self._put_window_nonblocking(window)
 
         # Keep trailing segments with at least MIN_OVERLAP_DURATION for next window
         overlap_segments = []
@@ -167,7 +180,7 @@ class AdaptiveWindower:
             chunk_ids=unique_chunk_ids
         )
 
-        self.speech_queue.put(window)
+        self._put_window_nonblocking(window)
 
         if self.verbose:
             logging.debug(f"AdaptiveWindower.flush(): put to queue (chunk_ids={_format_chunk_ids(unique_chunk_ids)})")

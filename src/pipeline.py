@@ -12,7 +12,7 @@ import tkinter as tk
 from .sound.AudioSource import AudioSource
 from .sound.FileAudioSource import FileAudioSource
 from .sound.SoundPreProcessor import SoundPreProcessor
-from .asr.AdaptiveWindower import AdaptiveWindower
+from .sound.AdaptiveWindower import AdaptiveWindower
 from .asr.Recognizer import Recognizer
 from .asr.VoiceActivityDetector import VoiceActivityDetector
 from .asr.SessionOptionsFactory import SessionOptionsFactory

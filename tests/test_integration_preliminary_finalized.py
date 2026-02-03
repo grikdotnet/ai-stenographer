@@ -5,7 +5,7 @@ import numpy as np
 import time
 from unittest.mock import Mock
 from src.sound.SoundPreProcessor import SoundPreProcessor
-from src.asr.AdaptiveWindower import AdaptiveWindower
+from src.sound.AdaptiveWindower import AdaptiveWindower
 from src.asr.Recognizer import Recognizer
 from src.types import AudioSegment, RecognitionResult
 from onnx_asr.asr import TimestampedResult

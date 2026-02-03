@@ -1,6 +1,5 @@
 """ASR subsystem - speech recognition and neural model handling."""
 from src.asr.Recognizer import Recognizer
-from src.asr.AdaptiveWindower import AdaptiveWindower
 from src.asr.VoiceActivityDetector import VoiceActivityDetector
 from src.asr.SessionOptionsFactory import SessionOptionsFactory
 from src.asr.SessionOptionsStrategy import (
@@ -19,7 +18,6 @@ from src.asr.DownloadProgressReporter import (
 
 __all__ = [
     'Recognizer',
-    'AdaptiveWindower',
     'VoiceActivityDetector',
     'SessionOptionsFactory',
     'SessionOptionsStrategy',

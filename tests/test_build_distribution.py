@@ -253,7 +253,7 @@ class TestCreatePthFile:
 
         create_pth_file(runtime_dir, paths)
 
-        pth_file = runtime_dir / "python313._pth"
+        pth_file = runtime_dir / "python312._pth"
         assert pth_file.exists()
 
         content = pth_file.read_text()
@@ -270,7 +270,7 @@ class TestCreatePthFile:
         runtime_dir.mkdir()
 
         # Create existing file
-        pth_file = runtime_dir / "python313._pth"
+        pth_file = runtime_dir / "python312._pth"
         pth_file.write_text("old content")
 
         paths = ["_internal/app"]
@@ -978,7 +978,7 @@ class TestCopyTkinter:
         runtime_dir.mkdir()
 
         with patch('sys.base_prefix', str(system_python)):
-            result = copy_tkinter_to_distribution(runtime_dir)
+            result = copy_tkinter_to_distribution(runtime_dir, allow_fallback=False)
 
             assert result is False
 
@@ -1060,7 +1060,7 @@ class TestCopyTkinter:
 
         # Mock sys.base_prefix to point to fake system Python
         with patch('sys.base_prefix', str(system_python)):
-            result = copy_tkinter_to_distribution(runtime_dir)
+            result = copy_tkinter_to_distribution(runtime_dir, allow_fallback=False)
 
             # Should fail because zlib1.dll is critical
             assert result is False
