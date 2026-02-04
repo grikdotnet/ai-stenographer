@@ -34,6 +34,10 @@ class Recognizer:
         verbose: Enable verbose logging
     """
 
+    # Timestamp filtering tolerance (seconds) for VAD warm-up delay
+    # Tokens with timestamps slightly before data_start may still be included
+    BOUNDARY_TOLERANCE = 0.2
+
     def __init__(self, speech_queue: queue.Queue,
                  text_queue: queue.Queue,
                  model: "TimestampedResultsAsrAdapter",
@@ -181,7 +185,11 @@ class Recognizer:
         1. If no timestamps available, return full text with empty confidences (fallback)
         2. Filter tokens where (data_start - tolerance) <= timestamp <= data_end
            - Tolerance accounts for VAD warm-up delay that may place first speech chunk in left_context
-        3. Keep corresponding confidence scores for filtered tokens
+        3. Backtrack to include complete words (prevents word corruption from inaccurate timestamps):
+           - Parakeet splits words into subword tokens: [" O", "ne"] for "One"
+           - Word-start tokens have leading space, continuation tokens do not
+           - If first filtered token lacks leading space, backtrack to find word-start token
+           - Include all tokens from word-start through original filtered set
         4. Reconstruct text from filtered tokens (tokens use space prefix for word boundaries)
         5. Strip and return (text, confidences)
 
@@ -202,7 +210,6 @@ class Recognizer:
 
         # Filter tokens within data boundaries
         # Include tokens slightly before data_start to account for VAD RMS normalization delay
-        boundary_tolerance = 0.37
         filtered_tokens = []
         filtered_confidences = []
 
@@ -211,13 +218,38 @@ class Recognizer:
         has_confidences = len(confidences) == len(tokens)
 
         for i, (token, ts) in enumerate(zip(tokens, timestamps)):
-            if (data_start - boundary_tolerance) <= ts <= data_end:
+            if (data_start - self.BOUNDARY_TOLERANCE) <= ts <= data_end:
                 filtered_tokens.append(token)
                 if has_confidences:
                     filtered_confidences.append(confidences[i])
 
         if not filtered_tokens:
             return "", []
+
+        # Backtrack to include complete words when first token lacks space prefix
+        # Parakeet splits words into subword tokens: word-start tokens have leading space,
+        # continuation tokens (like "ne" in "One" = [" O", "ne"]) have no leading space.
+        # If first filtered token has no space, backtrack to find the word-start token.
+        if filtered_tokens and not filtered_tokens[0].startswith(' '):
+            # Find index of first filtered token in original token list
+            first_filtered_idx = tokens.index(filtered_tokens[0])
+
+            # Backtrack to find word start (token with leading space)
+            # Start from the token before first_filtered_idx and go backwards
+            word_start_idx = first_filtered_idx
+            for idx in range(first_filtered_idx - 1, -1, -1):
+                if tokens[idx].startswith(' '):
+                    # Found word boundary - this is the start of the word
+                    word_start_idx = idx
+                    break
+                # If no space found, keep going back
+
+            # Prepend missing tokens from word start
+            if word_start_idx < first_filtered_idx:
+                for idx in range(word_start_idx, first_filtered_idx):
+                    filtered_tokens.insert(idx - word_start_idx, tokens[idx])
+                    if has_confidences:
+                        filtered_confidences.insert(idx - word_start_idx, confidences[idx])
 
         # Reconstruct text from filtered tokens
         reconstructed = ''.join(filtered_tokens)

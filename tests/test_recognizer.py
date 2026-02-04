@@ -512,6 +512,236 @@ class TestTimestampedRecognition:
         assert filtered_text == "hello world"
         assert filtered_confidences == []
 
+    def test_filter_tokens_word_split_at_boundary(self, timestamped_mock_model):
+        """Test that split words are reconstructed when first part falls outside boundary.
+
+        Scenario: Word "One" is split into [" O", "ne"] where " O" falls outside
+        the filtering range but "ne" is inside. The backtracking algorithm should
+        detect that "ne" lacks a space prefix and include the preceding " O" token.
+
+        Setup: data_start=0.7, tolerance=BOUNDARY_TOLERANCE
+        Filter range: [0.7 - BOUNDARY_TOLERANCE, 1.2]
+        " O" @ 0.10s is OUTSIDE range (before data_start - tolerance)
+        "ne" @ 0.80s is INSIDE range
+        Without backtracking: result would be "ne world"
+        With backtracking: result should be "One world" or " One world"
+        """
+        # Tokens: " Hello" @ 0.05s, " O" @ 0.10s, "ne" @ 0.80s, " world" @ 1.00s
+        # Data region: 0.7s to 1.2s
+        # Filter range: [0.7 - BOUNDARY_TOLERANCE, 1.2]
+        # " O" @ 0.10s is EXCLUDED (< 0.7 - BOUNDARY_TOLERANCE)
+        # "ne" @ 0.80s is INCLUDED
+        # " world" @ 1.00s is INCLUDED
+        timestamped_mock_model.recognize.return_value = TimestampedResult(
+            text=" Hello One world",
+            tokens=[" Hello", " O", "ne", " world"],
+            timestamps=[0.05, 0.10, 0.80, 1.00]
+        )
+
+        recognizer = Recognizer(
+            queue.Queue(),
+            queue.Queue(),
+            timestamped_mock_model,
+            sample_rate=16000,
+            app_state=Mock()
+        )
+
+        # Create segment: 0.7s left_context + 0.5s data = 1.2s total
+        # data_start = 0.7s, data_end = 1.2s
+        segment = AudioSegment(
+            type='preliminary',
+            data=np.full(8000, 0.1, dtype=np.float32),  # 0.5s of data (0.7-1.2)
+            left_context=np.full(11200, 0.05, dtype=np.float32),  # 0.7s left context (0.0-0.7)
+            right_context=np.array([], dtype=np.float32),
+            start_time=1.0,
+            end_time=1.5,
+            chunk_ids=[0]
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        # WITHOUT backtracking fix: would be "ne world" (corrupted)
+        # WITH backtracking fix: should be "One world" or " One world"
+        assert result is not None
+        # Check that we have the complete word "One", not just "ne"
+        # The text should contain both " O" and "ne" tokens
+        if " O" not in result.text and "One" not in result.text:
+            pytest.fail(f"Word corruption detected: expected 'One' but got '{result.text}' (missing ' O' token)")
+        # Should NOT be the corrupted version
+        assert result.text.strip() != "ne world", "Word corruption: got 'ne world' instead of 'One world'"
+
+    def test_filter_tokens_multiple_word_parts(self, timestamped_mock_model):
+        """Test backtracking works for multi-part words with 3+ tokens.
+
+        Scenario: Word "example" is split into [" ex", "am", "ple"] where only
+        "am" and "ple" fall within the filtering range. Should backtrack to " ex".
+
+        Setup: data_start=0.7, tolerance=BOUNDARY_TOLERANCE
+        Filter range: [0.7 - BOUNDARY_TOLERANCE, 1.2]
+        " ex" @ 0.10s is OUTSIDE range (before data_start - tolerance)
+        "am" @ 0.80s is INSIDE range
+        "ple" @ 0.85s is INSIDE range
+        Without backtracking: "ample world"
+        With backtracking: "example world"
+        """
+        # Tokens: " hello" @ 0.05, " ex" @ 0.10, "am" @ 0.80, "ple" @ 0.85, " world" @ 1.00
+        # Data region: 0.7s to 1.2s
+        # Filter range: [0.7 - BOUNDARY_TOLERANCE, 1.2]
+        # " ex" @ 0.10s is EXCLUDED
+        # "am", "ple", " world" are INCLUDED
+        timestamped_mock_model.recognize.return_value = TimestampedResult(
+            text=" hello example world",
+            tokens=[" hello", " ex", "am", "ple", " world"],
+            timestamps=[0.05, 0.10, 0.80, 0.85, 1.00]
+        )
+
+        recognizer = Recognizer(
+            queue.Queue(),
+            queue.Queue(),
+            timestamped_mock_model,
+            sample_rate=16000,
+            app_state=Mock()
+        )
+
+        # 0.7s left_context + 0.5s data
+        segment = AudioSegment(
+            type='preliminary',
+            data=np.full(8000, 0.1, dtype=np.float32),  # 0.5s (0.7-1.2)
+            left_context=np.full(11200, 0.05, dtype=np.float32),  # 0.7s (0.0-0.7)
+            right_context=np.array([], dtype=np.float32),
+            start_time=1.0,
+            end_time=1.5,
+            chunk_ids=[0]
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        assert result is not None
+        # Should include " ex" even though it's outside range
+        if " ex" not in result.text and "example" not in result.text:
+            pytest.fail(f"Word corruption: expected 'example' but got '{result.text}' (missing ' ex' token)")
+        # Should NOT be just "ample world"
+        assert not result.text.strip().startswith("ample"), f"Word corruption: got 'ample...' instead of 'example...'"
+
+    def test_filter_tokens_first_token_is_word_start(self, timestamped_mock_model):
+        """Test normal case where first filtered token has space prefix (no backtrack needed).
+
+        Scenario: All tokens in range start with space - no corruption, no backtracking.
+        """
+        timestamped_mock_model.recognize.return_value = TimestampedResult(
+            text=" hello world test",
+            tokens=[" hello", " world", " test"],
+            timestamps=[0.3, 0.6, 0.9]
+        )
+
+        recognizer = Recognizer(
+            queue.Queue(),
+            queue.Queue(),
+            timestamped_mock_model,
+            sample_rate=16000,
+            app_state=Mock()
+        )
+
+        segment = AudioSegment(
+            type='preliminary',
+            data=np.full(16000, 0.1, dtype=np.float32),  # 1.0s (0.0-1.0)
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
+            start_time=1.0,
+            end_time=2.0,
+            chunk_ids=[0]
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        assert result is not None
+        assert "hello" in result.text
+        assert "world" in result.text
+        assert "test" in result.text
+
+    def test_filter_tokens_word_split_at_start_of_list(self, timestamped_mock_model):
+        """Test edge case where continuation token is first in entire tokens list.
+
+        Scenario: First token in entire list lacks space prefix (no backtrack possible).
+        Should handle gracefully without crashing.
+        """
+        # Unusual case: token list starts with continuation token "ne"
+        timestamped_mock_model.recognize.return_value = TimestampedResult(
+            text="ne world",
+            tokens=["ne", " world"],
+            timestamps=[0.3, 0.6]
+        )
+
+        recognizer = Recognizer(
+            queue.Queue(),
+            queue.Queue(),
+            timestamped_mock_model,
+            sample_rate=16000,
+            app_state=Mock()
+        )
+
+        segment = AudioSegment(
+            type='preliminary',
+            data=np.full(16000, 0.1, dtype=np.float32),  # 1.0s
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
+            start_time=1.0,
+            end_time=2.0,
+            chunk_ids=[0]
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        # Should not crash - handle gracefully
+        assert result is not None
+        assert "world" in result.text
+
+    def test_filter_tokens_with_confidence_backtrack(self, timestamped_mock_model):
+        """Test that confidence scores are correctly prepended during backtracking.
+
+        Scenario: Token confidences should align with filtered tokens after backtracking.
+        Setup: data_start=0.7, range=[0.7 - BOUNDARY_TOLERANCE, 1.2]
+        " O" @ 0.10s is OUTSIDE, but should be included via backtracking
+        Confidence for " O" (0.85) should be prepended to filtered_confidences
+        """
+        recognizer = Recognizer(
+            queue.Queue(),
+            queue.Queue(),
+            timestamped_mock_model,
+            sample_rate=16000,
+            app_state=Mock()
+        )
+
+        # Direct test of _filter_tokens_with_confidence method
+        # Tokens: " Hello" @ 0.05, " O" @ 0.10, "ne" @ 0.80, " world" @ 1.00
+        # Confidences: 0.9, 0.85, 0.88, 0.92
+        # Data region: 0.7 to 1.2
+        # Filter range: [0.7 - BOUNDARY_TOLERANCE, 1.2]
+        # WITHOUT backtracking: "ne" @ 0.80, " world" @ 1.00 → [0.88, 0.92]
+        # WITH backtracking: " O" @ 0.10, "ne" @ 0.80, " world" @ 1.00 → [0.85, 0.88, 0.92]
+        text = " Hello One world"
+        tokens = [" Hello", " O", "ne", " world"]
+        timestamps = [0.05, 0.10, 0.80, 1.00]
+        confidences = [0.9, 0.85, 0.88, 0.92]
+        data_start = 0.7
+        data_end = 1.2
+
+        filtered_text, filtered_confidences = recognizer._filter_tokens_with_confidence(
+            text, tokens, timestamps, confidences, data_start, data_end
+        )
+
+        # Should include " O", "ne", " world" (with backtracking)
+        assert " O" in filtered_text or "One" in filtered_text, f"Expected 'One' but got '{filtered_text}'"
+        assert "world" in filtered_text
+
+        # Confidences should have 3 values: [0.85 for " O", 0.88 for "ne", 0.92 for " world"]
+        # WITHOUT backtracking: would have 2 values [0.88, 0.92] - this is the bug!
+        # WITH backtracking: should have 3 values [0.85, 0.88, 0.92]
+        assert len(filtered_confidences) == 3, \
+            f"Expected 3 confidence values (with backtracking), got {len(filtered_confidences)}: {filtered_confidences}"
+        assert 0.85 in filtered_confidences, \
+            f"Expected confidence 0.85 for ' O' token to be included via backtracking"
+
 
 class TestConfidenceMetrics:
     """Tests for confidence_variance and audio_rms fields in RecognitionResult.
