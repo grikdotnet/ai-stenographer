@@ -89,6 +89,9 @@ PACKAGE_NAME = "GrigoriKochanov.AIStenographer"
 # Skip signing for Store submission (Microsoft re-signs with trusted certificate)
 SKIP_SIGNING = True
 
+# Create signed copy for local testing (independent of Store workflow)
+CREATE_SIGNED_COPY = True
+
 # Certificate configuration
 CERT_PASSWORD = "test123"  # Test certificate password
 TIMESTAMP_SERVER = "http://timestamp.digicert.com"
@@ -632,6 +635,114 @@ def sign_msix_package(msix_path: Path, cert_path: Path, sdk_dir: Path) -> bool:
         return False
 
 
+def copy_and_sign_msix(msix_path: Path, cert_path: Path, msix_dir: Path) -> tuple[bool, Path | None]:
+    """
+    Creates a signed copy of MSIX package for local testing.
+
+    Creates a copy with "_signed" suffix and signs it using sign_package.ps1.
+    Original unsigned package remains untouched for Store submission.
+
+    Args:
+        msix_path: Path to unsigned .msix package
+        cert_path: Path to .pfx certificate file
+        msix_dir: Directory containing sign_package.ps1
+
+    Returns:
+        Tuple of (success: bool, signed_path: Path | None)
+        - (True, Path) if successful
+        - (False, None) if failed
+    """
+    print(f"Creating signed copy for local testing: {msix_path.name}")
+
+    try:
+        # Step 1: Create signed copy filename
+        # From: GrigoriKochanov.AIStenographer_1.6.0.0_x64.msix
+        # To:   GrigoriKochanov.AIStenographer_1.6.0.0_x64_signed.msix
+        stem = msix_path.stem  # "GrigoriKochanov.AIStenographer_1.6.0.0_x64"
+        signed_path = msix_path.parent / f"{stem}_signed.msix"
+
+        # Step 2: Copy unsigned MSIX to signed filename
+        print(f"  Copying {msix_path.name} -> {signed_path.name}")
+        shutil.copy2(msix_path, signed_path)
+
+        if not signed_path.exists():
+            print(f"  [ERROR] Failed to create copy: {signed_path}")
+            return False, None
+
+        size_mb = signed_path.stat().st_size / (1024 * 1024)
+        print(f"  Copy created: {signed_path.name} ({size_mb:.1f}MB)")
+
+        # Step 3: Sign using PowerShell script
+        sign_script = msix_dir / "sign_package.ps1"
+
+        if not sign_script.exists():
+            print(f"  [ERROR] sign_package.ps1 not found: {sign_script}")
+            # Clean up the copy since we can't sign it
+            signed_path.unlink()
+            return False, None
+
+        if not cert_path.exists():
+            print(f"  [ERROR] Certificate not found: {cert_path}")
+            print(f"  Run msix/create_test_certificate.ps1 first")
+            # Clean up the copy since we can't sign it
+            signed_path.unlink()
+            return False, None
+
+        print(f"  Signing with PowerShell script...")
+        print(f"  Certificate: {cert_path.name}")
+
+        # Build PowerShell command
+        # Use Windows-style paths (backslashes) for PowerShell
+        ps_cmd = [
+            "powershell.exe",
+            "-ExecutionPolicy", "Bypass",
+            "-File", str(sign_script.resolve()),
+            "-Package", str(signed_path.resolve()),
+            "-Certificate", str(cert_path.resolve()),
+            "-Password", CERT_PASSWORD,
+            "-TimestampServer", TIMESTAMP_SERVER
+        ]
+
+        result = subprocess.run(
+            ps_cmd,
+            capture_output=True,
+            text=True,
+            timeout=120  # 2 minutes timeout
+        )
+
+        if result.returncode != 0:
+            print(f"  [ERROR] Signing failed (exit code {result.returncode}):")
+            if result.stdout:
+                print(f"  stdout: {result.stdout}")
+            if result.stderr:
+                print(f"  stderr: {result.stderr}")
+            print(f"\n  Troubleshooting:")
+            print(f"  - Verify certificate is valid: {cert_path}")
+            print(f"  - Check timestamp server connectivity: {TIMESTAMP_SERVER}")
+            print(f"  - Try running manually: .\\msix\\sign_package.ps1 -Package \"{signed_path.name}\"")
+            # Clean up failed signed copy
+            if signed_path.exists():
+                signed_path.unlink()
+            return False, None
+
+        print(f"  [OK] Package signed successfully")
+        print(f"  Signed package: {signed_path}")
+
+        return True, signed_path
+
+    except subprocess.TimeoutExpired:
+        print(f"  [ERROR] Signing timed out (>2 minutes)")
+        if 'signed_path' in locals() and signed_path.exists():
+            signed_path.unlink()
+        return False, None
+    except Exception as e:
+        print(f"  [ERROR] Failed to create signed copy: {e}")
+        # Clean up partial copy if it exists
+        if 'signed_path' in locals() and signed_path.exists():
+            signed_path.unlink()
+        return False, None
+
+
 def copy_legal_documents_msix(project_root: Path, staging_dir: Path) -> None:
     """
     Copies legal documents to MSIX staging directory.
@@ -830,7 +941,7 @@ def main():
     print("\n" + "=" * 80)
     print("STEP 12: Install Dependencies")
     print("=" * 80)
-    requirements_file = project_root / "requirements.txt"
+    requirements_file = project_root / "msix" / "requirements.txt"
     if not install_dependencies(python_exe, paths["lib"], requirements_file):
         print("\nError: Dependency installation failed")
         return 1
@@ -855,7 +966,7 @@ def main():
     print("\n" + "=" * 80)
     print("STEP 16: Test Critical Imports")
     print("=" * 80)
-    critical_modules = ["numpy", "onnxruntime", "sounddevice", "onnx_asr", "tkinter", "pynput"]
+    critical_modules = ["numpy", "onnxruntime", "sounddevice", "onnx_asr", "tkinter", "pynput", "winrt.windows.storage"]
     import_results = test_imports(python_exe, critical_modules)
     failed_imports = [m for m, success in import_results.items() if not success]
 
@@ -972,21 +1083,62 @@ def main():
             print("\nError: Failed to sign MSIX package")
             return 1
 
+    # Step 28: Create signed copy for local testing (independent of Store submission)
+    print("\n" + "=" * 80)
+    print("STEP 28: Create Signed Copy for Local Testing")
+    print("=" * 80)
+
+    signed_path = None  # Track for final summary
+
+    if CREATE_SIGNED_COPY:
+        cert_path = msix_dir / "AIStenographer_TestCert.pfx"
+        success, signed_path = copy_and_sign_msix(msix_output, cert_path, msix_dir)
+
+        if not success:
+            print("\n  [WARNING] Failed to create signed copy")
+            print("  This does not affect Store submission")
+            print("  You can sign manually later using:")
+            print(f"    .\\msix\\sign_package.ps1 -Package \"{msix_output.name}\"")
+    else:
+        print("  [SKIPPED] Signed copy creation disabled (CREATE_SIGNED_COPY=False)")
+        print("  To create signed copy manually:")
+        print(f"    .\\msix\\sign_package.ps1 -Package \"{msix_output.name}\"")
+
     # Build complete - print summary
     print("\n" + "=" * 80)
     print("BUILD COMPLETED SUCCESSFULLY!")
     print("=" * 80)
-    print(f"\nPackage: {msix_output}")
+    print(f"\nPackage (unsigned for Store): {msix_output}")
     print(f"Size: {msix_output.stat().st_size / (1024 * 1024):.1f}MB")
     print(f"Version: {APP_VERSION}")
     print(f"Publisher: {PUBLISHER_NAME}")
+
+    if signed_path:
+        print(f"\nSigned copy (for local testing): {signed_path}")
+        print(f"Size: {signed_path.stat().st_size / (1024 * 1024):.1f}MB")
+
     print(f"\nStaging Directory: {staging_dir}")
 
     if SKIP_SIGNING:
         print(f"\nFor Microsoft Store submission:")
         print(f"  Upload {msix_output.name} to Partner Center")
         print(f"  Microsoft will sign the package during certification")
-    else:
+
+    if signed_path:
+        print(f"\nFor local testing (signed copy):")
+        print(f"  1. Install test certificate (if not already done):")
+        cert_cer = msix_dir / "AIStenographer_TestCert.cer"
+        print(f"     Import-Certificate -FilePath \"{cert_cer}\" -CertStoreLocation \"Cert:\\LocalMachine\\Root\"")
+        print(f"  2. Install signed MSIX package:")
+        print(f"     Add-AppxPackage -Path \"{signed_path}\"")
+        print(f"  3. Launch from Start Menu: \"AI Stenographer\"")
+        print(f"\n  Note: Test certificate is for development only.")
+    elif CREATE_SIGNED_COPY:
+        print(f"\n[WARNING] Signed copy creation failed")
+        print(f"To create signed copy manually:")
+        print(f"  .\\msix\\sign_package.ps1 -Package \"{msix_output.name}\"")
+    elif not SKIP_SIGNING:
+        # Legacy path: if SKIP_SIGNING=False and CREATE_SIGNED_COPY=False
         cert_path = msix_dir / "AIStenographer_TestCert.pfx"
         print(f"\nTo install for testing:")
         print(f"  1. Install test certificate:")
@@ -994,8 +1146,7 @@ def main():
         print(f"  2. Install MSIX package:")
         print(f"     Add-AppxPackage -Path \"{msix_output}\"")
         print(f"  3. Launch from Start Menu: \"AI Stenographer\"")
-        print(f"\nNote: Test certificate is for development only.")
-        print(f"Microsoft Store will re-sign with trusted certificate during submission.")
+
     print("=" * 80)
 
     return 0

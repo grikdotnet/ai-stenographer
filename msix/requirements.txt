@@ -1,0 +1,5 @@
+# MSIX-specific requirements
+# Inherits base requirements and adds Windows-specific packages
+
+-r ../requirements.txt
+winrt-Windows.Storage>=3.0.0

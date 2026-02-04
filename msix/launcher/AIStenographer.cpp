@@ -49,6 +49,8 @@ static bool g_errorDetected = false;    // Error pattern found flag
 bool CreateInheritablePipe(HANDLE* readPipe, HANDLE* writePipe);
 DWORD ReadPipeNonBlocking(HANDLE pipe, std::wstring& output);
 bool ContainsPythonError(const std::wstring& output);
+std::wstring NormalizePythonPaths(const std::wstring& errorOutput);
+std::wstring WriteErrorLog(const std::wstring& errorOutput);
 void ShowErrorWithReportLink(DWORD exitCode, const std::wstring& errorOutput);
 
 /**
@@ -316,16 +318,18 @@ LRESULT CALLBACK SplashWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
                     DWORD exitCode = 0;
                     if (GetExitCodeProcess(g_pythonProcess, &exitCode)) {
                         if (exitCode != STILL_ACTIVE) {
-                            // Process exited - check if it was an error
-                            if (exitCode != 0) {
-                                // Read any remaining pipe data before showing error
-                                if (g_stdoutPipe) ReadPipeNonBlocking(g_stdoutPipe, g_errorOutput);
-                                if (g_stderrPipe) ReadPipeNonBlocking(g_stderrPipe, g_errorOutput);
+                            // Process exited - read any remaining pipe data
+                            if (g_stdoutPipe) ReadPipeNonBlocking(g_stdoutPipe, g_errorOutput);
+                            if (g_stderrPipe) ReadPipeNonBlocking(g_stderrPipe, g_errorOutput);
 
+                            // Kill timer BEFORE showing error dialog
+                            KillTimer(hwnd, TIMER_CHECK_WINDOW);
+
+                            // Show error if non-zero exit code
+                            if (exitCode != 0) {
                                 ShowErrorWithReportLink(exitCode, g_errorOutput);
                             }
 
-                            KillTimer(hwnd, TIMER_CHECK_WINDOW);
                             DestroyWindow(hwnd);
                             return 0;
                         }
@@ -343,8 +347,8 @@ LRESULT CALLBACK SplashWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam
                 // CHECK 3: Scan for error patterns (even if process still running)
                 if (!g_errorDetected && ContainsPythonError(g_errorOutput)) {
                     g_errorDetected = true;
-                    ShowErrorWithReportLink(0, g_errorOutput);  // exitCode=0 means process still running
-                    KillTimer(hwnd, TIMER_CHECK_WINDOW);
+                    KillTimer(hwnd, TIMER_CHECK_WINDOW);        // Kill timer FIRST
+                    ShowErrorWithReportLink(0, g_errorOutput);  // Then show dialog
                     DestroyWindow(hwnd);
                     return 0;
                 }
@@ -596,6 +600,141 @@ bool ContainsPythonError(const std::wstring& output) {
 }
 
 /**
+ * Writes full error output to logs/startup-errors.txt.
+ *
+ * Creates logs directory if needed and writes the complete error text
+ * with timestamp. This preserves errors that exceed the 500-char dialog limit.
+ *
+ * Algorithm:
+ * 1. Get executable directory
+ * 2. Create logs subdirectory if needed
+ * 3. Build log file path
+ * 4. Write timestamp + error output
+ * 5. Return full path to log file
+ *
+ * @param errorOutput Raw error text to log
+ * @return Full path to log file, or empty string on failure
+ */
+std::wstring WriteErrorLog(const std::wstring& errorOutput) {
+    if (errorOutput.empty()) {
+        return L"";
+    }
+
+    // Get executable directory
+    wchar_t exePath[PATHCCH_MAX_CCH];
+    DWORD pathLen = GetModuleFileNameW(NULL, exePath, PATHCCH_MAX_CCH);
+    if (pathLen == 0 || pathLen >= PATHCCH_MAX_CCH) {
+        return L"";
+    }
+    PathRemoveFileSpecW(exePath);
+
+    // Build logs directory path
+    std::wstring logsDir = std::wstring(exePath) + L"\\logs";
+
+    // Create logs directory if it doesn't exist
+    SHCreateDirectoryExW(NULL, logsDir.c_str(), NULL);
+
+    // Build log file path
+    std::wstring logPath = logsDir + L"\\startup-errors.txt";
+
+    // Open/create log file
+    HANDLE hFile = CreateFileW(
+        logPath.c_str(),
+        GENERIC_WRITE,
+        FILE_SHARE_READ,
+        NULL,
+        CREATE_ALWAYS,  // Overwrite existing
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+
+    if (hFile == INVALID_HANDLE_VALUE) {
+        return L"";
+    }
+
+    // Get current timestamp
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    wchar_t timestamp[128];
+    swprintf_s(timestamp, 128, L"[%04d-%02d-%02d %02d:%02d:%02d]\r\n\r\n",
+               st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+
+    // Convert timestamp to UTF-8
+    char timestampUtf8[256];
+    int timestampLen = WideCharToMultiByte(CP_UTF8, 0, timestamp, -1, timestampUtf8, 256, NULL, NULL);
+
+    // Convert error output to UTF-8
+    int errorLen = WideCharToMultiByte(CP_UTF8, 0, errorOutput.c_str(), -1, NULL, 0, NULL, NULL);
+    if (errorLen > 0) {
+        std::vector<char> errorUtf8(errorLen);
+        WideCharToMultiByte(CP_UTF8, 0, errorOutput.c_str(), -1, errorUtf8.data(), errorLen, NULL, NULL);
+
+        // Write timestamp
+        DWORD written;
+        WriteFile(hFile, timestampUtf8, timestampLen - 1, &written, NULL);
+
+        // Write error output
+        WriteFile(hFile, errorUtf8.data(), errorLen - 1, &written, NULL);
+    }
+
+    CloseHandle(hFile);
+    return logPath;
+}
+
+/**
+ * Normalizes Python traceback paths by removing compile-time prefix.
+ *
+ * Replaces long build paths like:
+ *   C:\workspaces\stt\dist\Package_1.6.0.0_x64\_internal\app\module\file.py
+ * With shortened version:
+ *   ...\app\module\file.py
+ *
+ * Algorithm:
+ * 1. Search for "_internal\app\" or "_internal/app/" pattern
+ * 2. Find start of path (look backward for quote, space, newline, or string start)
+ * 3. Replace path prefix with "..."
+ * 4. Process all occurrences
+ *
+ * @param errorOutput Raw error text with full paths
+ * @return Normalized text with shortened paths
+ */
+std::wstring NormalizePythonPaths(const std::wstring& errorOutput) {
+    std::wstring result = errorOutput;
+    const std::wstring patterns[] = {
+        L"_internal\\app\\",
+        L"_internal/app/"
+    };
+
+    for (const auto& pattern : patterns) {
+        size_t pos = 0;
+        while ((pos = result.find(pattern, pos)) != std::wstring::npos) {
+            // Find start of path by looking backward
+            size_t pathStart = pos;
+
+            // Look backward to find path delimiter (quote, space, newline) or start
+            while (pathStart > 0) {
+                wchar_t ch = result[pathStart - 1];
+                if (ch == L'"' || ch == L' ' || ch == L'\n' || ch == L'\r' || ch == L'\t') {
+                    break;
+                }
+                pathStart--;
+            }
+
+            // Replace [pathStart, pos) with "..."
+            if (pathStart < pos) {
+                result.replace(pathStart, pos - pathStart, L"...");
+                // Adjust position after replacement (3 chars for "...")
+                pos = pathStart + 3 + pattern.length();
+            } else {
+                pos += pattern.length();
+            }
+        }
+    }
+
+    return result;
+}
+
+/**
  * Shows error dialog with captured Python error and GitHub report link.
  *
  * Algorithm:
@@ -608,15 +747,21 @@ bool ContainsPythonError(const std::wstring& output) {
  * @param errorOutput Captured stderr/stdout
  */
 void ShowErrorWithReportLink(DWORD exitCode, const std::wstring& errorOutput) {
+    // Write full error to log file first
+    std::wstring logPath = WriteErrorLog(errorOutput);
+
+    // Normalize paths (before truncation)
+    std::wstring normalizedOutput = NormalizePythonPaths(errorOutput);
+
     // Build error message
     std::wstring errorMsg;
 
-    if (!errorOutput.empty()) {
+    if (!normalizedOutput.empty()) {
         // Truncate long errors
-        if (errorOutput.length() > 500) {
-            errorMsg = errorOutput.substr(0, 500) + L"\n\n(See logs for full error)";
+        if (normalizedOutput.length() > 500) {
+            errorMsg = normalizedOutput.substr(0, 500) + L"\n\n(Truncated - click \"Show Full Error Log\" to see complete error)";
         } else {
-            errorMsg = errorOutput;
+            errorMsg = normalizedOutput;
         }
     } else if (exitCode != 0) {
         // No output, just exit code
@@ -631,8 +776,9 @@ void ShowErrorWithReportLink(DWORD exitCode, const std::wstring& errorOutput) {
     errorMsg += L"\n\n";
     errorMsg += L"Please report this issue so we can fix it:\n";
     errorMsg += L"• Click \"Report this issue on GitHub\" below\n";
-    errorMsg += L"• Include the error message above in your report\n";
-    errorMsg += L"• Describe what you were doing when this happened";
+    if (!logPath.empty()) {
+        errorMsg += L"• Click \"Show Full Error Log\" to view complete error\n";
+    }
 
     // GitHub issues URL
     const wchar_t* githubUrl = L"https://github.com/grikdotnet/ai-stenographer/issues/new?title=Launcher%20Error%3A%20Application%20failed%20to%20start";
@@ -646,21 +792,28 @@ void ShowErrorWithReportLink(DWORD exitCode, const std::wstring& errorOutput) {
     config.pszMainInstruction = L"AI Stenographer failed to start";
     config.pszContent = errorMsg.c_str();
 
-    // Buttons: "Report on GitHub" (command link) + "Close"
-    const TASKDIALOG_BUTTON buttons[] = {
-        { 100, L"Report this issue on GitHub\nOpens your browser to create a GitHub issue" },
-        { IDOK, L"Close" }
-    };
-    config.pButtons = buttons;
-    config.cButtons = 2;
+    // Buttons: "Show Error Log" + "Report on GitHub" + "Close"
+    std::vector<TASKDIALOG_BUTTON> buttons;
+    if (!logPath.empty()) {
+        buttons.push_back({ 101, L"Show Full Error Log\nOpens the complete error log in Notepad" });
+    }
+    buttons.push_back({ 100, L"Report this issue on GitHub\nOpens your browser to create a GitHub issue" });
+    buttons.push_back({ IDOK, L"Close" });
+
+    config.pButtons = buttons.data();
+    config.cButtons = (UINT)buttons.size();
     config.nDefaultButton = IDOK;
 
     int button = 0;
     TaskDialogIndirect(&config, &button, NULL, NULL);
 
-    // If user clicked "Report", open GitHub in browser
+    // Handle button clicks
     if (button == 100) {
+        // Report on GitHub
         ShellExecuteW(NULL, L"open", githubUrl, NULL, NULL, SW_SHOWNORMAL);
+    } else if (button == 101 && !logPath.empty()) {
+        // Show error log in Notepad
+        ShellExecuteW(NULL, L"open", L"notepad.exe", logPath.c_str(), NULL, SW_SHOWNORMAL);
     }
 }
 
