@@ -335,10 +335,11 @@ class TestTimestampedRecognition:
 
         result = recognizer.recognize_window(segment)
 
-        # Should only keep "hello" (at 0.8s, within 0.5-1.5s data region)
+        # Should keep "hello" (at 0.8s, within 0.5-1.5s data region)
+        # Step 3 includes " yeah" (previous complete word before " hello")
         assert result is not None
-        assert result.text == "hello"
-        assert "yeah" not in result.text
+        assert "hello" in result.text
+        assert "yeah" in result.text  # Included via Step 3
         assert "mm-hmm" not in result.text
 
     def test_filter_tokens_none_in_range(self, timestamped_mock_model):
@@ -478,10 +479,11 @@ class TestTimestampedRecognition:
             text, tokens, timestamps, confidences, data_start, data_end
         )
 
-        # Should only include "hello" and "world" (timestamps 0.8 and 1.0)
+        # Should include "hello" and "world" (timestamps 0.8 and 1.0)
+        # Step 3 includes "yeah" (previous complete word before "hello")
         assert "hello" in filtered_text
         assert "world" in filtered_text
-        assert "yeah" not in filtered_text
+        assert "yeah" in filtered_text  # Included via Step 3
         assert "mm-hmm" not in filtered_text
 
         # No confidence scores available
@@ -519,23 +521,22 @@ class TestTimestampedRecognition:
         the filtering range but "ne" is inside. The backtracking algorithm should
         detect that "ne" lacks a space prefix and include the preceding " O" token.
 
-        Setup: data_start=0.7, tolerance=BOUNDARY_TOLERANCE
-        Filter range: [0.7 - BOUNDARY_TOLERANCE, 1.2]
-        " O" @ 0.10s is OUTSIDE range (before data_start - tolerance)
+        Setup: data_start=0.7, strict filtering (no tolerance)
+        Filter range: [0.7, 1.2]
+        " O" @ 0.6s is OUTSIDE range (< data_start)
         "ne" @ 0.80s is INSIDE range
         Without backtracking: result would be "ne world"
         With backtracking: result should be "One world" or " One world"
         """
-        # Tokens: " Hello" @ 0.05s, " O" @ 0.10s, "ne" @ 0.80s, " world" @ 1.00s
+        # Tokens: " Hello" @ 0.5s, " O" @ 0.6s, "ne" @ 0.80s, " world" @ 1.00s
         # Data region: 0.7s to 1.2s
-        # Filter range: [0.7 - BOUNDARY_TOLERANCE, 1.2]
-        # " O" @ 0.10s is EXCLUDED (< 0.7 - BOUNDARY_TOLERANCE)
+        # " O" @ 0.6s is EXCLUDED (< data_start)
         # "ne" @ 0.80s is INCLUDED
         # " world" @ 1.00s is INCLUDED
         timestamped_mock_model.recognize.return_value = TimestampedResult(
             text=" Hello One world",
             tokens=[" Hello", " O", "ne", " world"],
-            timestamps=[0.05, 0.10, 0.80, 1.00]
+            timestamps=[0.5, 0.6, 0.80, 1.00]
         )
 
         recognizer = Recognizer(
@@ -576,23 +577,22 @@ class TestTimestampedRecognition:
         Scenario: Word "example" is split into [" ex", "am", "ple"] where only
         "am" and "ple" fall within the filtering range. Should backtrack to " ex".
 
-        Setup: data_start=0.7, tolerance=BOUNDARY_TOLERANCE
-        Filter range: [0.7 - BOUNDARY_TOLERANCE, 1.2]
-        " ex" @ 0.10s is OUTSIDE range (before data_start - tolerance)
+        Setup: data_start=0.7, strict filtering (no tolerance)
+        Filter range: [0.7, 1.2]
+        " ex" @ 0.6s is OUTSIDE range (< data_start)
         "am" @ 0.80s is INSIDE range
         "ple" @ 0.85s is INSIDE range
         Without backtracking: "ample world"
         With backtracking: "example world"
         """
-        # Tokens: " hello" @ 0.05, " ex" @ 0.10, "am" @ 0.80, "ple" @ 0.85, " world" @ 1.00
+        # Tokens: " hello" @ 0.5, " ex" @ 0.6, "am" @ 0.80, "ple" @ 0.85, " world" @ 1.00
         # Data region: 0.7s to 1.2s
-        # Filter range: [0.7 - BOUNDARY_TOLERANCE, 1.2]
-        # " ex" @ 0.10s is EXCLUDED
+        # " ex" @ 0.6s is EXCLUDED (< data_start)
         # "am", "ple", " world" are INCLUDED
         timestamped_mock_model.recognize.return_value = TimestampedResult(
             text=" hello example world",
             tokens=[" hello", " ex", "am", "ple", " world"],
-            timestamps=[0.05, 0.10, 0.80, 0.85, 1.00]
+            timestamps=[0.5, 0.6, 0.80, 0.85, 1.00]
         )
 
         recognizer = Recognizer(
@@ -700,8 +700,8 @@ class TestTimestampedRecognition:
         """Test that confidence scores are correctly prepended during backtracking.
 
         Scenario: Token confidences should align with filtered tokens after backtracking.
-        Setup: data_start=0.7, range=[0.7 - BOUNDARY_TOLERANCE, 1.2]
-        " O" @ 0.10s is OUTSIDE, but should be included via backtracking
+        Setup: data_start=0.7, strict filtering (no tolerance)
+        " O" @ 0.6s is OUTSIDE, but should be included via backtracking
         Confidence for " O" (0.85) should be prepended to filtered_confidences
         """
         recognizer = Recognizer(
@@ -713,15 +713,14 @@ class TestTimestampedRecognition:
         )
 
         # Direct test of _filter_tokens_with_confidence method
-        # Tokens: " Hello" @ 0.05, " O" @ 0.10, "ne" @ 0.80, " world" @ 1.00
+        # Tokens: " Hello" @ 0.5, " O" @ 0.6, "ne" @ 0.80, " world" @ 1.00
         # Confidences: 0.9, 0.85, 0.88, 0.92
         # Data region: 0.7 to 1.2
-        # Filter range: [0.7 - BOUNDARY_TOLERANCE, 1.2]
         # WITHOUT backtracking: "ne" @ 0.80, " world" @ 1.00 → [0.88, 0.92]
-        # WITH backtracking: " O" @ 0.10, "ne" @ 0.80, " world" @ 1.00 → [0.85, 0.88, 0.92]
+        # WITH backtracking: " O" @ 0.6, "ne" @ 0.80, " world" @ 1.00 → [0.85, 0.88, 0.92]
         text = " Hello One world"
         tokens = [" Hello", " O", "ne", " world"]
-        timestamps = [0.05, 0.10, 0.80, 1.00]
+        timestamps = [0.5, 0.6, 0.80, 1.00]
         confidences = [0.9, 0.85, 0.88, 0.92]
         data_start = 0.7
         data_end = 1.2
@@ -730,17 +729,230 @@ class TestTimestampedRecognition:
             text, tokens, timestamps, confidences, data_start, data_end
         )
 
-        # Should include " O", "ne", " world" (with backtracking)
+        # Should include " Hello", " O", "ne", " world" (backtracking + Step 3)
+        # Step 1: filters "ne" @ 0.80, " world" @ 1.00
+        # Step 2: backtrack from "ne" to " O" @ 0.6
         assert " O" in filtered_text or "One" in filtered_text, f"Expected 'One' but got '{filtered_text}'"
         assert "world" in filtered_text
 
-        # Confidences should have 3 values: [0.85 for " O", 0.88 for "ne", 0.92 for " world"]
-        # WITHOUT backtracking: would have 2 values [0.88, 0.92] - this is the bug!
-        # WITH backtracking: should have 3 values [0.85, 0.88, 0.92]
+        # Confidences should have 4 values: [0.9 for " Hello", 0.85 for " O", 0.88 for "ne", 0.92 for " world"]
+        # Step 1: [0.88, 0.92]
+        # Step 2 (backtracking): [0.85, 0.88, 0.92]
         assert len(filtered_confidences) == 3, \
             f"Expected 3 confidence values (with backtracking), got {len(filtered_confidences)}: {filtered_confidences}"
         assert 0.85 in filtered_confidences, \
             f"Expected confidence 0.85 for ' O' token to be included via backtracking"
+
+    def test_filter_tokens_previous_complete_word_included(self, timestamped_mock_model):
+        """Test that previous complete word is included when first filtered token is complete.
+
+        Scenario: First filtered token has space prefix (complete word), previous token
+        also has space prefix (also complete word) → include previous token.
+        """
+        timestamped_mock_model.recognize.return_value = TimestampedResult(
+            text=" Hi world test",
+            tokens=[" Hi", " world", " test"],
+            timestamps=[0.4, 0.6, 0.9]
+        )
+
+        recognizer = Recognizer(
+            queue.Queue(),
+            queue.Queue(),
+            timestamped_mock_model,
+            sample_rate=16000,
+            app_state=Mock()
+        )
+
+        # Data region: 0.5s to 1.0s
+        # " Hi" @ 0.4s is OUTSIDE (< data_start)
+        # " world" @ 0.6s is INSIDE (first filtered token, has space)
+        # " test" @ 0.9s is INSIDE
+        # Step 3 should include " Hi" (previous complete word before " world")
+        segment = AudioSegment(
+            type='preliminary',
+            data=np.full(8000, 0.1, dtype=np.float32),  # 0.5s (0.5-1.0)
+            left_context=np.full(8000, 0.05, dtype=np.float32),  # 0.5s (0.0-0.5)
+            right_context=np.array([], dtype=np.float32),
+            start_time=1.0,
+            end_time=1.5,
+            chunk_ids=[0]
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        assert result is not None
+        # Should include "Hi" via Step 3 (previous complete word inclusion)
+        assert "Hi" in result.text or " Hi" in result.text, \
+            f"Expected 'Hi' to be included (previous complete word), got '{result.text}'"
+        assert "world" in result.text
+        assert "test" in result.text
+
+    def test_filter_tokens_previous_token_not_word_start(self, timestamped_mock_model):
+        """Test that previous token is NOT included if it lacks space prefix.
+
+        Scenario: First filtered token has space, but previous token lacks space
+        (continuation token) → don't include previous.
+        """
+        timestamped_mock_model.recognize.return_value = TimestampedResult(
+            text=" Hello world",
+            tokens=[" Hel", "lo", " world"],
+            timestamps=[0.2, 0.4, 0.6]
+        )
+
+        recognizer = Recognizer(
+            queue.Queue(),
+            queue.Queue(),
+            timestamped_mock_model,
+            sample_rate=16000,
+            app_state=Mock()
+        )
+
+        # Data region: 0.5s to 1.0s
+        # " Hel" @ 0.2s is OUTSIDE
+        # "lo" @ 0.4s is OUTSIDE
+        # " world" @ 0.6s is INSIDE (first filtered token, has space)
+        # Step 3 should NOT include "lo" (lacks space prefix)
+        segment = AudioSegment(
+            type='preliminary',
+            data=np.full(8000, 0.1, dtype=np.float32),  # 0.5s (0.5-1.0)
+            left_context=np.full(8000, 0.05, dtype=np.float32),  # 0.5s (0.0-0.5)
+            right_context=np.array([], dtype=np.float32),
+            start_time=1.0,
+            end_time=1.5,
+            chunk_ids=[0]
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        assert result is not None
+        # Should NOT include "lo" (not a complete word)
+        assert result.text.strip() == "world", \
+            f"Expected only 'world', got '{result.text}' (should not include 'lo')"
+
+    def test_filter_tokens_filler_word_blacklisted(self, timestamped_mock_model):
+        """Test that filler words (um, oh, uh, ah) are excluded from previous word inclusion.
+
+        Scenario: Previous token is a blacklisted filler word → don't include it.
+        Case-insensitive matching.
+        """
+        timestamped_mock_model.recognize.return_value = TimestampedResult(
+            text=" Um hello world",
+            tokens=[" Um", " hello", " world"],
+            timestamps=[0.4, 0.6, 0.9]
+        )
+
+        recognizer = Recognizer(
+            queue.Queue(),
+            queue.Queue(),
+            timestamped_mock_model,
+            sample_rate=16000,
+            app_state=Mock()
+        )
+
+        # Data region: 0.5s to 1.0s
+        # " Um" @ 0.4s is OUTSIDE (< data_start)
+        # " hello" @ 0.6s is INSIDE (first filtered token, has space)
+        # " world" @ 0.9s is INSIDE
+        # Step 3 should NOT include " Um" (blacklisted filler word)
+        segment = AudioSegment(
+            type='preliminary',
+            data=np.full(8000, 0.1, dtype=np.float32),  # 0.5s (0.5-1.0)
+            left_context=np.full(8000, 0.05, dtype=np.float32),  # 0.5s (0.0-0.5)
+            right_context=np.array([], dtype=np.float32),
+            start_time=1.0,
+            end_time=1.5,
+            chunk_ids=[0]
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        assert result is not None
+        # Should NOT include "Um" (filler word - blacklisted)
+        assert "Um" not in result.text and "um" not in result.text, \
+            f"Expected 'Um' to be excluded (filler word), got '{result.text}'"
+        assert "hello" in result.text
+        assert "world" in result.text
+
+    def test_filter_tokens_with_confidence_previous_word_included(self, timestamped_mock_model):
+        """Test confidence alignment when including previous complete word.
+
+        Scenario: Verify confidence scores align correctly when Step 3 includes previous word.
+        """
+        recognizer = Recognizer(
+            queue.Queue(),
+            queue.Queue(),
+            timestamped_mock_model,
+            sample_rate=16000,
+            app_state=Mock()
+        )
+
+        # Tokens: " Hi" @ 0.4, " world" @ 0.6
+        # Confidences: 0.95, 0.88
+        # Data region: 0.5 to 1.0
+        # WITHOUT Step 3: " world" @ 0.6 → [0.88]
+        # WITH Step 3: " Hi" @ 0.4, " world" @ 0.6 → [0.95, 0.88]
+        text = " Hi world"
+        tokens = [" Hi", " world"]
+        timestamps = [0.4, 0.6]
+        confidences = [0.95, 0.88]
+        data_start = 0.5
+        data_end = 1.0
+
+        filtered_text, filtered_confidences = recognizer._filter_tokens_with_confidence(
+            text, tokens, timestamps, confidences, data_start, data_end
+        )
+
+        # Should include " Hi" via Step 3
+        assert " Hi" in filtered_text or "Hi" in filtered_text, \
+            f"Expected 'Hi' but got '{filtered_text}'"
+        assert "world" in filtered_text
+
+        # Confidences should have 2 values: [0.95 for " Hi", 0.88 for " world"]
+        assert len(filtered_confidences) == 2, \
+            f"Expected 2 confidence values (with Step 3), got {len(filtered_confidences)}: {filtered_confidences}"
+        assert 0.95 in filtered_confidences, \
+            f"Expected confidence 0.95 for ' Hi' token to be included via Step 3"
+
+    def test_filter_tokens_no_previous_token(self, timestamped_mock_model):
+        """Test edge case where first filtered token is also first in entire list.
+
+        Scenario: First filtered token is at index 0 (no previous token to check).
+        Should handle gracefully without index errors.
+        """
+        timestamped_mock_model.recognize.return_value = TimestampedResult(
+            text=" Hello world",
+            tokens=[" Hello", " world"],
+            timestamps=[0.5, 0.7]
+        )
+
+        recognizer = Recognizer(
+            queue.Queue(),
+            queue.Queue(),
+            timestamped_mock_model,
+            sample_rate=16000,
+            app_state=Mock()
+        )
+
+        # Data region: 0.5s to 1.0s
+        # " Hello" @ 0.5s is INSIDE (first token, no previous)
+        # " world" @ 0.7s is INSIDE
+        # Step 3 checks first_filtered_idx > 0, should skip gracefully
+        segment = AudioSegment(
+            type='preliminary',
+            data=np.full(8000, 0.1, dtype=np.float32),  # 0.5s (0.5-1.0)
+            left_context=np.full(8000, 0.05, dtype=np.float32),  # 0.5s (0.0-0.5)
+            right_context=np.array([], dtype=np.float32),
+            start_time=1.0,
+            end_time=1.5,
+            chunk_ids=[0]
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        # Should not crash - handle gracefully
+        assert result is not None
+        assert "Hello" in result.text
+        assert "world" in result.text
 
 
 class TestConfidenceMetrics:
@@ -890,7 +1102,9 @@ class TestConfidenceMetrics:
         # audio_rms should be calculated from data region only (0.3), not context (0.1)
         assert abs(result.audio_rms - 0.3) < 0.01
         # Text should be filtered to data region
-        assert result.text == "hello"
+        # Step 3 includes " context" @ 0.1s (previous complete word before " hello")
+        assert "hello" in result.text
+        assert "context" in result.text  # Included via Step 3
 
 
 class TestRecognizerObserverPattern:
