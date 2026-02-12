@@ -18,7 +18,7 @@ from ..types import AudioSegment
 
 if TYPE_CHECKING:
     from src.asr.VoiceActivityDetector import VoiceActivityDetector
-    from src.sound.AdaptiveWindower import AdaptiveWindower
+    from src.sound.GrowingWindowAssembler import GrowingWindowAssembler
     from src.ApplicationState import ApplicationState
 
 
@@ -111,7 +111,7 @@ class SoundPreProcessor:
     """Processes raw audio chunks through VAD and buffering.
 
     Runs in dedicated thread to avoid blocking audio capture.
-    Orchestrates VAD, speech buffering, and AdaptiveWindower.
+    Orchestrates VAD, speech buffering, and GrowingWindowAssembler.
 
     Idle Buffer Strategy:
     - Maintains circular buffer of last 48 chunks (1.536s @ 32ms/chunk)
@@ -146,9 +146,9 @@ class SoundPreProcessor:
 
     Args:
         chunk_queue: Queue to read raw audio chunks from AudioSource
-        speech_queue: Queue to write AudioSegments (preliminary + finalized)
+        speech_queue: Queue to write AudioSegments (incremental + flush)
         vad: VoiceActivityDetector instance
-        windower: AdaptiveWindower instance (called synchronously)
+        windower: GrowingWindowAssembler instance (called synchronously)
         config: Configuration dictionary
         verbose: Enable verbose logging
     """
@@ -160,15 +160,15 @@ class SoundPreProcessor:
                  chunk_queue: queue.Queue,
                  speech_queue: queue.Queue,
                  vad: VoiceActivityDetector,
-                 windower: AdaptiveWindower,
+                 windower: GrowingWindowAssembler,
                  config: Dict[str, Any],
                  app_state: Optional['ApplicationState'] = None,
                  verbose: bool = False):
 
         self.chunk_queue: queue.Queue = chunk_queue      # INPUT: raw audio
-        self.speech_queue: queue.Queue = speech_queue    # OUTPUT: preliminary segments
+        self.speech_queue: queue.Queue = speech_queue    # OUTPUT: incremental segments
         self.vad: VoiceActivityDetector = vad            # Called for speech detection
-        self.windower: AdaptiveWindower = windower       # Called synchronously
+        self.windower: GrowingWindowAssembler = windower # Called synchronously
 
         # Configuration
         self.sample_rate: int = config['audio']['sample_rate']
@@ -360,7 +360,6 @@ class SoundPreProcessor:
                     if s.silence_energy >= self.silence_energy_threshold:
                         # ACCUMULATING_SILENCE → IDLE
                         segment = self._build_audio_segment(breakpoint_idx=s.silence_start_idx)
-                        self._put_segment_nonblocking(segment)
                         self.windower.process_segment(segment)
                         self._reset_segment_state()
 
@@ -536,7 +535,7 @@ class SoundPreProcessor:
         end_time = s.speech_start_time + (len(data) / self.sample_rate)
 
         return AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=data,
             left_context=left_context,
             right_context=right_context,
@@ -611,7 +610,6 @@ class SoundPreProcessor:
                 logging.debug(f"SoundPreProcessor: silence breakpoint at chunk {breakpoint_idx}, offset={offset:.2f}s)")
 
             segment = self._build_audio_segment(breakpoint_idx=breakpoint_idx)
-            self._put_segment_nonblocking(segment)
             self.windower.process_segment(segment)
 
             # Capture breakpoint chunk as left context for next segment
@@ -631,11 +629,10 @@ class SoundPreProcessor:
                 logging.debug(f"SoundPreProcessor: no silence breakpoint found, using hard cut")
 
             segment = self._build_audio_segment(breakpoint_idx=None)
-            self._put_segment_nonblocking(segment)
             self.windower.process_segment(segment)
 
             if self.verbose:
-                logging.debug(f"SoundPreProcessor: emitting preliminary segment")
+                logging.debug(f"SoundPreProcessor: emitting incremental segment")
                 logging.debug(f"  chunk_ids=[{segment.chunk_ids[0] if segment.chunk_ids else ''}...{segment.chunk_ids[-1] if segment.chunk_ids else ''}]")
                 logging.debug(f"  left_context={len(segment.left_context)/512} chunks, right_context={len(segment.right_context)/512} chunks")
 
@@ -652,7 +649,6 @@ class SoundPreProcessor:
         s = self.audio_state
         if self.is_speech_active and len(s.speech_buffer) > 0:
             segment = self._build_audio_segment(breakpoint_idx=None)
-            self._put_segment_nonblocking(segment)
             self.windower.flush(segment)  # Process and flush in one call
             self._reset_segment_state()
             self.state = ProcessingStatesEnum.IDLE

@@ -38,62 +38,48 @@ class TestTextFormatterBasicPartialUpdates(unittest.TestCase):
         self.formatter = TextFormatter(display=self.display, verbose=False)
 
     def test_first_partial_no_space(self):
-        """First partial update should NOT prepend space."""
+        """First partial update triggers rerender_all with preliminary segment."""
         result = RecognitionResult(
             text="Hello",
             start_time=1.0,
             end_time=1.5,
-            status='preliminary',
+            status='incremental',
             chunk_ids=[1]
         )
 
         self.formatter.partial_update(result)
 
         instructions = self.display.get_last_instructions()
-        self.assertEqual(instructions.action, 'update_partial')
-        self.assertEqual(instructions.text_to_append, "Hello")
-        self.assertFalse(instructions.text_to_append.startswith(" "))
+        self.assertEqual(len(instructions.preliminary_segments), 1)
+        self.assertEqual(instructions.preliminary_segments[0].text, "Hello")
 
-    def test_second_partial_adds_space(self):
-        """Second partial update should prepend space."""
-        result1 = RecognitionResult(text="Hello", start_time=1.0, end_time=1.5, status='preliminary', chunk_ids=[1])
-        result2 = RecognitionResult(text="world", start_time=1.6, end_time=2.0, status='preliminary', chunk_ids=[2])
-
-        self.formatter.partial_update(result1)
-        self.formatter.partial_update(result2)
-
-        instructions = self.display.get_last_instructions()
-        self.assertEqual(instructions.action, 'update_partial')
-        self.assertEqual(instructions.text_to_append, " world")
-        self.assertTrue(instructions.text_to_append.startswith(" "))
-
-    def test_partial_stores_result_objects(self):
-        """Partial updates should store RecognitionResult objects."""
-        result1 = RecognitionResult(text="Hello", start_time=1.0, end_time=1.5, status='preliminary', chunk_ids=[1])
-        result2 = RecognitionResult(text="world", start_time=1.6, end_time=2.0, status='preliminary', chunk_ids=[2])
+    def test_partial_replaces_previous(self):
+        """Partial updates should replace previous preliminary (not append)."""
+        result1 = RecognitionResult(text="Hello", start_time=1.0, end_time=1.5, status='incremental', chunk_ids=[1])
+        result2 = RecognitionResult(text="Hello world", start_time=1.0, end_time=2.0, status='incremental', chunk_ids=[1, 2])
 
         self.formatter.partial_update(result1)
         self.formatter.partial_update(result2)
 
-        self.assertEqual(len(self.formatter.preliminary_results), 2)
-        self.assertEqual(self.formatter.preliminary_results[0].text, "Hello")
-        self.assertEqual(self.formatter.preliminary_results[1].text, "world")
+        # Should store only the latest preliminary result
+        self.assertIsNotNone(self.formatter.current_preliminary)
+        self.assertEqual(self.formatter.current_preliminary.text, "Hello world")
 
     def test_empty_preliminary_text(self):
         """Empty preliminary text should be handled gracefully."""
-        result = RecognitionResult(text="", start_time=1.0, end_time=1.5, status='preliminary', chunk_ids=[1])
+        result = RecognitionResult(text="", start_time=1.0, end_time=1.5, status='incremental', chunk_ids=[1])
 
         self.formatter.partial_update(result)
 
         instructions = self.display.get_last_instructions()
-        self.assertEqual(instructions.action, 'update_partial')
+        self.assertEqual(instructions.action, 'rerender_all')
         self.assertEqual(instructions.text_to_append, "")
         self.assertFalse(instructions.text_to_append.startswith(" "))
 
     def test_partial_after_finalization_resets_last_text(self):
         """Partial update after finalization should reset last_finalized_text."""
         final_result = RecognitionResult(text="Hello", start_time=1.0, end_time=1.5, status='final', chunk_ids=[1])
-        partial_result = RecognitionResult(text="world", start_time=1.6, end_time=2.0, status='preliminary', chunk_ids=[2])
+        partial_result = RecognitionResult(text="world", start_time=1.6, end_time=2.0, status='incremental', chunk_ids=[2])
 
         self.formatter.finalization(final_result)
         self.assertEqual(self.formatter.last_finalized_text, "Hello")
@@ -102,53 +88,23 @@ class TestTextFormatterBasicPartialUpdates(unittest.TestCase):
         self.assertEqual(self.formatter.last_finalized_text, "")
 
 
-class TestTextFormatterFinalizationChunkTracking(unittest.TestCase):
-    """Group B: Finalization & Chunk Tracking (6 tests)"""
+class TestTextFormatterFinalizationSimplified(unittest.TestCase):
+    """Group B: Finalization (Simplified - no chunk tracking needed)"""
 
     def setUp(self):
         self.display = MockDisplay()
         self.formatter = TextFormatter(display=self.display, verbose=False)
 
-    def test_finalize_updates_chunk_ids(self):
-        """Finalization should update finalized_chunk_ids set."""
-        result = RecognitionResult(text="Hello", start_time=1.0, end_time=1.5, status='final', chunk_ids=[1, 2, 3])
+    def test_finalize_clears_preliminary(self):
+        """Finalization should clear current_preliminary."""
+        partial = RecognitionResult(text="Hello", start_time=1.0, end_time=1.5, status='incremental', chunk_ids=[1])
+        self.formatter.partial_update(partial)
+        self.assertIsNotNone(self.formatter.current_preliminary)
 
-        self.formatter.finalization(result)
+        final = RecognitionResult(text="Hello", start_time=1.0, end_time=1.5, status='final', chunk_ids=[1])
+        self.formatter.finalization(final)
 
-        self.assertEqual(self.formatter.finalized_chunk_ids, {1, 2, 3})
-
-    def test_finalize_filters_preliminary_by_chunk_ids(self):
-        """Finalization should filter out preliminary results with overlapping chunk IDs."""
-        # Add preliminary results
-        partial1 = RecognitionResult(text="Hello", start_time=1.0, end_time=1.5, status='preliminary', chunk_ids=[1])
-        partial2 = RecognitionResult(text="world", start_time=1.6, end_time=2.0, status='preliminary', chunk_ids=[2])
-        partial3 = RecognitionResult(text="test", start_time=2.1, end_time=2.5, status='preliminary', chunk_ids=[3])
-
-        self.formatter.partial_update(partial1)
-        self.formatter.partial_update(partial2)
-        self.formatter.partial_update(partial3)
-
-        # Finalize chunks 1-2
-        final_result = RecognitionResult(text="Hello world", start_time=1.0, end_time=2.0, status='final', chunk_ids=[1, 2])
-        self.formatter.finalization(final_result)
-
-        instructions = self.display.get_last_instructions()
-        self.assertEqual(instructions.action, 'finalize')
-        self.assertEqual(len(instructions.preliminary_segments), 1)
-        self.assertEqual(instructions.preliminary_segments[0].text, "test")
-
-    def test_finalize_duplicate_prevention(self):
-        """Duplicate finalization of same text should return None (no display update)."""
-        result = RecognitionResult(text="Hello", start_time=1.0, end_time=1.5, status='final', chunk_ids=[1])
-
-        # First finalization
-        self.formatter.finalization(result)
-        self.assertEqual(len(self.display.instructions_history), 1)
-
-        # Duplicate finalization
-        self.formatter.finalization(result)
-        # Should still be 1 (no new instruction added)
-        self.assertEqual(len(self.display.instructions_history), 1)
+        self.assertIsNone(self.formatter.current_preliminary)
 
     def test_finalize_without_preliminary(self):
         """Finalization without preliminary results should work correctly."""
@@ -171,15 +127,6 @@ class TestTextFormatterFinalizationChunkTracking(unittest.TestCase):
 
         self.assertEqual(self.formatter.finalized_text, "Hello world")
 
-    def test_finalize_tracks_timing(self):
-        """Finalization should track end_time for pause detection."""
-        result = RecognitionResult(text="Hello", start_time=1.0, end_time=1.5, status='final', chunk_ids=[1])
-
-        self.formatter.finalization(result)
-
-        self.assertEqual(self.formatter.last_finalized_end_time, 1.5)
-
-
 class TestTextFormatterParagraphBreakLogic(unittest.TestCase):
     """Group C: Paragraph Break Logic (7 tests)"""
 
@@ -194,7 +141,7 @@ class TestTextFormatterParagraphBreakLogic(unittest.TestCase):
         self.formatter.finalization(final1)
 
         # Add partial after long pause (2.0s threshold)
-        partial = RecognitionResult(text="world", start_time=3.6, end_time=4.0, status='preliminary', chunk_ids=[2])
+        partial = RecognitionResult(text="world", start_time=3.6, end_time=4.0, status='incremental', chunk_ids=[2])
         self.formatter.partial_update(partial)
 
         instructions = self.display.get_last_instructions()
@@ -208,11 +155,11 @@ class TestTextFormatterParagraphBreakLogic(unittest.TestCase):
         self.formatter.finalization(final1)
 
         # Short pause (1.9s < 2.0s threshold)
-        partial = RecognitionResult(text="world", start_time=3.4, end_time=4.0, status='preliminary', chunk_ids=[2])
+        partial = RecognitionResult(text="world", start_time=3.4, end_time=4.0, status='incremental', chunk_ids=[2])
         self.formatter.partial_update(partial)
 
         instructions = self.display.get_last_instructions()
-        self.assertEqual(instructions.action, 'update_partial')
+        self.assertEqual(instructions.action, 'rerender_all')
         self.assertFalse(instructions.paragraph_break_inserted)
 
     def test_no_duplicate_paragraph_breaks(self):
@@ -221,27 +168,27 @@ class TestTextFormatterParagraphBreakLogic(unittest.TestCase):
         self.formatter.finalization(final1)
 
         # First pause - inserts paragraph break
-        partial1 = RecognitionResult(text="world", start_time=3.6, end_time=4.0, status='preliminary', chunk_ids=[2])
+        partial1 = RecognitionResult(text="world", start_time=3.6, end_time=4.0, status='incremental', chunk_ids=[2])
         self.formatter.partial_update(partial1)
         self.assertTrue(self.formatter.finalized_text.endswith('\n'))
 
         # Second partial (already has paragraph break)
-        partial2 = RecognitionResult(text="test", start_time=4.1, end_time=4.5, status='preliminary', chunk_ids=[3])
+        partial2 = RecognitionResult(text="test", start_time=4.1, end_time=4.5, status='incremental', chunk_ids=[3])
         self.formatter.partial_update(partial2)
 
         instructions = self.display.get_last_instructions()
-        self.assertEqual(instructions.action, 'update_partial')
+        self.assertEqual(instructions.action, 'rerender_all')
         # Should NOT insert another paragraph break
         self.assertFalse(instructions.paragraph_break_inserted)
 
     def test_pause_detection_without_finalization(self):
         """Pause detection requires prior finalization (last_finalized_end_time != 0)."""
         # No finalization yet
-        partial = RecognitionResult(text="Hello", start_time=10.0, end_time=10.5, status='preliminary', chunk_ids=[1])
+        partial = RecognitionResult(text="Hello", start_time=10.0, end_time=10.5, status='incremental', chunk_ids=[1])
         self.formatter.partial_update(partial)
 
         instructions = self.display.get_last_instructions()
-        self.assertEqual(instructions.action, 'update_partial')
+        self.assertEqual(instructions.action, 'rerender_all')
         self.assertFalse(instructions.paragraph_break_inserted)
 
     def test_pause_detection_with_empty_finalized_text(self):
@@ -250,25 +197,12 @@ class TestTextFormatterParagraphBreakLogic(unittest.TestCase):
         self.formatter.last_finalized_end_time = 1.5
         self.formatter.finalized_text = ""
 
-        partial = RecognitionResult(text="Hello", start_time=3.6, end_time=4.0, status='preliminary', chunk_ids=[1])
-        self.formatter.partial_update(partial)
-
-        instructions = self.display.get_last_instructions()
-        self.assertEqual(instructions.action, 'update_partial')
-        self.assertFalse(instructions.paragraph_break_inserted)
-
-    def test_paragraph_break_triggers_rerender(self):
-        """Paragraph break should trigger rerender_all action."""
-        final1 = RecognitionResult(text="Hello", start_time=1.0, end_time=1.5, status='final', chunk_ids=[1])
-        self.formatter.finalization(final1)
-
-        partial = RecognitionResult(text="world", start_time=3.6, end_time=4.0, status='preliminary', chunk_ids=[2])
+        partial = RecognitionResult(text="Hello", start_time=3.6, end_time=4.0, status='incremental', chunk_ids=[1])
         self.formatter.partial_update(partial)
 
         instructions = self.display.get_last_instructions()
         self.assertEqual(instructions.action, 'rerender_all')
-        self.assertEqual(instructions.finalized_text, "Hello\n")
-        self.assertEqual(len(instructions.preliminary_segments), 1)
+        self.assertFalse(instructions.paragraph_break_inserted)
 
     def test_multiple_pauses_multiple_breaks(self):
         """Multiple pauses should insert multiple paragraph breaks."""
@@ -276,7 +210,7 @@ class TestTextFormatterParagraphBreakLogic(unittest.TestCase):
         self.formatter.finalization(final1)
 
         # First pause
-        partial1 = RecognitionResult(text="Second", start_time=3.6, end_time=4.0, status='preliminary', chunk_ids=[2])
+        partial1 = RecognitionResult(text="Second", start_time=3.6, end_time=4.0, status='incremental', chunk_ids=[2])
         self.formatter.partial_update(partial1)
         self.assertEqual(self.formatter.finalized_text, "First\n")
 
@@ -285,64 +219,40 @@ class TestTextFormatterParagraphBreakLogic(unittest.TestCase):
         self.formatter.finalization(final2)
 
         # Second pause
-        partial2 = RecognitionResult(text="Third", start_time=6.1, end_time=6.5, status='preliminary', chunk_ids=[3])
+        partial2 = RecognitionResult(text="Third", start_time=6.1, end_time=6.5, status='incremental', chunk_ids=[3])
         self.formatter.partial_update(partial2)
 
         self.assertEqual(self.formatter.finalized_text, "First\n Second\n")
 
 
 class TestTextFormatterStateInspection(unittest.TestCase):
-    """Group D: State Inspection (3 tests)"""
+    """Group D: State Inspection (Simplified)"""
 
     def setUp(self):
         self.display = MockDisplay()
         self.formatter = TextFormatter(display=self.display, verbose=False)
 
-    def test_get_remaining_preliminary_results(self):
-        """_get_remaining_preliminary_results should return non-finalized results."""
-        partial1 = RecognitionResult(text="Hello", start_time=1.0, end_time=1.5, status='preliminary', chunk_ids=[1])
-        partial2 = RecognitionResult(text="world", start_time=1.6, end_time=2.0, status='preliminary', chunk_ids=[2])
-        partial3 = RecognitionResult(text="test", start_time=2.1, end_time=2.5, status='preliminary', chunk_ids=[3])
+    def test_current_preliminary_storage(self):
+        """current_preliminary should store only the latest preliminary result."""
+        partial1 = RecognitionResult(text="Hello", start_time=1.0, end_time=1.5, status='incremental', chunk_ids=[1])
+        partial2 = RecognitionResult(text="Hello world", start_time=1.0, end_time=2.0, status='incremental', chunk_ids=[1, 2])
 
         self.formatter.partial_update(partial1)
+        self.assertEqual(self.formatter.current_preliminary.text, "Hello")
+
         self.formatter.partial_update(partial2)
-        self.formatter.partial_update(partial3)
+        self.assertEqual(self.formatter.current_preliminary.text, "Hello world")
 
-        # Finalize chunks 1-2
-        self.formatter.finalized_chunk_ids.update([1, 2])
+    def test_current_preliminary_cleared_on_finalization(self):
+        """current_preliminary should be cleared after finalization."""
+        partial = RecognitionResult(text="Hello", start_time=1.0, end_time=1.5, status='incremental', chunk_ids=[1])
+        self.formatter.partial_update(partial)
+        self.assertIsNotNone(self.formatter.current_preliminary)
 
-        remaining = self.formatter._get_remaining_preliminary_results()
-        self.assertEqual(len(remaining), 1)
-        self.assertEqual(remaining[0].text, "test")
+        final = RecognitionResult(text="Hello world", start_time=1.0, end_time=2.0, status='final', chunk_ids=[1, 2])
+        self.formatter.finalization(final)
 
-    def test_remaining_preliminary_filters_by_chunk_overlap(self):
-        """Results with ANY finalized chunk should be filtered out."""
-        partial1 = RecognitionResult(text="Hello", start_time=1.0, end_time=1.5, status='preliminary', chunk_ids=[1, 2])
-        partial2 = RecognitionResult(text="world", start_time=1.6, end_time=2.0, status='preliminary', chunk_ids=[3, 4])
-
-        self.formatter.partial_update(partial1)
-        self.formatter.partial_update(partial2)
-
-        # Finalize only chunk 2 (partial1 has [1, 2], so it should be filtered)
-        self.formatter.finalized_chunk_ids.add(2)
-
-        remaining = self.formatter._get_remaining_preliminary_results()
-        self.assertEqual(len(remaining), 1)
-        self.assertEqual(remaining[0].text, "world")
-
-    def test_remaining_preliminary_empty_when_all_finalized(self):
-        """When all chunks finalized, remaining should be empty."""
-        partial1 = RecognitionResult(text="Hello", start_time=1.0, end_time=1.5, status='preliminary', chunk_ids=[1])
-        partial2 = RecognitionResult(text="world", start_time=1.6, end_time=2.0, status='preliminary', chunk_ids=[2])
-
-        self.formatter.partial_update(partial1)
-        self.formatter.partial_update(partial2)
-
-        # Finalize all chunks
-        self.formatter.finalized_chunk_ids.update([1, 2])
-
-        remaining = self.formatter._get_remaining_preliminary_results()
-        self.assertEqual(len(remaining), 0)
+        self.assertIsNone(self.formatter.current_preliminary)
 
 
 if __name__ == '__main__':

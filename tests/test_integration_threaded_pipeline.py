@@ -7,7 +7,7 @@ from unittest.mock import Mock
 from src.sound.AudioSource import AudioSource
 from src.sound.SoundPreProcessor import SoundPreProcessor
 from src.asr.VoiceActivityDetector import VoiceActivityDetector
-from src.sound.AdaptiveWindower import AdaptiveWindower
+from src.sound.GrowingWindowAssembler import GrowingWindowAssembler
 from src.types import AudioSegment
 
 
@@ -38,15 +38,16 @@ class TestIntegrationThreadedPipeline:
             },
             'windowing': {
                 'window_duration': 3.0,
+                'max_window_duration': 7.0,
                 'max_speech_duration_ms': 3000,
                 'silence_timeout': 0.5
             }
         }
 
-    def test_raw_audio_flows_to_speech_queue(self, pipeline_config):
-        """Raw audio chunks should flow through to speech_queue as AudioSegments.
+    def test_raw_audio_flows_to_windower(self, pipeline_config):
+        """Raw audio chunks should flow through SoundPreProcessor to windower.
 
-        Logic: AudioSource puts raw chunks → SoundPreProcessor processes → speech_queue gets AudioSegments.
+        Logic: AudioSource puts raw chunks → SoundPreProcessor processes → windower receives AudioSegments.
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
@@ -96,22 +97,22 @@ class TestIntegrationThreadedPipeline:
             # Give preprocessor time to process
             time.sleep(0.5)
 
-            # speech_queue should have AudioSegment
-            assert not speech_queue.empty()
-            segment = speech_queue.get(timeout=1.0)
-
-            assert isinstance(segment, AudioSegment)
-            assert segment.type == 'preliminary'
-            assert len(segment.data) > 0
+            # Windower should have received segments
+            assert mock_windower.process_segment.called or mock_windower.flush.called
+            if mock_windower.process_segment.called:
+                segment = mock_windower.process_segment.call_args[0][0]
+                assert isinstance(segment, AudioSegment)
+                assert segment.type == 'incremental'
+                assert len(segment.data) > 0
 
         finally:
             preprocessor.stop()
 
 
-    def test_both_preliminary_and_finalized_in_speech_queue(self, pipeline_config):
-        """speech_queue should contain both preliminary (from SoundPreProcessor) and finalized (from AdaptiveWindower).
+    def test_incremental_segments_in_speech_queue(self, pipeline_config):
+        """speech_queue should contain incremental segments from GrowingWindowAssembler.
 
-        Logic: Process speech → silence → both segment types appear in speech_queue.
+        Logic: Process speech → silence → incremental/flush segments appear in speech_queue.
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
@@ -129,8 +130,8 @@ class TestIntegrationThreadedPipeline:
 
         mock_vad.process_frame = Mock(side_effect=vad_side_effect)
 
-        # Real AdaptiveWindower
-        windower = AdaptiveWindower(
+        # Real GrowingWindowAssembler
+        windower = GrowingWindowAssembler(
             speech_queue=speech_queue,
             config=pipeline_config,
             verbose=False
@@ -160,7 +161,6 @@ class TestIntegrationThreadedPipeline:
             # Wait for processing
             time.sleep(0.5)
 
-            # Should have at least one preliminary segment
             segments = []
             while not speech_queue.empty():
                 try:
@@ -170,24 +170,20 @@ class TestIntegrationThreadedPipeline:
 
             assert len(segments) > 0
 
-            # Check for preliminary segments
-            preliminary_count = sum(1 for s in segments if s.type == 'preliminary')
-            assert preliminary_count > 0, "Should have preliminary segments from SoundPreProcessor"
-
-            # Note: Finalized segments may appear if windower conditions are met
+            for s in segments:
+                assert s.type in ('incremental', 'flush'), f"Unexpected segment type: {s.type}"
 
         finally:
             preprocessor.stop()
 
 
-    def test_recognizer_receives_from_speech_queue(self, pipeline_config):
-        """Recognizer should read AudioSegments from speech_queue (not chunk_queue).
+    def test_preprocessor_delegates_to_windower(self, pipeline_config):
+        """SoundPreProcessor should delegate segments to windower (not directly to speech_queue).
 
-        Logic: Verify Recognizer integration with renamed queue.
+        Logic: Verify SoundPreProcessor calls windower.process_segment() with AudioSegments.
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
-        text_queue = queue.Queue()
 
         # Mock VAD: speech then silence
         call_count = 0
@@ -207,24 +203,6 @@ class TestIntegrationThreadedPipeline:
         mock_windower.process_segment = Mock()
         mock_windower.flush = Mock()
 
-        # Mock Recognizer
-        mock_recognizer = Mock()
-        mock_recognizer_instance = Mock()
-        mock_recognizer_instance.is_running = True
-
-        def recognizer_process():
-            """Mock recognizer that reads from speech_queue."""
-            while mock_recognizer_instance.is_running:
-                try:
-                    segment = speech_queue.get(timeout=0.1)
-                    # Simulate recognition
-                    if isinstance(segment, AudioSegment):
-                        mock_recognizer_instance.segments_received.append(segment)
-                except queue.Empty:
-                    continue
-
-        mock_recognizer_instance.segments_received = []
-
         preprocessor = SoundPreProcessor(
             chunk_queue=chunk_queue,
             speech_queue=speech_queue,
@@ -235,11 +213,6 @@ class TestIntegrationThreadedPipeline:
         )
 
         preprocessor.start()
-
-        # Start mock recognizer thread
-        import threading
-        recognizer_thread = threading.Thread(target=recognizer_process, daemon=True)
-        recognizer_thread.start()
 
         try:
             # Feed chunks (3 speech + 2 silence to trigger finalization)
@@ -254,11 +227,11 @@ class TestIntegrationThreadedPipeline:
             # Wait for processing
             time.sleep(0.5)
 
-            # Mock recognizer should have received segments
-            assert len(mock_recognizer_instance.segments_received) > 0
-            assert all(isinstance(s, AudioSegment) for s in mock_recognizer_instance.segments_received)
+            # Windower should have received segments
+            assert mock_windower.process_segment.called or mock_windower.flush.called
+            for call in mock_windower.process_segment.call_args_list:
+                segment = call[0][0]
+                assert isinstance(segment, AudioSegment)
 
         finally:
-            mock_recognizer_instance.is_running = False
             preprocessor.stop()
-            recognizer_thread.join(timeout=1.0)

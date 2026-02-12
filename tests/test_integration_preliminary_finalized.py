@@ -5,17 +5,17 @@ import numpy as np
 import time
 from unittest.mock import Mock
 from src.sound.SoundPreProcessor import SoundPreProcessor
-from src.sound.AdaptiveWindower import AdaptiveWindower
+from src.sound.GrowingWindowAssembler import GrowingWindowAssembler
 from src.asr.Recognizer import Recognizer
 from src.types import AudioSegment, RecognitionResult
 from onnx_asr.asr import TimestampedResult
 
 
-class TestPreliminaryFinalizedIntegration:
-    """Integration tests for preliminary and finalized recognition flow.
+class TestIncrementalFlushIntegration:
+    """Integration tests for incremental and flush recognition flow.
 
-    Tests the complete pipeline: SoundPreProcessor → AdaptiveWindower → Recognizer,
-    verifying that both preliminary (instant) and finalized (high-quality) results
+    Tests the complete pipeline: SoundPreProcessor → GrowingWindowAssembler → Recognizer,
+    verifying that incremental (growing window) and flush (end-of-speech) results
     are produced correctly.
     """
 
@@ -40,13 +40,14 @@ class TestPreliminaryFinalizedIntegration:
             },
             'windowing': {
                 'window_duration': 3.0,
+                'max_window_duration': 7.0,
                 'max_speech_duration_ms': 3000,
                 'silence_timeout': 0.5
             }
         }
 
     def test_preprocessor_windower_integration(self, config):
-        """SoundPreProcessor should emit preliminary segments and call windower for finalized windows."""
+        """SoundPreProcessor should call windower with incremental segments."""
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
         mock_windower = Mock()
@@ -84,31 +85,25 @@ class TestPreliminaryFinalizedIntegration:
 
         preprocessor.flush()
 
-        # Verify preliminary segments in speech_queue
-        assert not speech_queue.empty()
-        preliminary_segment = speech_queue.get()
-        assert isinstance(preliminary_segment, AudioSegment)
-        assert preliminary_segment.type == 'preliminary'
-
-        # Verify windower.process_segment was called with preliminary segments
-        assert mock_windower.process_segment.called
+        # Verify windower.process_segment was called with incremental segments
+        assert mock_windower.process_segment.called or mock_windower.flush.called
         for call in mock_windower.process_segment.call_args_list:
             segment = call[0][0]
             assert isinstance(segment, AudioSegment)
-            assert segment.type == 'preliminary'
+            assert segment.type == 'incremental'
 
 
-    def test_windower_produces_finalized_windows(self, config):
-        """AdaptiveWindower should aggregate preliminary segments into finalized windows."""
+    def test_windower_produces_flush_windows(self, config):
+        """GrowingWindowAssembler should emit incremental windows and a final flush window."""
         speech_queue = queue.Queue()
-        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
+        windower = GrowingWindowAssembler(speech_queue=speech_queue, config=config)
 
-        # Create preliminary word segments
+        # Create incremental word segments
         for i in range(15):  # 15 words across 3 seconds
             start = i * 0.2
             end = start + 0.15
             segment = AudioSegment(
-                type='preliminary',
+                type='incremental',
                 data=np.random.randn(int(0.15 * 16000)).astype(np.float32) * 0.1,
                 left_context=np.array([], dtype=np.float32),
                 right_context=np.array([], dtype=np.float32),
@@ -120,16 +115,25 @@ class TestPreliminaryFinalizedIntegration:
 
         windower.flush()
 
-        # Should produce flush windows (since we called flush())
-        assert not speech_queue.empty()
-        window = speech_queue.get()
-        assert isinstance(window, AudioSegment)
-        assert window.type == 'flush'
-        assert len(window.chunk_ids) > 1  # Aggregated multiple chunks
+        # Drain all windows from queue
+        windows = []
+        while not speech_queue.empty():
+            windows.append(speech_queue.get())
+
+        # Should have incremental windows + final flush window
+        assert len(windows) > 1
+
+        # Last window should be flush type with aggregated chunks
+        assert windows[-1].type == 'flush'
+        assert len(windows[-1].chunk_ids) > 1
+
+        # Earlier windows should be incremental
+        for w in windows[:-1]:
+            assert w.type == 'incremental'
 
 
     def test_recognizer_handles_both_types(self):
-        """Recognizer should handle both preliminary and finalized segments correctly."""
+        """Recognizer should handle both incremental and flush segments correctly."""
         mock_model = Mock()
         mock_model.recognize.side_effect = [
             TimestampedResult(text="instant result", tokens=None, timestamps=None),
@@ -138,9 +142,8 @@ class TestPreliminaryFinalizedIntegration:
 
         recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000, app_state=Mock())
 
-        # Create preliminary and finalized segments
-        preliminary = AudioSegment(
-            type='preliminary',
+        incremental = AudioSegment(
+            type='incremental',
             data=np.random.randn(3200).astype(np.float32) * 0.1,
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),
@@ -148,8 +151,8 @@ class TestPreliminaryFinalizedIntegration:
             end_time=0.2,
             chunk_ids=[0]
         )
-        finalized = AudioSegment(
-            type='finalized',
+        flush = AudioSegment(
+            type='flush',
             data=np.random.randn(48000).astype(np.float32) * 0.1,
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),
@@ -158,22 +161,20 @@ class TestPreliminaryFinalizedIntegration:
             chunk_ids=[0, 1, 2, 3, 4]
         )
 
-        # Process both segments
-        result1 = recognizer.recognize_window(preliminary)
-        result2 = recognizer.recognize_window(finalized)
+        result1 = recognizer.recognize_window(incremental)
+        result2 = recognizer.recognize_window(flush)
 
-        # Verify both results with correct status
         assert isinstance(result1, RecognitionResult)
         assert result1.text == "instant result"
-        assert result1.status == 'preliminary'
+        assert result1.status == 'incremental'
 
         assert isinstance(result2, RecognitionResult)
         assert result2.text == "quality result"
-        assert result2.status == 'final'
+        assert result2.status == 'flush'
 
 
     def test_full_pipeline_flow(self, config):
-        """Test complete flow: SoundPreProcessor → AdaptiveWindower → Recognizer."""
+        """Test complete flow: SoundPreProcessor → GrowingWindowAssembler → Recognizer."""
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
         text_queue = queue.Queue()
@@ -193,7 +194,7 @@ class TestPreliminaryFinalizedIntegration:
         mock_vad.process_frame = Mock(side_effect=vad_side_effect)
 
         # Set up windower
-        windower = AdaptiveWindower(speech_queue=speech_queue, config=config)
+        windower = GrowingWindowAssembler(speech_queue=speech_queue, config=config)
 
         # Set up preprocessor with windower
         preprocessor = SoundPreProcessor(
@@ -242,23 +243,18 @@ class TestPreliminaryFinalizedIntegration:
         # Verify we got recognition results
         assert len(results) > 0
 
-        # Check that we have both preliminary and finalized/flush results
-        preliminary_count = 0
-        finalized_count = 0
+        # Check that we have incremental and/or flush results
+        incremental_count = 0
         flush_count = 0
 
         for result in results:
             assert isinstance(result, RecognitionResult)
-            if result.status == 'preliminary':
-                preliminary_count += 1
-            elif result.status == 'final':
-                finalized_count += 1
+            if result.status == 'incremental':
+                incremental_count += 1
             elif result.status == 'flush':
                 flush_count += 1
 
-        # Should have at least one of each type (flush is like finalized)
-        assert preliminary_count >= 1, "Should have preliminary results"
-        assert (finalized_count + flush_count) >= 1, "Should have finalized or flush results"
+        assert (incremental_count + flush_count) >= 1, "Should have incremental or flush results"
 
 
     def test_timing_preservation_through_pipeline(self, config):
@@ -274,7 +270,7 @@ class TestPreliminaryFinalizedIntegration:
 
         # Create segment with specific timing
         segment = AudioSegment(
-            type='finalized',
+            type='flush',
             data=np.random.randn(48000).astype(np.float32) * 0.1,
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),

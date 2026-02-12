@@ -60,7 +60,7 @@ class TestRecognizerExecutionProviders:
             right_context=np.array([], dtype=np.float32),
             start_time=0.0,
             end_time=1.0,
-            type='finalized',
+            type='flush',
             chunk_ids=[1, 2, 3]
         )
 
@@ -70,7 +70,7 @@ class TestRecognizerExecutionProviders:
         # Verify recognition worked
         assert result is not None
         assert result.text == "test speech"
-        assert result.status == "final"
+        assert result.status == "flush"
         assert mock_model.recognize.called
 
     def test_recognizer_provider_fallback(self):

@@ -69,8 +69,7 @@ class Recognizer:
            (confidence fields populated with defaults until new API integration)
 
         Maps AudioSegment.type to RecognitionResult.status:
-        - 'preliminary' → 'preliminary'
-        - 'finalized' → 'final'
+        - 'incremental' → 'incremental'
         - 'flush' → 'flush'
 
         Args:
@@ -91,8 +90,7 @@ class Recognizer:
 
         # Map AudioSegment.type to RecognitionResult.status
         status_map = {
-            'preliminary': 'preliminary',
-            'finalized': 'final',
+            'incremental': 'incremental',
             'flush': 'flush'
         }
         status = status_map[window_data.type]

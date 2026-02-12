@@ -241,12 +241,10 @@ class TestSoundPreProcessor:
         # Manually flush
         preprocessor.flush()
 
-        # Should have emitted preliminary segment
-        assert not speech_queue.empty()
-        segment = speech_queue.get()
-        assert segment.type == 'preliminary'
-
+        # flush() passes segment to windower.flush()
         assert mock_windower.flush.called
+        segment = mock_windower.flush.call_args[0][0]
+        assert segment.type == 'incremental'
 
         assert len(preprocessor.audio_state.speech_buffer) == 0
 
@@ -312,9 +310,9 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        # Check timestamps
-        assert not speech_queue.empty()
-        segment = speech_queue.get()
+        # Segment goes to windower.process_segment()
+        assert mock_windower.process_segment.called
+        segment = mock_windower.process_segment.call_args[0][0]
 
         # start_time should be the first speech chunk (not the prepended silence)
         assert segment.start_time == 1.032
@@ -422,8 +420,9 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        assert not speech_queue.empty()
-        segment = speech_queue.get()
+        # Segment goes to windower.process_segment()
+        assert mock_windower.process_segment.called
+        segment = mock_windower.process_segment.call_args[0][0]
 
         # Verify left_context contains idle_buffer minus chunks extracted to speech_buffer
         # When speech is confirmed, consecutive_chunks are extracted from idle_buffer
@@ -491,9 +490,9 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        # Segment should be emitted
-        assert not speech_queue.empty()
-        segment = speech_queue.get()
+        # Segment goes to windower.process_segment()
+        assert mock_windower.process_segment.called
+        segment = mock_windower.process_segment.call_args[0][0]
 
         # Verify data: 10 speech + 1 silence at breakpoint
         assert len(segment.data) == 11 * 512, \
@@ -556,8 +555,9 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        assert not speech_queue.empty()
-        segment = speech_queue.get()
+        # Segment goes to windower.process_segment()
+        assert mock_windower.process_segment.called
+        segment = mock_windower.process_segment.call_args[0][0]
 
         assert len(segment.left_context) == 0
 
@@ -727,8 +727,9 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        assert not speech_queue.empty()
-        segment = speech_queue.get()
+        # Segment goes to windower.process_segment()
+        assert mock_windower.process_segment.called
+        segment = mock_windower.process_segment.call_args[0][0]
 
         # Segment data: chunks 0-88 (89 chunks: 88 speech + 1 silence)
         assert len(segment.chunk_ids) == 89
@@ -778,9 +779,9 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        # Should have emitted segment
-        assert not speech_queue.empty()
-        segment = speech_queue.get()
+        # Segment goes to windower.process_segment()
+        assert mock_windower.process_segment.called
+        segment = mock_windower.process_segment.call_args[0][0]
 
         # Segment data: chunks 0-87 (88 chunks: 87 speech + 1 silence)
         assert len(segment.chunk_ids) == 88
@@ -825,8 +826,9 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        assert not speech_queue.empty()
-        segment = speech_queue.get()
+        # Segment goes to windower.process_segment()
+        assert mock_windower.process_segment.called
+        segment = mock_windower.process_segment.call_args[0][0]
 
         # Segment data: chunks 0-61
         assert len(segment.chunk_ids) == 62
@@ -876,8 +878,9 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        assert not speech_queue.empty()
-        segment = speech_queue.get()
+        # Segment goes to windower.process_segment()
+        assert mock_windower.process_segment.called
+        segment = mock_windower.process_segment.call_args[0][0]
 
         # Hard cut: all data, no right_context
         expected_data = np.concatenate(all_chunks_audio[:94])
@@ -952,8 +955,9 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        assert not speech_queue.empty()
-        segment = speech_queue.get()
+        # Segment goes to windower.process_segment()
+        assert mock_windower.process_segment.called
+        segment = mock_windower.process_segment.call_args[0][0]
 
         # Verify data: 14 chunks (all up to and including breakpoint at chunk 13)
         expected_data = np.concatenate(all_chunks_audio[:14])
@@ -1033,8 +1037,8 @@ def test_pause_state_flushes_segments():
     # Simulate state change to paused
     preprocessor.on_state_change('running', 'paused')
 
-    # Verify flush was called (segment should be in speech_queue)
-    assert not speech_queue.empty(), "flush() should emit pending segment"
+    # flush() passes segment to windower.flush()
+    assert mock_windower.flush.called, "flush() should call windower.flush()"
 
 
 def test_sound_preprocessor_shutdown_calls_flush():
@@ -1095,7 +1099,7 @@ def test_sound_preprocessor_shutdown_calls_flush():
 
     preprocessor.on_state_change('running', 'shutdown')
 
-    # Verify flush was called (segment should be in speech_queue)
-    assert not speech_queue.empty(), "stop() should call flush() to emit pending segment"
+    # flush() passes segment to windower.flush()
+    assert mock_windower.flush.called, "stop() should call flush() which calls windower.flush()"
     assert preprocessor.is_running == False
 

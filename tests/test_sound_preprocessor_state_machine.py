@@ -44,7 +44,7 @@ def mock_vad():
 
 @pytest.fixture
 def mock_windower():
-    """Mock AdaptiveWindower."""
+    """Mock GrowingWindowAssembler."""
     windower = Mock()
     return windower
 
@@ -258,11 +258,10 @@ def test_state_active_stays_active_on_max_duration(spp, mock_vad):
 
     # Verify state stayed ACTIVE_SPEECH (continuation after hard cut)
     assert spp.state == ProcessingStatesEnum.ACTIVE_SPEECH
-    assert not spp.speech_queue.empty()
     # Verify hard cut happened and new segment started
     assert len(spp.audio_state.speech_buffer) == 1
     assert spp.audio_state.speech_buffer[0]['chunk_id'] == 94
-    # Verify windower was called
+    # Verify windower was called with the segment
     assert spp.windower.process_segment.called
 
 
@@ -355,7 +354,7 @@ def test_state_accumulating_to_idle_on_threshold(spp, mock_vad):
         spp._process_chunk(chunk)
 
     assert spp.state == ProcessingStatesEnum.IDLE
-    assert not spp.speech_queue.empty()
+    assert spp.windower.process_segment.called
 
 
 # ============================================================================
@@ -431,7 +430,7 @@ def test_timeout_flush_in_idle_state(spp, mock_vad):
     # Should be in IDLE, speech_before_silence still True (not reset yet)
     assert spp.state == ProcessingStatesEnum.IDLE
     assert spp.audio_state.speech_before_silence == True
-    assert not spp.speech_queue.empty()  # Segment was emitted
+    assert spp.windower.process_segment.called
 
     # Feed silence chunks until timeout is reached (silence_timeout = 2.0s from config)
     # Need to reach last_speech_time + 2.0s

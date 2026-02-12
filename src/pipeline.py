@@ -12,11 +12,11 @@ import tkinter as tk
 from .sound.AudioSource import AudioSource
 from .sound.FileAudioSource import FileAudioSource
 from .sound.SoundPreProcessor import SoundPreProcessor
-from .sound.AdaptiveWindower import AdaptiveWindower
+from .sound.GrowingWindowAssembler import GrowingWindowAssembler
 from .asr.Recognizer import Recognizer
 from .asr.VoiceActivityDetector import VoiceActivityDetector
 from .asr.SessionOptionsFactory import SessionOptionsFactory
-from .postprocessing.TextMatcher import TextMatcher
+from .postprocessing.IncrementalTextMatcher import IncrementalTextMatcher
 from .RecognitionResultPublisher import RecognitionResultPublisher
 from .gui.TextInsertionService import TextInsertionService
 from .quickentry.QuickEntryService import QuickEntryService
@@ -110,7 +110,7 @@ class STTPipeline:
             verbose=verbose
         )
 
-        self.adaptive_windower: AdaptiveWindower = AdaptiveWindower(
+        self.growing_window_assembler: GrowingWindowAssembler = GrowingWindowAssembler(
             speech_queue=self.speech_queue,
             config=self.config,
             verbose=verbose
@@ -120,7 +120,7 @@ class STTPipeline:
             chunk_queue=self.chunk_queue,
             speech_queue=self.speech_queue,
             vad=self.vad,
-            windower=self.adaptive_windower,
+            windower=self.growing_window_assembler,
             config=self.config,
             app_state=self.app_state,
             verbose=verbose
@@ -154,8 +154,8 @@ class STTPipeline:
             verbose=verbose
         )
 
-        # Create TextMatcher with publisher (dependency injection)
-        self.text_matcher: TextMatcher = TextMatcher(
+        # Create IncrementalTextMatcher with publisher (dependency injection)
+        self.incremental_text_matcher: IncrementalTextMatcher = IncrementalTextMatcher(
             text_queue=self.text_queue,
             publisher=self.text_recognition_publisher,
             app_state=self.app_state,
@@ -180,7 +180,7 @@ class STTPipeline:
             self.audio_source,
             self.sound_preprocessor,
             self.recognizer,
-            self.text_matcher
+            self.incremental_text_matcher
         ]
 
     def _load_config(self, config_path: str) -> Dict:

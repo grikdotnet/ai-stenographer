@@ -1,5 +1,5 @@
 import logging
-from typing import List, Set, Optional, TYPE_CHECKING
+from typing import Optional, TYPE_CHECKING
 from src.types import RecognitionResult, DisplayInstructions
 from src.protocols import TextRecognitionSubscriber
 
@@ -40,19 +40,14 @@ class TextFormatter(TextRecognitionSubscriber):
         """
         self.display: 'TextDisplayWidget' = display
         self.verbose: bool = verbose
-        self.preliminary_results: List[RecognitionResult] = []
-        self.finalized_chunk_ids: Set[int] = set()
+        self.current_preliminary: Optional[RecognitionResult] = None
         self.finalized_text: str = ""
         self.last_finalized_text: str = ""
         self.last_finalized_end_time: float = 0.0
 
     # TextRecognitionSubscriber protocol implementation
     def on_partial_update(self, result: RecognitionResult) -> None:
-        """Handle preliminary recognition result (protocol method).
-
-        Args:
-            result: RecognitionResult with status='preliminary'
-        """
+        """Handle preliminary recognition result (protocol method)."""
         self.partial_update(result)
 
     def on_finalization(self, result: RecognitionResult) -> None:
@@ -84,7 +79,7 @@ class TextFormatter(TextRecognitionSubscriber):
             self.display.apply_instructions(instructions)
 
     def _calculate_partial_update(self, result: RecognitionResult) -> DisplayInstructions:
-        """Calculate instructions for partial text update.
+        """Calculate instructions for partial text update (replace semantics).
 
         Args:
             result: Preliminary RecognitionResult
@@ -92,7 +87,8 @@ class TextFormatter(TextRecognitionSubscriber):
         Returns:
             DisplayInstructions for rendering
         """
-        self.preliminary_results.append(result)
+        # Replace current preliminary (not append)
+        self.current_preliminary = result
 
         # Check for pause to add paragraph break
         if (self.last_finalized_end_time != 0
@@ -106,8 +102,8 @@ class TextFormatter(TextRecognitionSubscriber):
 
             self.finalized_text += "\n"
 
-            # Get remaining preliminary results
-            remaining = self._get_remaining_preliminary_results()
+            # Get current preliminary result (singleton)
+            remaining = [self.current_preliminary] if self.current_preliminary else []
 
             return DisplayInstructions(
                 action='rerender_all',
@@ -116,21 +112,19 @@ class TextFormatter(TextRecognitionSubscriber):
                 paragraph_break_inserted=True
             )
 
-        # Determine if space needed and pre-format the text
-        has_existing_preliminary = len(self.preliminary_results) > 1
-        text_to_display = (" " + result.text) if has_existing_preliminary else result.text
-
         # Reset last finalized text tracker because new preliminary text means no longer at boundary
         self.last_finalized_text = ""
 
         if self.verbose:
-            with_space = has_existing_preliminary
             logging.debug(f"TextFormatter: partial_update() text='{result.text}' "
-                         f"chunk_ids={_format_chunk_ids(result.chunk_ids)} with_space={with_space}")
+                         f"chunk_ids={_format_chunk_ids(result.chunk_ids)}")
 
+        # Trigger rerender_all to replace previous preliminary
+        remaining = [self.current_preliminary] if self.current_preliminary else []
         return DisplayInstructions(
-            action='update_partial',
-            text_to_append=text_to_display  # Pre-formatted with space if needed
+            action='rerender_all',
+            finalized_text=self.finalized_text,
+            preliminary_segments=remaining
         )
 
     def _calculate_finalization(self, result: RecognitionResult) -> Optional[DisplayInstructions]:
@@ -148,8 +142,6 @@ class TextFormatter(TextRecognitionSubscriber):
                 logging.debug(f"TextFormatter: duplicate finalization prevented for text='{result.text}'")
             return None
 
-        self.finalized_chunk_ids.update(result.chunk_ids)
-
         # Append to finalized text buffer
         if self.finalized_text:
             self.finalized_text += " " + result.text
@@ -165,11 +157,14 @@ class TextFormatter(TextRecognitionSubscriber):
         self.last_finalized_text = result.text
         self.last_finalized_end_time = result.end_time
 
-        # Get remaining preliminary results (filtered by chunk IDs)
-        remaining = self._get_remaining_preliminary_results()
+        # Clear current preliminary
+        self.current_preliminary = None
+
+        # No remaining preliminary after finalization
+        remaining = []
 
         if self.verbose:
-            logging.debug(f"TextFormatter: finalization() remaining_count={len(remaining)}")
+            logging.debug(f"TextFormatter: finalization() cleared preliminary")
 
         return DisplayInstructions(
             action='finalize',
@@ -177,16 +172,3 @@ class TextFormatter(TextRecognitionSubscriber):
             preliminary_segments=remaining
         )
 
-    def _get_remaining_preliminary_results(self) -> List[RecognitionResult]:
-        """Get preliminary results that haven't been finalized yet.
-
-        Filters by chunk ID overlap - if ANY chunk in result has been finalized,
-        the entire result is excluded.
-
-        Returns:
-            List of RecognitionResults not yet finalized
-        """
-        return [
-            r for r in self.preliminary_results
-            if not any(cid in self.finalized_chunk_ids for cid in r.chunk_ids)
-        ]

@@ -22,7 +22,7 @@ class TestRecognizer:
         return MagicMock()
 
     def test_recognizes_preliminary_segments(self, mock_model):
-        """Recognizer should process preliminary segments and return result with status='preliminary'."""
+        """Recognizer should process preliminary segments and return result with status='incremental'."""
         mock_model.recognize.return_value = TimestampedResult(
             text="hello world",
             tokens=None,
@@ -32,7 +32,7 @@ class TestRecognizer:
         recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000, app_state=Mock())
 
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(3200, 0.1, dtype=np.float32),
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),
@@ -47,7 +47,7 @@ class TestRecognizer:
         assert result.text == "hello world"
         assert result.start_time == 1.0
         assert result.end_time == 1.2
-        assert result.status == 'preliminary'
+        assert result.status == 'incremental'
         assert result.chunk_ids == [123]
 
     def test_recognizes_finalized_segments(self, mock_model):
@@ -62,7 +62,7 @@ class TestRecognizer:
 
         # Create finalized window
         segment = AudioSegment(
-            type='finalized',
+            type='incremental',
             data=np.full(48000, 0.1, dtype=np.float32),
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),
@@ -77,7 +77,7 @@ class TestRecognizer:
         assert result.text == "test output"
         assert result.start_time == 0.0
         assert result.end_time == 3.0
-        assert result.status == 'final'
+        assert result.status == 'incremental'
         assert result.chunk_ids == [0, 1, 2, 3, 4]  # Verify chunk_ids copied from AudioSegment
 
 
@@ -95,7 +95,7 @@ class TestRecognizer:
         results = []
         for i in range(3):
             segment = AudioSegment(
-                type='preliminary',
+                type='incremental',
                 data=np.full(3200, 0.1, dtype=np.float32),
                 left_context=np.array([], dtype=np.float32),
                 right_context=np.array([], dtype=np.float32),
@@ -126,7 +126,7 @@ class TestRecognizer:
 
         # Add preliminary and finalized segments
         preliminary = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(3200, 0.1, dtype=np.float32),
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),
@@ -135,7 +135,7 @@ class TestRecognizer:
             chunk_ids=[0]
         )
         finalized = AudioSegment(
-            type='finalized',
+            type='incremental',
             data=np.full(48000, 0.1, dtype=np.float32),
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),
@@ -171,9 +171,9 @@ class TestRecognizer:
 
         assert len(results) == 2
         assert results[0].text == "instant"
-        assert results[0].status == 'preliminary'
+        assert results[0].status == 'incremental'
         assert results[1].text == "quality"
-        assert results[1].status == 'final'
+        assert results[1].status == 'incremental'
 
 
     def test_recognizer_maps_segment_types_to_status(self, mock_model):
@@ -186,9 +186,9 @@ class TestRecognizer:
 
         recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000, app_state=Mock())
 
-        # Test mapping: type='preliminary' → status='preliminary'
+        # Test mapping: type='incremental' → status='incremental'
         preliminary_segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(3200, 0.1, dtype=np.float32),
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),
@@ -197,11 +197,11 @@ class TestRecognizer:
             chunk_ids=[0]
         )
         result = recognizer.recognize_window(preliminary_segment)
-        assert result.status == 'preliminary'
+        assert result.status == 'incremental'
 
-        # Test mapping: type='finalized' → status='final'
+        # Test mapping: type='incremental' → status='final'
         finalized_segment = AudioSegment(
-            type='finalized',
+            type='incremental',
             data=np.full(48000, 0.1, dtype=np.float32),
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),
@@ -210,7 +210,7 @@ class TestRecognizer:
             chunk_ids=[0, 1, 2]
         )
         result = recognizer.recognize_window(finalized_segment)
-        assert result.status == 'final'
+        assert result.status == 'incremental'
 
         # Test mapping: type='flush' → status='flush'
         flush_segment = AudioSegment(
@@ -256,7 +256,7 @@ class TestTimestampedRecognition:
         )
 
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(16000, 0.1, dtype=np.float32),  # 1s of data
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),
@@ -289,7 +289,7 @@ class TestTimestampedRecognition:
         )
 
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(32000, 0.1, dtype=np.float32),  # 2s of data
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),
@@ -324,7 +324,7 @@ class TestTimestampedRecognition:
         )
 
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(16000, 0.1, dtype=np.float32),  # 1.0s of data
             left_context=np.full(8000, 0.05, dtype=np.float32),  # 0.5s left context
             right_context=np.full(8000, 0.05, dtype=np.float32),  # 0.5s right context
@@ -360,7 +360,7 @@ class TestTimestampedRecognition:
         )
 
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(16000, 0.1, dtype=np.float32),  # 1.0s of data
             left_context=np.full(8000, 0.05, dtype=np.float32),  # 0.5s left
             right_context=np.full(8000, 0.05, dtype=np.float32),  # 0.5s right
@@ -392,7 +392,7 @@ class TestTimestampedRecognition:
         )
 
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(16000, 0.1, dtype=np.float32),
             left_context=np.full(8000, 0.05, dtype=np.float32),
             right_context=np.full(8000, 0.05, dtype=np.float32),
@@ -436,7 +436,7 @@ class TestTimestampedRecognition:
         right = np.full(4000, 0.3, dtype=np.float32)  # 0.25s
 
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=data,
             left_context=left,
             right_context=right,
@@ -550,7 +550,7 @@ class TestTimestampedRecognition:
         # Create segment: 0.7s left_context + 0.5s data = 1.2s total
         # data_start = 0.7s, data_end = 1.2s
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(8000, 0.1, dtype=np.float32),  # 0.5s of data (0.7-1.2)
             left_context=np.full(11200, 0.05, dtype=np.float32),  # 0.7s left context (0.0-0.7)
             right_context=np.array([], dtype=np.float32),
@@ -605,7 +605,7 @@ class TestTimestampedRecognition:
 
         # 0.7s left_context + 0.5s data
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(8000, 0.1, dtype=np.float32),  # 0.5s (0.7-1.2)
             left_context=np.full(11200, 0.05, dtype=np.float32),  # 0.7s (0.0-0.7)
             right_context=np.array([], dtype=np.float32),
@@ -643,7 +643,7 @@ class TestTimestampedRecognition:
         )
 
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(16000, 0.1, dtype=np.float32),  # 1.0s (0.0-1.0)
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),
@@ -681,7 +681,7 @@ class TestTimestampedRecognition:
         )
 
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(16000, 0.1, dtype=np.float32),  # 1.0s
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),
@@ -769,7 +769,7 @@ class TestTimestampedRecognition:
         # " test" @ 0.9s is INSIDE
         # Step 3 should include " Hi" (previous complete word before " world")
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(8000, 0.1, dtype=np.float32),  # 0.5s (0.5-1.0)
             left_context=np.full(8000, 0.05, dtype=np.float32),  # 0.5s (0.0-0.5)
             right_context=np.array([], dtype=np.float32),
@@ -813,7 +813,7 @@ class TestTimestampedRecognition:
         # " world" @ 0.6s is INSIDE (first filtered token, has space)
         # Step 3 should NOT include "lo" (lacks space prefix)
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(8000, 0.1, dtype=np.float32),  # 0.5s (0.5-1.0)
             left_context=np.full(8000, 0.05, dtype=np.float32),  # 0.5s (0.0-0.5)
             right_context=np.array([], dtype=np.float32),
@@ -855,7 +855,7 @@ class TestTimestampedRecognition:
         # " world" @ 0.9s is INSIDE
         # Step 3 should NOT include " Um" (blacklisted filler word)
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(8000, 0.1, dtype=np.float32),  # 0.5s (0.5-1.0)
             left_context=np.full(8000, 0.05, dtype=np.float32),  # 0.5s (0.0-0.5)
             right_context=np.array([], dtype=np.float32),
@@ -938,7 +938,7 @@ class TestTimestampedRecognition:
         # " world" @ 0.7s is INSIDE
         # Step 3 checks first_filtered_idx > 0, should skip gracefully
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(8000, 0.1, dtype=np.float32),  # 0.5s (0.5-1.0)
             left_context=np.full(8000, 0.05, dtype=np.float32),  # 0.5s (0.0-0.5)
             right_context=np.array([], dtype=np.float32),
@@ -1015,7 +1015,7 @@ class TestConfidenceMetrics:
         expected_rms = 0.25
 
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=audio_data,
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),
@@ -1047,7 +1047,7 @@ class TestConfidenceMetrics:
         )
 
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=np.full(16000, 0.1, dtype=np.float32),
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),
@@ -1087,7 +1087,7 @@ class TestConfidenceMetrics:
         right = np.full(8000, 0.1, dtype=np.float32)  # 0.5s, RMS=0.1
 
         segment = AudioSegment(
-            type='preliminary',
+            type='incremental',
             data=data,
             left_context=left,
             right_context=right,
