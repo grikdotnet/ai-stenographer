@@ -14,6 +14,7 @@ from .sound.FileAudioSource import FileAudioSource
 from .sound.SoundPreProcessor import SoundPreProcessor
 from .sound.GrowingWindowAssembler import GrowingWindowAssembler
 from .asr.Recognizer import Recognizer
+from .SpeechEndRouter import SpeechEndRouter
 from .asr.VoiceActivityDetector import VoiceActivityDetector
 from .asr.SessionOptionsFactory import SessionOptionsFactory
 from .postprocessing.IncrementalTextMatcher import IncrementalTextMatcher
@@ -52,8 +53,10 @@ class STTPipeline:
 
         # Create queues
         self.chunk_queue: queue.Queue = queue.Queue(maxsize=200)      # Raw audio chunks
-        self.speech_queue: queue.Queue = queue.Queue(maxsize=200)     # AudioSegments (prelim + final)
-        self.text_queue: queue.Queue = queue.Queue(maxsize=50)        # RecognitionResults
+        self.speech_queue: queue.Queue = queue.Queue(maxsize=200)               # AudioSegment | SpeechEndSignal
+        self.recognizer_queue: queue.Queue = queue.Queue(maxsize=200)           # AudioSegment
+        self.recognizer_output_queue: queue.Queue = queue.Queue(maxsize=200)    # RecognitionTextMessage | RecognizerAck
+        self.matcher_queue: queue.Queue = queue.Queue(maxsize=50)               # RecognitionResult | SpeechEndSignal
 
         self.execution_provider_manager: ExecutionProviderManager = ExecutionProviderManager(self.config)
         providers = self.execution_provider_manager.build_provider_list()
@@ -146,17 +149,26 @@ class STTPipeline:
 
         sample_rate = self.config['audio']['sample_rate']
         self.recognizer: Recognizer = Recognizer(
-            speech_queue=self.speech_queue,
-            text_queue=self.text_queue,
+            input_queue=self.recognizer_queue,
+            output_queue=self.recognizer_output_queue,
             model=self.model,
             sample_rate=sample_rate,
             app_state=self.app_state,
             verbose=verbose
         )
 
+        self.speech_end_router: SpeechEndRouter = SpeechEndRouter(
+            speech_queue=self.speech_queue,
+            recognizer_queue=self.recognizer_queue,
+            recognizer_output_queue=self.recognizer_output_queue,
+            matcher_queue=self.matcher_queue,
+            app_state=self.app_state,
+            verbose=verbose
+        )
+
         # Create IncrementalTextMatcher with publisher (dependency injection)
         self.incremental_text_matcher: IncrementalTextMatcher = IncrementalTextMatcher(
-            text_queue=self.text_queue,
+            text_queue=self.matcher_queue,
             publisher=self.text_recognition_publisher,
             app_state=self.app_state,
             verbose=verbose
@@ -179,6 +191,7 @@ class STTPipeline:
         self.components: List[Any] = [
             self.audio_source,
             self.sound_preprocessor,
+            self.speech_end_router,
             self.recognizer,
             self.incremental_text_matcher
         ]

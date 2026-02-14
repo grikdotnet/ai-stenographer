@@ -51,7 +51,7 @@ class TestRecognizerExecutionProviders:
         text_queue = queue.Queue()
 
         # Create Recognizer with mock model
-        recognizer = Recognizer(chunk_queue, text_queue, mock_model, sample_rate=16000, verbose=False, app_state=Mock())
+        recognizer = Recognizer(input_queue=chunk_queue, output_queue=text_queue, model=mock_model, sample_rate=16000, verbose=False, app_state=Mock())
 
         # Create AudioSegment with speech audio
         segment = stt_types.AudioSegment(
@@ -60,7 +60,7 @@ class TestRecognizerExecutionProviders:
             right_context=np.array([], dtype=np.float32),
             start_time=0.0,
             end_time=1.0,
-            type='flush',
+            type='incremental',
             chunk_ids=[1, 2, 3]
         )
 
@@ -70,7 +70,6 @@ class TestRecognizerExecutionProviders:
         # Verify recognition worked
         assert result is not None
         assert result.text == "test speech"
-        assert result.status == "flush"
         assert mock_model.recognize.called
 
     def test_recognizer_provider_fallback(self):

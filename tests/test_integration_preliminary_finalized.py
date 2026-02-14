@@ -7,7 +7,7 @@ from unittest.mock import Mock
 from src.sound.SoundPreProcessor import SoundPreProcessor
 from src.sound.GrowingWindowAssembler import GrowingWindowAssembler
 from src.asr.Recognizer import Recognizer
-from src.types import AudioSegment, RecognitionResult
+from src.types import AudioSegment, RecognitionResult, SpeechEndSignal
 from onnx_asr.asr import TimestampedResult
 
 
@@ -93,8 +93,8 @@ class TestIncrementalFlushIntegration:
             assert segment.type == 'incremental'
 
 
-    def test_windower_produces_flush_windows(self, config):
-        """GrowingWindowAssembler should emit incremental windows and a final flush window."""
+    def test_windower_produces_incremental_windows(self, config):
+        """GrowingWindowAssembler should emit incremental windows on flush."""
         speech_queue = queue.Queue()
         windower = GrowingWindowAssembler(speech_queue=speech_queue, config=config)
 
@@ -120,29 +120,26 @@ class TestIncrementalFlushIntegration:
         while not speech_queue.empty():
             windows.append(speech_queue.get())
 
-        # Should have incremental windows + final flush window
+        # Should have incremental windows
         assert len(windows) > 1
 
-        # Last window should be flush type with aggregated chunks
-        assert windows[-1].type == 'flush'
-        assert len(windows[-1].chunk_ids) > 1
-
-        # Earlier windows should be incremental
         for w in windows[:-1]:
             assert w.type == 'incremental'
+        assert windows[-1].type == 'incremental'
+        assert len(windows[-1].chunk_ids) > 1
 
 
-    def test_recognizer_handles_both_types(self):
-        """Recognizer should handle both incremental and flush segments correctly."""
+    def test_recognizer_handles_incremental_segments(self):
+        """Recognizer should produce RecognitionResult from incremental segments."""
         mock_model = Mock()
         mock_model.recognize.side_effect = [
             TimestampedResult(text="instant result", tokens=None, timestamps=None),
             TimestampedResult(text="quality result", tokens=None, timestamps=None)
         ]
 
-        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000, app_state=Mock())
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model, sample_rate=16000, app_state=Mock())
 
-        incremental = AudioSegment(
+        seg1 = AudioSegment(
             type='incremental',
             data=np.random.randn(3200).astype(np.float32) * 0.1,
             left_context=np.array([], dtype=np.float32),
@@ -151,8 +148,8 @@ class TestIncrementalFlushIntegration:
             end_time=0.2,
             chunk_ids=[0]
         )
-        flush = AudioSegment(
-            type='flush',
+        seg2 = AudioSegment(
+            type='incremental',
             data=np.random.randn(48000).astype(np.float32) * 0.1,
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),
@@ -161,16 +158,14 @@ class TestIncrementalFlushIntegration:
             chunk_ids=[0, 1, 2, 3, 4]
         )
 
-        result1 = recognizer.recognize_window(incremental)
-        result2 = recognizer.recognize_window(flush)
+        result1 = recognizer.recognize_window(seg1)
+        result2 = recognizer.recognize_window(seg2)
 
         assert isinstance(result1, RecognitionResult)
         assert result1.text == "instant result"
-        assert result1.status == 'incremental'
 
         assert isinstance(result2, RecognitionResult)
         assert result2.text == "quality result"
-        assert result2.status == 'flush'
 
 
     def test_full_pipeline_flow(self, config):
@@ -212,7 +207,7 @@ class TestIncrementalFlushIntegration:
             tokens=None,
             timestamps=None
         )
-        recognizer = Recognizer(speech_queue, text_queue, mock_model, sample_rate=16000, app_state=Mock())
+        recognizer = Recognizer(input_queue=speech_queue, output_queue=text_queue, model=mock_model, sample_rate=16000, app_state=Mock())
 
         # Feed raw audio chunks - use 4 seconds to ensure finalized window
         chunk_size = 512
@@ -233,9 +228,11 @@ class TestIncrementalFlushIntegration:
         while not speech_queue.empty():
             segments_to_process.append(speech_queue.get())
 
-        # Recognize each segment
+        # Recognize each audio segment (skip SpeechEndSignal boundaries)
         results = []
         for segment in segments_to_process:
+            if isinstance(segment, SpeechEndSignal):
+                continue
             result = recognizer.recognize_window(segment)
             if result is not None:
                 results.append(result)
@@ -243,18 +240,8 @@ class TestIncrementalFlushIntegration:
         # Verify we got recognition results
         assert len(results) > 0
 
-        # Check that we have incremental and/or flush results
-        incremental_count = 0
-        flush_count = 0
-
         for result in results:
             assert isinstance(result, RecognitionResult)
-            if result.status == 'incremental':
-                incremental_count += 1
-            elif result.status == 'flush':
-                flush_count += 1
-
-        assert (incremental_count + flush_count) >= 1, "Should have incremental or flush results"
 
 
     def test_timing_preservation_through_pipeline(self, config):
@@ -266,11 +253,11 @@ class TestIncrementalFlushIntegration:
             timestamps=None
         )
 
-        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000, app_state=Mock())
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model, sample_rate=16000, app_state=Mock())
 
         # Create segment with specific timing
         segment = AudioSegment(
-            type='flush',
+            type='incremental',
             data=np.random.randn(48000).astype(np.float32) * 0.1,
             left_context=np.array([], dtype=np.float32),
             right_context=np.array([], dtype=np.float32),

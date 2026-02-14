@@ -20,7 +20,7 @@ class GrowingWindowAssembler:
     - Each new segment extends the current window (emit as incremental)
     - Windows grow up to max_window_duration (e.g. 7 seconds)
     - When max duration exceeded, oldest segments are dropped (sliding)
-    - Flush emits remaining segments as type='flush'
+    - Flush emits remaining segments as incremental with right context
 
     Args:
         speech_queue: Queue to output recognition windows (AudioSegments)
@@ -64,8 +64,9 @@ class GrowingWindowAssembler:
             segment: AudioSegment from VAD (already type='incremental')
         """
         self.segments.append(segment)
+        self._validate_single_utterance()
         self._enforce_max_duration()
-        self._emit_window('incremental')
+        self._emit_window(include_right_context=False)
 
     def _enforce_max_duration(self) -> None:
         """Drop oldest segments if total duration exceeds max_window_duration."""
@@ -88,18 +89,15 @@ class GrowingWindowAssembler:
             if not self.first_segment_dropped:
                 self.first_segment_dropped = True
 
-    def _emit_window(self, window_type: str) -> None:
+    def _emit_window(self, include_right_context: bool) -> None:
         """Emit current window by concatenating all segments in buffer.
 
         Algorithm:
         1. Concatenate audio data from all segments
         2. Collect unique chunk_ids
         3. Handle left_context (only on first window)
-        4. Handle right_context (only on flush)
+        4. Handle right_context (optional at utterance boundary)
         5. Create AudioSegment and enqueue
-
-        Args:
-            window_type: Either 'incremental' or 'flush'
         """
         if not self.segments:
             return
@@ -125,24 +123,27 @@ class GrowingWindowAssembler:
 
         # Only flush windows get right_context
         right_ctx = np.array([], dtype=np.float32)
-        if window_type == 'flush':
+        if include_right_context:
             right_ctx = self.segments[-1].right_context
 
-        # Create AudioSegment with specified type
+        utterance_ids = {seg.utterance_id for seg in self.segments}
+        utterance_id = next(iter(utterance_ids))
+
         window = AudioSegment(
-            type=window_type,  # type: ignore
+            type='incremental',
             data=window_audio,
             left_context=left_ctx,
             right_context=right_ctx,
             start_time=actual_start,
             end_time=actual_end,
+            utterance_id=utterance_id,
             chunk_ids=unique_chunk_ids
         )
 
         if self.verbose:
             duration_ms = len(window_audio) / self.sample_rate * 1000
             logging.debug(
-                f"GrowingWindowAssembler: emitted {window_type} window "
+                f"GrowingWindowAssembler: emitted incremental window "
                 f"duration={duration_ms:.0f}ms, chunk_ids={_format_chunk_ids(unique_chunk_ids)}, "
                 f"samples={len(window_audio)}"
             )
@@ -161,20 +162,24 @@ class GrowingWindowAssembler:
         """
         if final_segment is not None:
             self.segments.append(final_segment)
+            self._validate_single_utterance()
 
         if not self.segments:
             self._reset_state()
             return
 
-        # Emit remaining segments as flush window
-        self._emit_window('flush')
+        # Emit remaining segments as final incremental window including right_context.
+        self._emit_window(include_right_context=True)
 
         if self.verbose:
             chunk_ids = []
             for seg in self.segments:
                 chunk_ids.extend(seg.chunk_ids)
             unique_chunk_ids = sorted(set(chunk_ids))
-            logging.debug(f"GrowingWindowAssembler.flush(): emitted flush window (chunk_ids={_format_chunk_ids(unique_chunk_ids)})")
+            logging.debug(
+                f"GrowingWindowAssembler.flush(): emitted final incremental window "
+                f"(chunk_ids={_format_chunk_ids(unique_chunk_ids)})"
+            )
 
         # Reset state for next speech sequence
         self._reset_state()
@@ -183,3 +188,11 @@ class GrowingWindowAssembler:
         """Reset assembler state for next speech sequence."""
         self.segments = []
         self.first_segment_dropped = False
+
+    def _validate_single_utterance(self) -> None:
+        """Guard against mixing utterance IDs in one growing window."""
+        utterance_ids = {seg.utterance_id for seg in self.segments}
+        if len(utterance_ids) > 1:
+            raise ValueError(
+                f"GrowingWindowAssembler cannot mix utterance IDs in one window: {sorted(utterance_ids)}"
+            )

@@ -6,6 +6,13 @@ The Speech-to-Text pipeline is a multi-threaded, queue-based architecture that p
 
 Application state management with pause/resume functionality is handled through an observer pattern, allowing components to react independently to state changes.
 
+## Router Protocol Overview
+
+`SpeechEndRouter` mediates flow between `SoundPreProcessor`, `Recognizer`, and `IncrementalTextMatcher`.
+It enforces one in-flight `AudioSegment` at a time, assigns monotonic `message_id` values, forwards
+`RecognitionTextMessage` payloads to matcher input, and unblocks on terminal `RecognizerAck`.
+`SpeechEndSignal` boundaries are held until all in-flight audio for that utterance is acknowledged.
+
 ---
 
 ## Module Organization
@@ -198,23 +205,16 @@ Microphone Input (16kHz, mono)
 │    ├─→ Parakeet ONNX Model (nemo-parakeet-tdt-0.6b-v3)                 │
 │    │     └─→ audio + context → text recognition with timestamps         │
 │    │                                                                      │
-│    └─→ Creates RecognitionResult                                        │
-│          └─→ text: str (filtered)                                       │
-│          └─→ status: 'preliminary' | 'final' | 'flush'                  │
-│          └─→ start_time, end_time: float                                │
-│          └─→ chunk_ids: list[int]                                       │
+│    └─→ Emits protocol messages                                           │
+│          └─→ RecognitionTextMessage(result, message_id)                 │
+│          └─→ RecognizerAck(message_id, ok/error)                        │
 └──────────────────────────────────────────────────────────────────────────┘
         │
-        ├─ RecognitionResult (dataclass)
+        ├─ RecognitionTextMessage / RecognizerAck
         ↓
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  Queue: text_queue (maxsize=50)                                          │
-│  Data Type: RecognitionResult (dataclass)                                │
-│    - text: str                                                           │
-│    - start_time: float                                                   │
-│    - end_time: float                                                     │
-│    - status: 'preliminary' | 'final' | 'flush'                           │
-│    - chunk_ids: list[int]                                                │
+│  Queue: recognizer_output_queue (maxsize=50)                             │
+│  Data Type: RecognitionTextMessage | RecognizerAck                       │
 └──────────────────────────────────────────────────────────────────────────┘
         │
         ↓
@@ -224,10 +224,10 @@ Microphone Input (16kHz, mono)
 ├──────────────────────────────────────────────────────────────────────────┤
 │  TextMatcher.process()                                                   │
 │    ├─→ text_queue.get(timeout=0.1)                                      │
-│    ├─→ Routes based on status field:                                    │
+│    ├─→ Routes by message type:                                          │
 │    │                                                                      │
-│    ├─ PRELIMINARY PATH (silence-bounded segments with context):         │
-│    │   └─→ process_text()                                               │
+│    ├─ TEXT PATH (recognition messages):                                 │
+│    │   └─→ process_item()                                               │
 │    │       └─→ publisher.publish_partial_update(result)  [publishes]    │
 │    │           └─→ RecognitionResultPublisher notifies subscribers      │
 │    │               └─→ TextFormatter.on_partial_update(result)          │
@@ -248,8 +248,8 @@ Microphone Input (16kHz, mono)
 │    │                       └─→ display.apply_instructions(instructions) │
 │    │                           └─→ Thread-safe: schedules on main thread│
 │    │                                                                      │
-│    └─ FLUSH PATH (end of speech segment):                               │
-│        └─→ process_flush()                                              │
+│    └─ BOUNDARY PATH (SpeechEndSignal):                                  │
+│        └─→ process_speech_end()                                         │
 │            └─→ publisher.publish_finalization(pending_result)           │
 │                                                                           │
 │  TextMatcher.finalize_pending()                                          │
@@ -420,7 +420,6 @@ class RecognitionResult:
     text: str                    # Recognized text (tokens filtered by timestamp)
     start_time: float            # Recognition start
     end_time: float              # Recognition end
-    status: Literal['preliminary', 'final', 'flush']  # Type discriminator
     chunk_ids: list[int]         # Tracking IDs from AudioSegment
 ```
 
@@ -466,10 +465,9 @@ AudioSegment (preliminary)
                 ↓
         RecognitionResult
           └─→ text: "hello world"
-          └─→ status: 'preliminary' | 'final' | 'flush'
           └─→ chunk_ids: [42, 43, 44]
                 │
-                ↓ text_queue
+                ↓ matcher_queue (via router)
                 │
         TextMatcher
           ├─→ Preliminary: publish_partial_update()
@@ -595,7 +593,7 @@ Uses **Strategy Pattern** for hardware-specific ONNX Runtime optimizations.
 - Benefits: Better short-word recognition (50-128ms), eliminates silence padding artifacts
 
 **Input:** AudioSegments from `speech_queue`
-**Output:** RecognitionResults (`status`: preliminary/final/flush) → `text_queue`
+**Output:** `RecognitionTextMessage` + terminal `RecognizerAck` via recognizer output queue
 
 ### 5. TextMatcher
 
@@ -604,7 +602,7 @@ Uses **Strategy Pattern** for hardware-specific ONNX Runtime optimizations.
 **Key Features:**
 - Overlap resolution using normalized text matching and longest common subsequence
 - Duplicate detection (0.6s time threshold, normalized text comparison)
-- Routes by status: preliminary → `publish_partial_update()`, final/flush → `publish_finalization()`
+- Routes by message type: `RecognitionResult` overlap handling and `SpeechEndSignal` boundary finalization
 
 **Input:** RecognitionResults from `text_queue`
 **Output:** Publishes to `RecognitionResultPublisher` → notifies all subscribers
@@ -755,4 +753,3 @@ This architecture provides:
 - Error isolation: subscriber exceptions don't affect others
 - Enables multiple output targets (GUI, API, voice input) from single pipeline
 - Open for extension: add new subscribers without modifying existing code
-

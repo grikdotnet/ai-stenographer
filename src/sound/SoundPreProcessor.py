@@ -14,7 +14,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Dict, Any, TYPE_CHECKING, Optional
-from ..types import AudioSegment
+from ..types import AudioSegment, SpeechEndSignal
 
 if TYPE_CHECKING:
     from src.asr.VoiceActivityDetector import VoiceActivityDetector
@@ -66,6 +66,9 @@ class AudioProcessingState:
     state: ProcessingStatesEnum = ProcessingStatesEnum.IDLE
     consecutive_speech_count: int = 0
     chunk_id_counter: int = 0
+    utterance_id_counter: int = 0
+    current_utterance_id: int | None = None
+    utterance_open: bool = False
 
     # Buffering - idle_buffer maxlen=20 (~640ms at 32ms/chunk)
     speech_buffer: list[dict[str, Any]] = field(default_factory=list)
@@ -276,6 +279,7 @@ class SoundPreProcessor:
                         if self.verbose:
                             logging.debug(f"SoundPreProcessor: silence_timeout reached ({silence_duration:.2f}s)")
                         self.windower.flush()
+                        self._emit_speech_end_if_open(end_time=s.last_speech_timestamp)
                         s.speech_before_silence = False
 
             case ProcessingStatesEnum.WAITING_CONFIRMATION:
@@ -287,6 +291,7 @@ class SoundPreProcessor:
                     if s.consecutive_speech_count >= self.CONSECUTIVE_SPEECH_CHUNKS:
                         # WAITING_CONFIRMATION → ACTIVE_SPEECH
                         self.state = ProcessingStatesEnum.ACTIVE_SPEECH
+                        self._start_new_utterance()
 
                         # Extract confirmation chunks from idle_buffer
                         if len(s.idle_buffer) >= self.CONSECUTIVE_SPEECH_CHUNKS:
@@ -362,6 +367,10 @@ class SoundPreProcessor:
                         segment = self._build_audio_segment(breakpoint_idx=s.silence_start_idx)
                         self.windower.process_segment(segment)
                         self._reset_segment_state()
+                        self._emit_speech_end_if_open(end_time=segment.end_time)
+
+                        # Reset windower state to prevent mixing utterance IDs
+                        self.windower.flush()
 
                         self.state = ProcessingStatesEnum.IDLE
                         s.consecutive_speech_count = 0
@@ -541,6 +550,7 @@ class SoundPreProcessor:
             right_context=right_context,
             start_time=s.speech_start_time,
             end_time=end_time,
+            utterance_id=s.current_utterance_id if s.current_utterance_id is not None else 0,
             chunk_ids=chunk_ids
         )
 
@@ -652,11 +662,43 @@ class SoundPreProcessor:
             self.windower.flush(segment)  # Process and flush in one call
             self._reset_segment_state()
             self.state = ProcessingStatesEnum.IDLE
+            self._emit_speech_end_if_open(end_time=segment.end_time)
         else:
             self.windower.flush()
+            self._emit_speech_end_if_open(end_time=s.last_speech_timestamp)
 
         if self.verbose:
             logging.debug("SoundPreProcessor: flush()")
+
+    def _start_new_utterance(self) -> None:
+        """Create a new utterance identity when speech is confirmed."""
+        s = self.audio_state
+        s.utterance_id_counter += 1
+        s.current_utterance_id = s.utterance_id_counter
+        s.utterance_open = True
+
+    def _emit_speech_end_if_open(self, end_time: float) -> None:
+        """Emit speech-end boundary only when an utterance is currently open."""
+        s = self.audio_state
+        if not s.utterance_open or s.current_utterance_id is None:
+            return
+
+        boundary = SpeechEndSignal(
+            utterance_id=s.current_utterance_id,
+            end_time=end_time
+        )
+        try:
+            self.speech_queue.put_nowait(boundary)
+        except queue.Full:
+            self.dropped_segments += 1
+            if self.verbose:
+                logging.warning(
+                    f"SoundPreProcessor: speech_queue full, dropped boundary "
+                    f"(total drops: {self.dropped_segments})"
+                )
+
+        s.utterance_open = False
+        s.current_utterance_id = None
 
     def on_state_change(self, old_state: str, new_state: str) -> None:
         """

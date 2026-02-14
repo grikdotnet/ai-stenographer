@@ -8,13 +8,12 @@ from src.types import RecognitionResult
 class TestQuickEntrySubscriber:
     """Test QuickEntrySubscriber text accumulation behavior."""
 
-    def _make_result(self, text: str, status: str = 'final') -> RecognitionResult:
+    def _make_result(self, text: str) -> RecognitionResult:
         """Create a RecognitionResult for testing."""
         return RecognitionResult(
             text=text,
             start_time=0.0,
             end_time=1.0,
-            status=status,
             chunk_ids=[1]
         )
 
@@ -53,8 +52,8 @@ class TestQuickEntrySubscriber:
         callback = MagicMock()
         subscriber = QuickEntrySubscriber(on_text_change=callback)
 
-        subscriber.on_partial_update(self._make_result("hello", "preliminary"))
-        subscriber.on_finalization(self._make_result("hello", "final"))
+        subscriber.on_partial_update(self._make_result("hello"))
+        subscriber.on_finalization(self._make_result("hello"))
 
         callback.assert_not_called()
         assert subscriber.get_accumulated_text() == ""
@@ -67,7 +66,7 @@ class TestQuickEntrySubscriber:
         subscriber = QuickEntrySubscriber(on_text_change=callback)
         subscriber.activate()
 
-        subscriber.on_finalization(self._make_result("hello", "final"))
+        subscriber.on_finalization(self._make_result("hello"))
 
         assert subscriber.get_accumulated_text() == "hello"
         callback.assert_called_with("hello", "")
@@ -79,8 +78,8 @@ class TestQuickEntrySubscriber:
         subscriber = QuickEntrySubscriber(on_text_change=lambda f, p: None)
         subscriber.activate()
 
-        subscriber.on_finalization(self._make_result("hello", "final"))
-        subscriber.on_finalization(self._make_result("world", "final"))
+        subscriber.on_finalization(self._make_result("hello"))
+        subscriber.on_finalization(self._make_result("world"))
 
         assert subscriber.get_accumulated_text() == "hello world"
 
@@ -92,7 +91,7 @@ class TestQuickEntrySubscriber:
         subscriber = QuickEntrySubscriber(on_text_change=callback)
         subscriber.activate()
 
-        subscriber.on_partial_update(self._make_result("hel", "preliminary"))
+        subscriber.on_partial_update(self._make_result("hel"))
 
         callback.assert_called_with("", "hel")
 
@@ -103,8 +102,8 @@ class TestQuickEntrySubscriber:
         subscriber = QuickEntrySubscriber(on_text_change=lambda f, p: None)
         subscriber.activate()
 
-        subscriber.on_finalization(self._make_result("hello", "final"))
-        subscriber.on_partial_update(self._make_result("wor", "preliminary"))
+        subscriber.on_finalization(self._make_result("hello"))
+        subscriber.on_partial_update(self._make_result("wor"))
 
         assert subscriber.get_display_text() == "hello wor"
 
@@ -116,8 +115,8 @@ class TestQuickEntrySubscriber:
         subscriber = QuickEntrySubscriber(on_text_change=callback)
         subscriber.activate()
 
-        subscriber.on_partial_update(self._make_result("hel", "preliminary"))
-        subscriber.on_finalization(self._make_result("hello", "final"))
+        subscriber.on_partial_update(self._make_result("hel"))
+        subscriber.on_finalization(self._make_result("hello"))
 
         # Last call should have empty partial
         callback.assert_called_with("hello", "")
@@ -128,7 +127,7 @@ class TestQuickEntrySubscriber:
 
         subscriber = QuickEntrySubscriber(on_text_change=lambda f, p: None)
         subscriber.activate()
-        subscriber.on_finalization(self._make_result("old text", "final"))
+        subscriber.on_finalization(self._make_result("old text"))
         subscriber.deactivate()
 
         subscriber.activate()
@@ -148,7 +147,7 @@ class TestQuickEntrySubscriber:
         def writer():
             try:
                 for i in range(100):
-                    subscriber.on_finalization(self._make_result(f"word{i}", "final"))
+                    subscriber.on_finalization(self._make_result(f"word{i}"))
             except Exception as e:
                 errors.append(e)
 
@@ -180,6 +179,6 @@ class TestQuickEntrySubscriber:
         subscriber = QuickEntrySubscriber(on_text_change=lambda f, p: None)
         subscriber.activate()
 
-        subscriber.on_finalization(self._make_result("hello", "flush"))
+        subscriber.on_finalization(self._make_result("hello"))
 
         assert subscriber.get_accumulated_text() == "hello"

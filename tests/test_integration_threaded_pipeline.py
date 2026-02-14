@@ -8,7 +8,7 @@ from src.sound.AudioSource import AudioSource
 from src.sound.SoundPreProcessor import SoundPreProcessor
 from src.asr.VoiceActivityDetector import VoiceActivityDetector
 from src.sound.GrowingWindowAssembler import GrowingWindowAssembler
-from src.types import AudioSegment
+from src.types import AudioSegment, SpeechEndSignal
 
 
 class TestIntegrationThreadedPipeline:
@@ -171,7 +171,10 @@ class TestIntegrationThreadedPipeline:
             assert len(segments) > 0
 
             for s in segments:
-                assert s.type in ('incremental', 'flush'), f"Unexpected segment type: {s.type}"
+                if isinstance(s, AudioSegment):
+                    assert s.type == 'incremental'
+                    continue
+                assert isinstance(s, SpeechEndSignal)
 
         finally:
             preprocessor.stop()

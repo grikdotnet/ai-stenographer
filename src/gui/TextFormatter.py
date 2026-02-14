@@ -54,7 +54,7 @@ class TextFormatter(TextRecognitionSubscriber):
         """Handle finalized recognition result (protocol method).
 
         Args:
-            result: RecognitionResult with status='final' or 'flush'
+            result: Finalized RecognitionResult
         """
         self.finalization(result)
 

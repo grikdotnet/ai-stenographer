@@ -5,7 +5,7 @@ import time
 import numpy as np
 from unittest.mock import MagicMock, Mock
 from src.asr.Recognizer import Recognizer
-from src.types import AudioSegment, RecognitionResult
+from src.types import AudioSegment, RecognitionResult, RecognitionTextMessage, RecognizerAck
 from onnx_asr.asr import TimestampedResult
 
 
@@ -22,14 +22,14 @@ class TestRecognizer:
         return MagicMock()
 
     def test_recognizes_preliminary_segments(self, mock_model):
-        """Recognizer should process preliminary segments and return result with status='incremental'."""
+        """Recognizer should process preliminary segments."""
         mock_model.recognize.return_value = TimestampedResult(
             text="hello world",
             tokens=None,
             timestamps=None
         )
 
-        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000, app_state=Mock())
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model, sample_rate=16000, app_state=Mock())
 
         segment = AudioSegment(
             type='incremental',
@@ -47,18 +47,17 @@ class TestRecognizer:
         assert result.text == "hello world"
         assert result.start_time == 1.0
         assert result.end_time == 1.2
-        assert result.status == 'incremental'
         assert result.chunk_ids == [123]
 
     def test_recognizes_finalized_segments(self, mock_model):
-        """Recognizer should process finalized segments and return result with status='final'."""
+        """Recognizer should process larger segments."""
         mock_model.recognize.return_value = TimestampedResult(
             text="test output",
             tokens=None,
             timestamps=None
         )
 
-        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000, app_state=Mock())
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model, sample_rate=16000, app_state=Mock())
 
         # Create finalized window
         segment = AudioSegment(
@@ -77,7 +76,6 @@ class TestRecognizer:
         assert result.text == "test output"
         assert result.start_time == 0.0
         assert result.end_time == 3.0
-        assert result.status == 'incremental'
         assert result.chunk_ids == [0, 1, 2, 3, 4]  # Verify chunk_ids copied from AudioSegment
 
 
@@ -89,7 +87,7 @@ class TestRecognizer:
             TimestampedResult(text="world", tokens=None, timestamps=None)
         ]
 
-        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000, app_state=Mock())
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model, sample_rate=16000, app_state=Mock())
 
         # Process three segments
         results = []
@@ -122,7 +120,7 @@ class TestRecognizer:
 
         speech_queue = queue.Queue()
         text_queue = queue.Queue()
-        recognizer = Recognizer(speech_queue, text_queue, mock_model, sample_rate=16000, app_state=Mock())
+        recognizer = Recognizer(input_queue=speech_queue, output_queue=text_queue, model=mock_model, sample_rate=16000, app_state=Mock())
 
         # Add preliminary and finalized segments
         preliminary = AudioSegment(
@@ -132,7 +130,8 @@ class TestRecognizer:
             right_context=np.array([], dtype=np.float32),
             start_time=1.0,
             end_time=1.2,
-            chunk_ids=[0]
+            chunk_ids=[0],
+            message_id=1,
         )
         finalized = AudioSegment(
             type='incremental',
@@ -141,7 +140,8 @@ class TestRecognizer:
             right_context=np.array([], dtype=np.float32),
             start_time=0.0,
             end_time=3.0,
-            chunk_ids=[0, 1, 2]
+            chunk_ids=[0, 1, 2],
+            message_id=2,
         )
 
         speech_queue.put(preliminary)
@@ -149,7 +149,7 @@ class TestRecognizer:
 
         # Run process() with controlled execution
         recognizer.is_running = True
-        original_get = recognizer.speech_queue.get
+        original_get = recognizer.input_queue.get
         call_count = 0
 
         def mock_get(*args, **kwargs):
@@ -161,69 +161,20 @@ class TestRecognizer:
                 recognizer.is_running = False
                 raise queue.Empty()
 
-        recognizer.speech_queue.get = mock_get
+        recognizer.input_queue.get = mock_get
         recognizer.process()
 
-        # Verify both results with correct status values
-        results = []
+        messages = []
         while not text_queue.empty():
-            results.append(text_queue.get())
+            messages.append(text_queue.get())
 
-        assert len(results) == 2
-        assert results[0].text == "instant"
-        assert results[0].status == 'incremental'
-        assert results[1].text == "quality"
-        assert results[1].status == 'incremental'
+        text_messages = [m for m in messages if isinstance(m, RecognitionTextMessage)]
+        ack_messages = [m for m in messages if isinstance(m, RecognizerAck)]
 
-
-    def test_recognizer_maps_segment_types_to_status(self, mock_model):
-        """Recognizer should map AudioSegment.type to RecognitionResult.status."""
-        mock_model.recognize.return_value = TimestampedResult(
-            text="test",
-            tokens=None,
-            timestamps=None
-        )
-
-        recognizer = Recognizer(queue.Queue(), queue.Queue(), mock_model, sample_rate=16000, app_state=Mock())
-
-        # Test mapping: type='incremental' → status='incremental'
-        preliminary_segment = AudioSegment(
-            type='incremental',
-            data=np.full(3200, 0.1, dtype=np.float32),
-            left_context=np.array([], dtype=np.float32),
-            right_context=np.array([], dtype=np.float32),
-            start_time=1.0,
-            end_time=1.2,
-            chunk_ids=[0]
-        )
-        result = recognizer.recognize_window(preliminary_segment)
-        assert result.status == 'incremental'
-
-        # Test mapping: type='incremental' → status='final'
-        finalized_segment = AudioSegment(
-            type='incremental',
-            data=np.full(48000, 0.1, dtype=np.float32),
-            left_context=np.array([], dtype=np.float32),
-            right_context=np.array([], dtype=np.float32),
-            start_time=0.0,
-            end_time=3.0,
-            chunk_ids=[0, 1, 2]
-        )
-        result = recognizer.recognize_window(finalized_segment)
-        assert result.status == 'incremental'
-
-        # Test mapping: type='flush' → status='flush'
-        flush_segment = AudioSegment(
-            type='flush',
-            data=np.full(16000, 0.1, dtype=np.float32),
-            left_context=np.array([], dtype=np.float32),
-            right_context=np.array([], dtype=np.float32),
-            start_time=2.0,
-            end_time=3.0,
-            chunk_ids=[5]
-        )
-        result = recognizer.recognize_window(flush_segment)
-        assert result.status == 'flush'
+        assert len(text_messages) == 2
+        assert text_messages[0].result.text == "instant"
+        assert text_messages[1].result.text == "quality"
+        assert len(ack_messages) == 2
 
 
 class TestTimestampedRecognition:
@@ -247,13 +198,7 @@ class TestTimestampedRecognition:
             timestamps=[0.5, 1.0]
         )
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         segment = AudioSegment(
             type='incremental',
@@ -280,13 +225,7 @@ class TestTimestampedRecognition:
             timestamps=[0.5, 1.0]  # Both within data region
         )
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         segment = AudioSegment(
             type='incremental',
@@ -315,13 +254,7 @@ class TestTimestampedRecognition:
             timestamps=[0.1, 0.8, 1.7, 1.75, 1.8]
         )
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         segment = AudioSegment(
             type='incremental',
@@ -351,13 +284,7 @@ class TestTimestampedRecognition:
             timestamps=[0.1, 1.9, 1.95, 2.0]  # All in context regions
         )
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         segment = AudioSegment(
             type='incremental',
@@ -383,13 +310,7 @@ class TestTimestampedRecognition:
             timestamps=None
         )
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         segment = AudioSegment(
             type='incremental',
@@ -423,13 +344,7 @@ class TestTimestampedRecognition:
 
         timestamped_mock_model.recognize.side_effect = capture_audio
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         left = np.full(4000, 0.1, dtype=np.float32)   # 0.25s
         data = np.full(8000, 0.2, dtype=np.float32)   # 0.5s
@@ -459,13 +374,7 @@ class TestTimestampedRecognition:
 
     def test_filter_tokens_with_confidence_method(self, timestamped_mock_model):
         """Unit test for _filter_tokens_with_confidence() method."""
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         # Test case: tokens with various timestamps (no confidence data available)
         text = "yeah hello world mm-hmm"
@@ -492,13 +401,7 @@ class TestTimestampedRecognition:
 
     def test_filter_tokens_empty_tokens(self, timestamped_mock_model):
         """_filter_tokens_with_confidence should handle empty token lists."""
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         # Empty tokens - should return full text with empty confidences (fallback)
         filtered_text, filtered_confidences = recognizer._filter_tokens_with_confidence(
@@ -539,13 +442,7 @@ class TestTimestampedRecognition:
             timestamps=[0.5, 0.6, 0.80, 1.00]
         )
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         # Create segment: 0.7s left_context + 0.5s data = 1.2s total
         # data_start = 0.7s, data_end = 1.2s
@@ -595,13 +492,7 @@ class TestTimestampedRecognition:
             timestamps=[0.5, 0.6, 0.80, 0.85, 1.00]
         )
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         # 0.7s left_context + 0.5s data
         segment = AudioSegment(
@@ -634,13 +525,7 @@ class TestTimestampedRecognition:
             timestamps=[0.3, 0.6, 0.9]
         )
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         segment = AudioSegment(
             type='incremental',
@@ -672,13 +557,7 @@ class TestTimestampedRecognition:
             timestamps=[0.3, 0.6]
         )
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         segment = AudioSegment(
             type='incremental',
@@ -704,13 +583,7 @@ class TestTimestampedRecognition:
         " O" @ 0.6s is OUTSIDE, but should be included via backtracking
         Confidence for " O" (0.85) should be prepended to filtered_confidences
         """
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         # Direct test of _filter_tokens_with_confidence method
         # Tokens: " Hello" @ 0.5, " O" @ 0.6, "ne" @ 0.80, " world" @ 1.00
@@ -755,13 +628,7 @@ class TestTimestampedRecognition:
             timestamps=[0.4, 0.6, 0.9]
         )
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         # Data region: 0.5s to 1.0s
         # " Hi" @ 0.4s is OUTSIDE (< data_start)
@@ -799,13 +666,7 @@ class TestTimestampedRecognition:
             timestamps=[0.2, 0.4, 0.6]
         )
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         # Data region: 0.5s to 1.0s
         # " Hel" @ 0.2s is OUTSIDE
@@ -841,13 +702,7 @@ class TestTimestampedRecognition:
             timestamps=[0.4, 0.6, 0.9]
         )
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         # Data region: 0.5s to 1.0s
         # " Um" @ 0.4s is OUTSIDE (< data_start)
@@ -878,13 +733,7 @@ class TestTimestampedRecognition:
 
         Scenario: Verify confidence scores align correctly when Step 3 includes previous word.
         """
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         # Tokens: " Hi" @ 0.4, " world" @ 0.6
         # Confidences: 0.95, 0.88
@@ -925,13 +774,7 @@ class TestTimestampedRecognition:
             timestamps=[0.5, 0.7]
         )
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            timestamped_mock_model,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
         # Data region: 0.5s to 1.0s
         # " Hello" @ 0.5s is INSIDE (first token, no previous)
@@ -969,12 +812,7 @@ class TestConfidenceMetrics:
 
     def test_recognition_result_has_audio_rms_field(self, mock_model_with_confidence):
         """RecognitionResult should have audio_rms field with default value 0.0."""
-        result = RecognitionResult(
-            text="test",
-            start_time=0.0,
-            end_time=1.0,
-            status='final'
-        )
+        result = RecognitionResult(text="test", start_time=0.0, end_time=1.0)
 
         assert hasattr(result, 'audio_rms')
         assert result.audio_rms == 0.0
@@ -982,12 +820,7 @@ class TestConfidenceMetrics:
 
     def test_recognition_result_has_confidence_variance_field(self, mock_model_with_confidence):
         """RecognitionResult should have confidence_variance field with default value 0.0."""
-        result = RecognitionResult(
-            text="test",
-            start_time=0.0,
-            end_time=1.0,
-            status='final'
-        )
+        result = RecognitionResult(text="test", start_time=0.0, end_time=1.0)
 
         assert hasattr(result, 'confidence_variance')
         assert result.confidence_variance == 0.0
@@ -1001,13 +834,7 @@ class TestConfidenceMetrics:
             timestamps=[0.5]
         )
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            mock_model_with_confidence,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model_with_confidence, sample_rate=16000, app_state=Mock())
 
         # Create segment with known RMS value
         # RMS of constant array is the absolute value
@@ -1038,13 +865,7 @@ class TestConfidenceMetrics:
             timestamps=[0.3, 0.7]
         )
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            mock_model_with_confidence,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model_with_confidence, sample_rate=16000, app_state=Mock())
 
         segment = AudioSegment(
             type='incremental',
@@ -1073,13 +894,7 @@ class TestConfidenceMetrics:
             timestamps=[0.1, 0.6, 1.7]  # Only "hello" in data region
         )
 
-        recognizer = Recognizer(
-            queue.Queue(),
-            queue.Queue(),
-            mock_model_with_confidence,
-            sample_rate=16000,
-            app_state=Mock()
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model_with_confidence, sample_rate=16000, app_state=Mock())
 
         # Create segment with distinct RMS values in different regions
         data = np.full(16000, 0.3, dtype=np.float32)  # 1s, RMS=0.3
@@ -1130,12 +945,7 @@ class TestRecognizerObserverPattern:
         Logic: Recognizer.__init__(app_state=...) should call
                app_state.register_component_observer()
         """
-        recognizer = Recognizer(
-            speech_queue=queue.Queue(),
-            text_queue=queue.Queue(),
-            model=mock_model,
-            app_state=mock_app_state
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model, app_state=mock_app_state)
 
         mock_app_state.register_component_observer.assert_called_once()
         # Verify callback is the on_state_change method
@@ -1147,12 +957,7 @@ class TestRecognizerObserverPattern:
 
         Logic: on_state_change(_, 'shutdown') should set is_running=False.
         """
-        recognizer = Recognizer(
-            speech_queue=queue.Queue(),
-            text_queue=queue.Queue(),
-            model=mock_model,
-            app_state=mock_app_state
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model, app_state=mock_app_state)
 
         recognizer.is_running = True
         recognizer.on_state_change('running', 'shutdown')
@@ -1164,12 +969,7 @@ class TestRecognizerObserverPattern:
 
         Logic: stop() should check if already stopped and avoid duplicate cleanup.
         """
-        recognizer = Recognizer(
-            speech_queue=queue.Queue(),
-            text_queue=queue.Queue(),
-            model=mock_model,
-            app_state=mock_app_state
-        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model, app_state=mock_app_state)
 
         recognizer.start()
         recognizer.stop()

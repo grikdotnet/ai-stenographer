@@ -3,8 +3,14 @@ import queue
 import threading
 import logging
 import numpy as np
-from typing import Any, Optional, TYPE_CHECKING
-from ..types import ChunkQueueItem, RecognitionResult
+from typing import Optional, TYPE_CHECKING
+from ..types import (
+    AudioSegment,
+    RecognitionResult,
+    RecognitionTextMessage,
+    RecognizerAck,
+    RecognizerOutputItem,
+)
 
 if TYPE_CHECKING:
     from onnx_asr.adapters import TimestampedResultsAsrAdapter
@@ -17,7 +23,7 @@ def _format_chunk_ids(chunk_ids: list) -> str:
 
 
 class Recognizer:
-    """Pure speech recognition: AudioSegment → RecognitionResult
+    """Pure speech recognition: AudioSegment -> recognizer output protocol.
 
     Single Responsibility: Convert audio to text using STT model.
     Does not handle silence detection or text finalization logic.
@@ -26,8 +32,8 @@ class Recognizer:
     Components can be stopped via observer notification.
 
     Args:
-        speech_queue: Queue to read AudioSegment instances from (both preliminary and finalized)
-        text_queue: Queue to write RecognitionResult instances to
+        input_queue: Queue to read AudioSegment instances from
+        output_queue: Queue to write RecognitionTextMessage/RecognizerAck
         model: Pre-loaded speech recognition model with recognize() method (timestamped)
         sample_rate: Audio sample rate in Hz (default: 16000)
         app_state: ApplicationState for observer pattern (REQUIRED)
@@ -37,15 +43,21 @@ class Recognizer:
     # Filler words to exclude when including previous complete word before data_start
     FILLER_WORDS = {' um', ' oh', ' uh', ' ah'}
 
-    def __init__(self, speech_queue: queue.Queue,
-                 text_queue: queue.Queue,
-                 model: "TimestampedResultsAsrAdapter",
+    def __init__(self,
+                 *,
+                 model: Optional["TimestampedResultsAsrAdapter"] = None,
+                 input_queue: queue.Queue | None = None,
+                 output_queue: queue.Queue | None = None,
                  sample_rate: int = 16000,
                  app_state: 'ApplicationState' = None,
-                 verbose: bool = False
+                 verbose: bool = False,
                  ) -> None:
-        self.speech_queue: queue.Queue = speech_queue
-        self.text_queue: queue.Queue = text_queue
+        self.input_queue: queue.Queue = input_queue
+        self.output_queue: queue.Queue = output_queue
+        if model is None:
+            raise ValueError("Recognizer requires model")
+        if self.input_queue is None or self.output_queue is None:
+            raise ValueError("Recognizer requires input/output queues")
         self.model: "TimestampedResultsAsrAdapter" = model
         self.sample_rate: int = sample_rate
         self.is_running: bool = False
@@ -57,7 +69,7 @@ class Recognizer:
         # Register as component observer
         self.app_state.register_component_observer(self.on_state_change)
 
-    def recognize_window(self, window_data: ChunkQueueItem) -> Optional[RecognitionResult]:
+    def recognize_window(self, window_data: AudioSegment) -> Optional[RecognitionResult]:
         """Recognize audio with context and filter tokens by timestamp.
 
         Algorithm:
@@ -67,10 +79,6 @@ class Recognizer:
         4. Filter tokens to only include those within data region
         5. Return RecognitionResult with filtered text and original timing
            (confidence fields populated with defaults until new API integration)
-
-        Maps AudioSegment.type to RecognitionResult.status:
-        - 'incremental' → 'incremental'
-        - 'flush' → 'flush'
 
         Args:
             window_data: AudioSegment to recognize
@@ -88,13 +96,6 @@ class Recognizer:
 
         full_audio = np.concatenate(audio_parts) if len(audio_parts) > 1 else window_data.data
 
-        # Map AudioSegment.type to RecognitionResult.status
-        status_map = {
-            'incremental': 'incremental',
-            'flush': 'flush'
-        }
-        status = status_map[window_data.type]
-
         # Recognize with timestamps
         result: TimestampedResult = self.model.recognize(full_audio)
         duration_with_context = len(full_audio) / self.sample_rate
@@ -109,7 +110,7 @@ class Recognizer:
 
         if self.verbose:
             logging.debug(f"recognize() dump:")
-            logging.debug(f"  type: {window_data.type}")
+            logging.debug(f"  type: incremental")
             logging.debug(f"  chunk_ids={_format_chunk_ids(window_data.chunk_ids)}")
             logging.debug(f"  audio duration: {duration_with_context}")
             logging.debug(f"  data_start: {data_start}")
@@ -147,25 +148,23 @@ class Recognizer:
             text=filtered_text,
             start_time=window_data.start_time,
             end_time=window_data.end_time,
-            status=status,
             chunk_ids=window_data.chunk_ids,
             confidence=avg_confidence,
             token_confidences=filtered_confidences,
             audio_rms=audio_rms,
-            confidence_variance=confidence_variance
+            confidence_variance=confidence_variance,
         )
-        self._put_result_nonblocking(recognition_result)
         return recognition_result
 
-    def _put_result_nonblocking(self, result: RecognitionResult) -> None:
-        """Enqueue recognition result to text_queue with drop-on-full behavior."""
+    def _put_output_nonblocking(self, item: RecognizerOutputItem | RecognitionResult) -> None:
+        """Enqueue recognizer output message with drop-on-full behavior."""
         try:
-            self.text_queue.put_nowait(result)
+            self.output_queue.put_nowait(item)
         except queue.Full:
             self.dropped_results += 1
             if self.verbose:
                 logging.warning(
-                    f"Recognizer: text_queue full, dropped result "
+                    f"Recognizer: output_queue full, dropped message "
                     f"(total drops: {self.dropped_results})"
                 )
 
@@ -260,14 +259,35 @@ class Recognizer:
     def process(self) -> None:
         """Process AudioSegments from queue continuously.
 
-        Reads AudioSegment instances and converts them to RecognitionResult instances.
-        Status is determined automatically from AudioSegment.type.
+        For each consumed segment:
+        - emit RecognitionTextMessage if non-empty text recognized
+        - always emit terminal RecognizerAck
         Runs until stop() is called.
         """
         while self.is_running:
             try:
-                window_data: ChunkQueueItem = self.speech_queue.get(timeout=0.1)
-                self.recognize_window(window_data)
+                window_data: AudioSegment = self.input_queue.get(timeout=0.1)
+                message_id = window_data.message_id
+                if message_id is None:
+                    self._put_output_nonblocking(
+                        RecognizerAck(message_id=-1, ok=False, error="missing message_id")
+                    )
+                    continue
+
+                try:
+                    recognition_result = self.recognize_window(window_data)
+                    if recognition_result is not None:
+                        self._put_output_nonblocking(
+                            RecognitionTextMessage(
+                                result=recognition_result,
+                                message_id=message_id
+                            )
+                        )
+                    self._put_output_nonblocking(RecognizerAck(message_id=message_id, ok=True))
+                except Exception as exc:
+                    self._put_output_nonblocking(
+                        RecognizerAck(message_id=message_id, ok=False, error=str(exc))
+                    )
             except queue.Empty:
                 continue
 

@@ -4,7 +4,7 @@ import threading
 import logging
 from typing import Optional, TYPE_CHECKING
 from .TextNormalizer import TextNormalizer
-from ..types import RecognitionResult
+from ..types import MatcherQueueItem, RecognitionResult, SpeechEndSignal
 from ..RecognitionResultPublisher import RecognitionResultPublisher
 from dataclasses import replace
 
@@ -106,11 +106,12 @@ class IncrementalTextMatcher:
 
         return best_i, best_j, max_length
 
-    def process_text(self, result: RecognitionResult) -> None:
-        if result.status == 'incremental':
-            self.process_incremental(result)
-        elif result.status == 'flush':
-            self.process_flush(result)
+    def process_item(self, item: MatcherQueueItem) -> None:
+        """Route matcher input item by message type."""
+        if isinstance(item, RecognitionResult):
+            self.process_incremental(item)
+            return
+        self.process_speech_end(item)
 
     def process_incremental(self, result: RecognitionResult) -> None:
         """Process incremental result using prefix comparison for stability detection.
@@ -127,7 +128,7 @@ class IncrementalTextMatcher:
            d. Publish finalized and preliminary accordingly
 
         Args:
-            result: RecognitionResult with status='incremental'
+            result: RecognitionResult
         """
         if self.verbose:
             logging.debug(f"IncrementalTextMatcher.process_incremental() received '{result.text}'")
@@ -188,7 +189,7 @@ class IncrementalTextMatcher:
                 if self.verbose:
                     logging.debug(f"  finalization('{newly_finalized_text}') words {finalize_start} to {stable_end}")
 
-                finalized_result = replace(result, text=newly_finalized_text, status='final')
+                finalized_result = replace(result, text=newly_finalized_text)
                 self.publisher.publish_finalization(finalized_result)
 
             self.prev_finalized_words = stable_end
@@ -206,27 +207,21 @@ class IncrementalTextMatcher:
         self.previous_result = result
         self._prev_normalized_words = curr_normalized
 
-    def process_flush(self, result: RecognitionResult) -> None:
-        """Process flush signal by finalizing any remaining text.
+    def process_speech_end(self, signal: SpeechEndSignal) -> None:
+        """Finalize pending text when receiving utterance boundary.
 
         Algorithm:
-        1. If flush has text: process as incremental first
-        2. Finalize any remaining non-finalized text
-        3. Reset state
+        1. Finalize any remaining non-finalized text.
+        2. Reset state for next utterance.
 
         Args:
-            result: RecognitionResult with status='flush'
+            signal: End-of-speech boundary.
         """
         if self.verbose:
             logging.debug(
-                f"IncrementalTextMatcher.process_flush() text='{result.text}', "
+                f"IncrementalTextMatcher.process_speech_end() utterance_id={signal.utterance_id}, "
                 f"pending='{self.previous_result.text if self.previous_result else None}'"
             )
-
-        # If flush has text, process it as incremental first
-        if result.text and result.text.strip():
-            incremental_result = replace(result, status='incremental')
-            self.process_incremental(incremental_result)
 
         if self.previous_result and self.prev_finalized_words < len(self.previous_result.text.split()):
             words = self.previous_result.text.split()
@@ -237,7 +232,7 @@ class IncrementalTextMatcher:
                 if self.verbose:
                     logging.debug(f"IncrementalTextMatcher.finalize_pending() finalizing '{remaining_text}'")
 
-                finalized_result = replace(self.previous_result, text=remaining_text, status='final')
+                finalized_result = replace(self.previous_result, text=remaining_text)
                 self.publisher.publish_finalization(finalized_result)
 
         self.previous_result = None
@@ -248,13 +243,13 @@ class IncrementalTextMatcher:
         """Read texts from queue and process them continuously.
 
         Runs in a loop reading text recognition results from the input queue
-        and processing each one using process_text(). Continues until stop()
+        and processing each one using process_item(). Continues until stop()
         is called.
         """
         while self.is_running:
             try:
-                result: RecognitionResult = self.text_queue.get(timeout=0.1)
-                self.process_text(result)
+                item: MatcherQueueItem = self.text_queue.get(timeout=0.1)
+                self.process_item(item)
             except queue.Empty:
                 continue
 
@@ -289,7 +284,7 @@ class IncrementalTextMatcher:
                 remaining_words = words[self.prev_finalized_words:]
                 if remaining_words:
                     remaining_text = ' '.join(remaining_words)
-                    finalized_result = replace(self.previous_result, text=remaining_text, status='final')
+                    finalized_result = replace(self.previous_result, text=remaining_text)
                     self.publisher.publish_finalization(finalized_result)
 
             # Reset state to avoid leaking pending text across sessions.

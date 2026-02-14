@@ -1,70 +1,77 @@
 """Type definitions for STT pipeline queue messages."""
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Literal, Union
 import numpy as np
 import numpy.typing as npt
 
 
 @dataclass
 class AudioSegment:
-    """Speech segment for recognition - either incremental window or flush signal.
+    """Speech segment for recognition."""
 
-    Incremental windows represent growing audio windows that are recognized as a whole.
-    Each new segment extends the window, which is re-recognized for progressive finalization.
-    Flush signals indicate end of speech segment (e.g., silence timeout) and trigger pending text finalization.
-
-    Attributes:
-        type: Discriminator - 'incremental' for growing windows, 'flush' for end-of-segment signal
-        data: Speech audio data as float32 numpy array (concatenated speech chunks only)
-        left_context: Pre-speech context audio (silence before speech starts)
-        right_context: Post-speech context audio (trailing silence after speech ends)
-        start_time: Segment start time in seconds (refers to data, not context)
-        end_time: Segment end time in seconds (refers to data, not context)
-        chunk_ids: List of chunk IDs from all segments in the window
-    """
-    type: Literal['incremental', 'flush']
+    type: Literal["incremental"]
     data: npt.NDArray[np.float32]
     left_context: npt.NDArray[np.float32]
     right_context: npt.NDArray[np.float32]
     start_time: float
     end_time: float
+    utterance_id: int = 0
     chunk_ids: list[int] = field(default_factory=list)
+    message_id: int | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Validate that at least one chunk ID is present."""
         if len(self.chunk_ids) < 1:
             raise ValueError("Must have at least one chunk_id")
 
 
-# Type alias for chunk_queue items
 ChunkQueueItem = AudioSegment
 
 
 @dataclass
-class RecognitionResult:
-    """Speech recognition output with timing and type information.
+class SpeechEndSignal:
+    """Boundary signal emitted when an utterance ends."""
 
-    Attributes:
-        text: Recognized text string
-        start_time: Recognition start time in seconds
-        end_time: Recognition end time in seconds
-        status: Status discriminator - 'incremental' for growing window results, 'final' for finalized text, 'flush' for end-of-segment signal
-        chunk_ids: List of chunk IDs that contributed to this recognition result
-        confidence: Average confidence score for the segment (0.0-1.0 range, 0.0 = no confidence data)
-        token_confidences: Per-token confidence scores (parallel to tokens, empty if not available)
-        audio_rms: RMS energy of the audio data region (0.0 = no data or silent)
-        confidence_variance: Variance of token confidence scores (0.0 = uniform confidence or no data)
-    """
+    utterance_id: int
+    end_time: float
+    message_id: int | None = None
+
+
+@dataclass(kw_only=True)
+class RecognitionResult:
+    """Speech recognition output with timing and confidence information."""
+
     text: str
     start_time: float
     end_time: float
-    status: Literal['incremental', 'final', 'flush']
     chunk_ids: list[int] = field(default_factory=list)
     confidence: float = 0.0
     token_confidences: list[float] = field(default_factory=list)
     audio_rms: float = 0.0
     confidence_variance: float = 0.0
+
+
+@dataclass
+class RecognitionTextMessage:
+    """Recognizer text output tagged with message id."""
+
+    result: RecognitionResult
+    message_id: int
+
+
+@dataclass
+class RecognizerAck:
+    """Terminal acknowledgement for a consumed audio segment."""
+
+    message_id: int
+    ok: bool = True
+    error: str | None = None
+
+
+SpeechQueueItem = Union[AudioSegment, SpeechEndSignal]
+RecognizerOutputItem = Union[RecognitionTextMessage, RecognizerAck]
+MatcherQueueItem = Union[RecognitionResult, SpeechEndSignal]
 
 
 @dataclass

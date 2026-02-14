@@ -14,7 +14,7 @@ class TestGrowingWindowAssembler:
     - Each new segment extends the current window
     - Windows are emitted as type='incremental' for each growth step
     - When total duration exceeds max_window_duration, oldest segments are dropped (sliding)
-    - Flush emits remaining segments as type='flush'
+    - Flush emits remaining segments as final type='incremental'
     """
 
     @pytest.fixture
@@ -111,7 +111,7 @@ class TestGrowingWindowAssembler:
         assert np.array_equal(last_window.data, expected_data)
 
     def test_flush_emits_remaining_segments(self, config, sample_rate):
-        """Flush should emit remaining segments as type='flush'."""
+        """Flush should emit remaining segments as final type='incremental'."""
         speech_queue = queue.Queue()
         assembler = GrowingWindowAssembler(speech_queue=speech_queue, config=config)
 
@@ -128,7 +128,7 @@ class TestGrowingWindowAssembler:
 
         assert not speech_queue.empty()
         flush_window = speech_queue.get()
-        assert flush_window.type == 'flush'
+        assert flush_window.type == 'incremental'
         assert flush_window.chunk_ids == [0, 1]
 
     def test_flush_resets_state(self, config, sample_rate):
@@ -278,7 +278,7 @@ class TestGrowingWindowAssemblerContext:
         assembler.flush(seg2)
 
         flush_window = speech_queue.get()
-        assert flush_window.type == 'flush'
+        assert flush_window.type == 'incremental'
         assert flush_window.right_context.size > 0
         assert np.array_equal(flush_window.right_context, right_context)
 

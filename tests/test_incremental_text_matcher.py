@@ -3,7 +3,7 @@ import pytest
 import queue
 from unittest.mock import Mock
 from src.postprocessing.IncrementalTextMatcher import IncrementalTextMatcher
-from src.types import RecognitionResult
+from src.types import RecognitionResult, SpeechEndSignal
 
 
 class TestIncrementalTextMatcher:
@@ -29,13 +29,7 @@ class TestIncrementalTextMatcher:
         """First incremental result should be published as all preliminary."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result = RecognitionResult(
-            text='hello world',
-            start_time=0.0,
-            end_time=1.0,
-            status='incremental',
-            chunk_ids=[0, 1]
-        )
+        result = RecognitionResult(text='hello world', start_time=0.0, end_time=1.0, chunk_ids=[0, 1])
 
         matcher.process_incremental(result)
 
@@ -50,10 +44,10 @@ class TestIncrementalTextMatcher:
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
         results = [
-            RecognitionResult('one', 0.0, 0.5, 'incremental', [0]),
-            RecognitionResult('one two', 0.0, 1.0, 'incremental', [0, 1]),
-            RecognitionResult('one two three', 0.0, 1.5, 'incremental', [0, 1, 2]),
-            RecognitionResult('one two three four', 0.0, 2.0, 'incremental', [0, 1, 2, 3]),
+            RecognitionResult(text='one', start_time=0.0, end_time=0.5, chunk_ids=[0]),
+            RecognitionResult(text='one two', start_time=0.0, end_time=1.0, chunk_ids=[0, 1]),
+            RecognitionResult(text='one two three', start_time=0.0, end_time=1.5, chunk_ids=[0, 1, 2]),
+            RecognitionResult(text='one two three four', start_time=0.0, end_time=2.0, chunk_ids=[0, 1, 2, 3]),
         ]
 
         # First result: all preliminary
@@ -89,8 +83,8 @@ class TestIncrementalTextMatcher:
         """When no overlap found, replace preliminary with new garbage."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result1 = RecognitionResult('garbage text', 0.0, 0.5, 'incremental', [0])
-        result2 = RecognitionResult('completely different', 0.0, 1.0, 'incremental', [0, 1])
+        result1 = RecognitionResult(text='garbage text', start_time=0.0, end_time=0.5, chunk_ids=[0])
+        result2 = RecognitionResult(text='completely different', start_time=0.0, end_time=1.0, chunk_ids=[0, 1])
 
         matcher.process_incremental(result1)
         mock_publisher.reset_mock()
@@ -108,11 +102,11 @@ class TestIncrementalTextMatcher:
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
         # Simulate growing window
-        result1 = RecognitionResult('one two three four', 0.0, 2.0, 'incremental', [0, 1, 2, 3])
+        result1 = RecognitionResult(text='one two three four', start_time=0.0, end_time=2.0, chunk_ids=[0, 1, 2, 3])
         matcher.process_incremental(result1)
         mock_publisher.reset_mock()
 
-        result2 = RecognitionResult('one two three four five', 0.0, 2.5, 'incremental', [0, 1, 2, 3, 4])
+        result2 = RecognitionResult(text='one two three four five', start_time=0.0, end_time=2.5, chunk_ids=[0, 1, 2, 3, 4])
         matcher.process_incremental(result2)
         # After result2: finalized "one two three four", preliminary "five", finalized_word_count=4
         mock_publisher.reset_mock()
@@ -122,7 +116,7 @@ class TestIncrementalTextMatcher:
         # Window slides, loses "one two", garbled start
         # find_word_overlap will find "three four five" at positions (2,1,3)
         # Stable region starts at idx_curr=1; words before anchor are unreliable and ignored
-        result3 = RecognitionResult('florp three four five six', 1.0, 3.0, 'incremental', [2, 3, 4, 5])
+        result3 = RecognitionResult(text='florp three four five six', start_time=1.0, end_time=3.0, chunk_ids=[2, 3, 4, 5])
         matcher.process_incremental(result3)
 
         assert matcher.prev_finalized_words == 4
@@ -141,66 +135,67 @@ class TestIncrementalTextMatcher:
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
         # Build finalized state in first stream.
-        matcher.process_incremental(RecognitionResult('alpha beta', 0.0, 1.0, 'incremental', [0, 1]))
-        matcher.process_incremental(RecognitionResult('alpha beta gamma', 0.0, 1.5, 'incremental', [0, 1, 2]))
+        matcher.process_incremental(RecognitionResult(text='alpha beta', start_time=0.0, end_time=1.0, chunk_ids=[0, 1]))
+        matcher.process_incremental(RecognitionResult(text='alpha beta gamma', start_time=0.0, end_time=1.5, chunk_ids=[0, 1, 2]))
         assert matcher.prev_finalized_words == 2
         mock_publisher.reset_mock()
 
         # Jump to unrelated stream (no overlap), then extend it.
-        matcher.process_incremental(RecognitionResult('trash', 5.0, 5.5, 'incremental', [5]))
+        matcher.process_incremental(RecognitionResult(text='trash', start_time=5.0, end_time=5.5, chunk_ids=[5]))
         assert matcher.prev_finalized_words == 0
         mock_publisher.reset_mock()
 
-        matcher.process_incremental(RecognitionResult('trash data', 5.0, 6.0, 'incremental', [5, 6]))
+        matcher.process_incremental(RecognitionResult(text='trash data', start_time=5.0, end_time=6.0, chunk_ids=[5, 6]))
         assert mock_publisher.publish_finalization.call_count == 1
         finalized = mock_publisher.publish_finalization.call_args[0][0]
         assert finalized.text == 'trash'
 
-    def test_finalization_status_is_final(self, text_queue, mock_publisher, mock_app_state):
-        """Finalized results should have status='final'."""
+    def test_finalization_emits_result(self, text_queue, mock_publisher, mock_app_state):
+        """Finalized results should be published on stable overlap."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result1 = RecognitionResult('hello world', 0.0, 1.0, 'incremental', [0, 1])
-        result2 = RecognitionResult('hello world today', 0.0, 2.0, 'incremental', [0, 1, 2])
+        result1 = RecognitionResult(text='hello world', start_time=0.0, end_time=1.0, chunk_ids=[0, 1])
+        result2 = RecognitionResult(text='hello world today', start_time=0.0, end_time=2.0, chunk_ids=[0, 1, 2])
         matcher.process_incremental(result1)
         mock_publisher.reset_mock()
         matcher.process_incremental(result2)
 
         assert mock_publisher.publish_finalization.call_count == 1
         finalized = mock_publisher.publish_finalization.call_args[0][0]
-        assert finalized.status == 'final'
+        assert finalized.text == 'hello world'
 
-    def test_flush_pending_finalization_status_is_final(self, text_queue, mock_publisher, mock_app_state):
-        """Flush finalization of pending text should use status='final'."""
+    def test_speech_end_finalizes_pending_text(self, text_queue, mock_publisher, mock_app_state):
+        """SpeechEndSignal finalizes pending words."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result = RecognitionResult('hello world', 0.0, 1.0, 'incremental', [0, 1])
+        result = RecognitionResult(text='hello world', start_time=0.0, end_time=1.0, chunk_ids=[0, 1])
         matcher.process_incremental(result)
         mock_publisher.reset_mock()
 
         # Empty flush text still finalizes pending words from previous_result.
-        flush_result = RecognitionResult('', 0.0, 1.0, 'flush', [0, 1])
-        matcher.process_flush(flush_result)
+        signal = SpeechEndSignal(utterance_id=1, end_time=1.0)
+        matcher.process_speech_end(signal)
 
         assert mock_publisher.publish_finalization.call_count == 1
         finalized = mock_publisher.publish_finalization.call_args[0][0]
-        assert finalized.status == 'final'
         assert finalized.text == 'hello world'
 
     def test_flush_finalizes_remaining_text(self, text_queue, mock_publisher, mock_app_state):
         """Flush should finalize any remaining preliminary text."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result1 = RecognitionResult('hello world', 0.0, 1.0, 'incremental', [0, 1])
-        result2 = RecognitionResult('hello world how', 0.0, 2.0, 'incremental', [0, 1, 2])
+        result1 = RecognitionResult(text='hello world', start_time=0.0, end_time=1.0, chunk_ids=[0, 1])
+        result2 = RecognitionResult(text='hello world how', start_time=0.0, end_time=2.0, chunk_ids=[0, 1, 2])
 
         matcher.process_incremental(result1)
         matcher.process_incremental(result2)
         mock_publisher.reset_mock()
 
         # Flush
-        flush_result = RecognitionResult('hello world how are', 0.0, 2.5, 'flush', [0, 1, 2, 3])
-        matcher.process_flush(flush_result)
+        matcher.process_incremental(
+            RecognitionResult(text='hello world how are', start_time=0.0, end_time=2.5, chunk_ids=[0, 1, 2, 3])
+        )
+        matcher.process_speech_end(SpeechEndSignal(utterance_id=1, end_time=2.5))
 
         # Should finalize remaining "how are"
         # First call processes as incremental (finalizes "how"), second call finalizes remaining ("are")
@@ -211,18 +206,20 @@ class TestIncrementalTextMatcher:
         """After flush, state should be reset for next speech sequence."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result1 = RecognitionResult('hello world', 0.0, 1.0, 'incremental', [0, 1])
+        result1 = RecognitionResult(text='hello world', start_time=0.0, end_time=1.0, chunk_ids=[0, 1])
         matcher.process_incremental(result1)
 
-        flush_result = RecognitionResult('hello world done', 0.0, 2.0, 'flush', [0, 1, 2])
-        matcher.process_flush(flush_result)
+        matcher.process_incremental(
+            RecognitionResult(text='hello world done', start_time=0.0, end_time=2.0, chunk_ids=[0, 1, 2])
+        )
+        matcher.process_speech_end(SpeechEndSignal(utterance_id=1, end_time=2.0))
 
         # State should be reset
         assert matcher.previous_result is None
         assert matcher.prev_finalized_words == 0
 
         # Next sequence should start fresh
-        result2 = RecognitionResult('new speech', 5.0, 6.0, 'incremental', [10])
+        result2 = RecognitionResult(text='new speech', start_time=5.0, end_time=6.0, chunk_ids=[10])
         matcher.process_incremental(result2)
 
         # Should be treated as first result (all preliminary)
@@ -234,12 +231,11 @@ class TestIncrementalTextMatcher:
         """Single word followed by flush should finalize correctly."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result = RecognitionResult('hello', 0.0, 1.0, 'incremental', [0])
+        result = RecognitionResult(text='hello', start_time=0.0, end_time=1.0, chunk_ids=[0])
         matcher.process_incremental(result)
         mock_publisher.reset_mock()
 
-        flush_result = RecognitionResult('hello', 0.0, 1.0, 'flush', [0])
-        matcher.process_flush(flush_result)
+        matcher.process_speech_end(SpeechEndSignal(utterance_id=1, end_time=1.0))
 
         # Should finalize "hello"
         assert mock_publisher.publish_finalization.call_count >= 1
@@ -247,9 +243,9 @@ class TestIncrementalTextMatcher:
     def test_find_word_overlap_exact_prefix(self, text_queue, mock_publisher, mock_app_state):
         """Test find_word_overlap with exact prefix match."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
-        matcher.previous_result = RecognitionResult('hello world', 0.0, 1.0, 'incremental', [0, 1])
+        matcher.previous_result = RecognitionResult(text='hello world', start_time=0.0, end_time=1.0, chunk_ids=[0, 1])
 
-        result = RecognitionResult('hello world how', 0.0, 2.0, 'incremental', [0, 1, 2])
+        result = RecognitionResult(text='hello world how', start_time=0.0, end_time=2.0, chunk_ids=[0, 1, 2])
         curr_normalized = matcher._split_and_normalize(result.text)
         idx1, idx2, length = matcher.find_word_overlap(curr_normalized)
 
@@ -260,9 +256,9 @@ class TestIncrementalTextMatcher:
     def test_find_word_overlap_with_garbled_start(self, text_queue, mock_publisher, mock_app_state):
         """Test find_word_overlap when start is garbled (after sliding)."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
-        matcher.previous_result = RecognitionResult('one two three four', 0.0, 2.0, 'incremental', [0, 1, 2, 3])
+        matcher.previous_result = RecognitionResult(text='one two three four', start_time=0.0, end_time=2.0, chunk_ids=[0, 1, 2, 3])
 
-        result = RecognitionResult('florp three four five', 0.5, 2.5, 'incremental', [1, 2, 3, 4])
+        result = RecognitionResult(text='florp three four five', start_time=0.5, end_time=2.5, chunk_ids=[1, 2, 3, 4])
         curr_normalized = matcher._split_and_normalize(result.text)
         idx1, idx2, length = matcher.find_word_overlap(curr_normalized)
 
@@ -273,9 +269,9 @@ class TestIncrementalTextMatcher:
     def test_find_word_overlap_no_match(self, text_queue, mock_publisher, mock_app_state):
         """Test find_word_overlap with no common words."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
-        matcher.previous_result = RecognitionResult('hello world', 0.0, 1.0, 'incremental', [0, 1])
+        matcher.previous_result = RecognitionResult(text='hello world', start_time=0.0, end_time=1.0, chunk_ids=[0, 1])
 
-        result = RecognitionResult('completely different', 2.0, 3.0, 'incremental', [3, 4])
+        result = RecognitionResult(text='completely different', start_time=2.0, end_time=3.0, chunk_ids=[3, 4])
         curr_normalized = matcher._split_and_normalize(result.text)
         idx1, idx2, length = matcher.find_word_overlap(curr_normalized)
 
@@ -285,8 +281,8 @@ class TestIncrementalTextMatcher:
         """Test that punctuation differences don't prevent overlap detection."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result1 = RecognitionResult('Hello?', 0.0, 1.0, 'incremental', [0])
-        result2 = RecognitionResult('Hello, how', 0.0, 2.0, 'incremental', [0, 1])
+        result1 = RecognitionResult(text='Hello?', start_time=0.0, end_time=1.0, chunk_ids=[0])
+        result2 = RecognitionResult(text='Hello, how', start_time=0.0, end_time=2.0, chunk_ids=[0, 1])
 
         matcher.process_incremental(result1)
         mock_publisher.reset_mock()
@@ -302,8 +298,8 @@ class TestIncrementalTextMatcher:
         """Test that case differences don't prevent overlap detection."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result1 = RecognitionResult('HELLO WORLD', 0.0, 1.0, 'incremental', [0])
-        result2 = RecognitionResult('hello world today', 0.0, 2.0, 'incremental', [0, 1])
+        result1 = RecognitionResult(text='HELLO WORLD', start_time=0.0, end_time=1.0, chunk_ids=[0])
+        result2 = RecognitionResult(text='hello world today', start_time=0.0, end_time=2.0, chunk_ids=[0, 1])
 
         matcher.process_incremental(result1)
         mock_publisher.reset_mock()
@@ -316,26 +312,25 @@ class TestIncrementalTextMatcher:
         finalized = mock_publisher.publish_finalization.call_args[0][0]
         assert 'hello world' == finalized.text
 
-    def test_route_incremental_status(self, text_queue, mock_publisher, mock_app_state):
-        """Test process_text routes incremental status correctly."""
+    def test_route_incremental_item(self, text_queue, mock_publisher, mock_app_state):
+        """process_item should route RecognitionResult to incremental processing."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result = RecognitionResult('hello', 0.0, 1.0, 'incremental', [0])
-        matcher.process_text(result)
+        result = RecognitionResult(text='hello', start_time=0.0, end_time=1.0, chunk_ids=[0])
+        matcher.process_item(result)
 
         # Should call publish_partial_update
         mock_publisher.publish_partial_update.assert_called_once()
 
-    def test_route_flush_status(self, text_queue, mock_publisher, mock_app_state):
-        """Test process_text routes flush status correctly."""
+    def test_route_speech_end_signal(self, text_queue, mock_publisher, mock_app_state):
+        """process_item should route SpeechEndSignal to finalization path."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result1 = RecognitionResult('hello', 0.0, 1.0, 'incremental', [0])
-        matcher.process_text(result1)
+        result1 = RecognitionResult(text='hello', start_time=0.0, end_time=1.0, chunk_ids=[0])
+        matcher.process_item(result1)
         mock_publisher.reset_mock()
 
-        flush_result = RecognitionResult('hello world', 0.0, 2.0, 'flush', [0, 1])
-        matcher.process_text(flush_result)
+        matcher.process_item(SpeechEndSignal(utterance_id=1, end_time=2.0))
 
         # Should finalize remaining text
         assert mock_publisher.publish_finalization.call_count >= 1
@@ -344,8 +339,8 @@ class TestIncrementalTextMatcher:
         """Test that shutdown via observer finalizes pending and stops."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result = RecognitionResult('pending text', 0.0, 1.0, 'incremental', [0])
-        matcher.process_text(result)
+        result = RecognitionResult(text='pending text', start_time=0.0, end_time=1.0, chunk_ids=[0])
+        matcher.process_item(result)
         mock_publisher.reset_mock()
 
         # Trigger shutdown
@@ -377,7 +372,7 @@ class TestIncrementalTextMatcherEdgeCases:
         """Test handling of empty result text."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result = RecognitionResult('', 0.0, 1.0, 'incremental', [0])
+        result = RecognitionResult(text='', start_time=0.0, end_time=1.0, chunk_ids=[0])
         matcher.process_incremental(result)
 
         # Should handle gracefully (publish empty preliminary or skip)
@@ -387,8 +382,8 @@ class TestIncrementalTextMatcherEdgeCases:
         """Test handling of results with extra whitespace."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result1 = RecognitionResult('hello  world', 0.0, 1.0, 'incremental', [0])
-        result2 = RecognitionResult('hello world  today', 0.0, 2.0, 'incremental', [0, 1])
+        result1 = RecognitionResult(text='hello  world', start_time=0.0, end_time=1.0, chunk_ids=[0])
+        result2 = RecognitionResult(text='hello world  today', start_time=0.0, end_time=2.0, chunk_ids=[0, 1])
 
         matcher.process_incremental(result1)
         mock_publisher.reset_mock()
@@ -403,7 +398,7 @@ class TestIncrementalTextMatcherEdgeCases:
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
         long_text = ' '.join(['word'] * 100)
-        result = RecognitionResult(long_text, 0.0, 10.0, 'incremental', list(range(100)))
+        result = RecognitionResult(text=long_text, start_time=0.0, end_time=10.0, chunk_ids=list(range(100)))
         matcher.process_incremental(result)
 
         # Should handle without performance issues
@@ -413,8 +408,8 @@ class TestIncrementalTextMatcherEdgeCases:
         """Test handling of Unicode characters."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result1 = RecognitionResult('café here', 0.0, 1.0, 'incremental', [0])
-        result2 = RecognitionResult('cafe here today', 0.0, 2.0, 'incremental', [0, 1])
+        result1 = RecognitionResult(text='café here', start_time=0.0, end_time=1.0, chunk_ids=[0])
+        result2 = RecognitionResult(text='cafe here today', start_time=0.0, end_time=2.0, chunk_ids=[0, 1])
 
         matcher.process_incremental(result1)
         mock_publisher.reset_mock()
@@ -428,8 +423,8 @@ class TestIncrementalTextMatcherEdgeCases:
         """Test handling when user says the same words multiple times."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result1 = RecognitionResult('hello hello', 0.0, 1.0, 'incremental', [0])
-        result2 = RecognitionResult('hello hello hello', 0.0, 2.0, 'incremental', [0, 1])
+        result1 = RecognitionResult(text='hello hello', start_time=0.0, end_time=1.0, chunk_ids=[0])
+        result2 = RecognitionResult(text='hello hello hello', start_time=0.0, end_time=2.0, chunk_ids=[0, 1])
 
         matcher.process_incremental(result1)
         mock_publisher.reset_mock()
@@ -444,9 +439,9 @@ class TestIncrementalTextMatcherEdgeCases:
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
         results = [
-            RecognitionResult('one', 0.0, 0.5, 'incremental', [0]),
-            RecognitionResult('one two', 0.0, 1.0, 'incremental', [0, 1]),
-            RecognitionResult('one two three', 0.0, 1.5, 'incremental', [0, 1, 2]),
+            RecognitionResult(text='one', start_time=0.0, end_time=0.5, chunk_ids=[0]),
+            RecognitionResult(text='one two', start_time=0.0, end_time=1.0, chunk_ids=[0, 1]),
+            RecognitionResult(text='one two three', start_time=0.0, end_time=1.5, chunk_ids=[0, 1, 2]),
         ]
 
         matcher.process_incremental(results[0])
@@ -462,11 +457,10 @@ class TestIncrementalTextMatcherEdgeCases:
         """Test flush when there's no previous result."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        flush_result = RecognitionResult('hello', 0.0, 1.0, 'flush', [0])
-        matcher.process_flush(flush_result)
+        matcher.process_speech_end(SpeechEndSignal(utterance_id=1, end_time=1.0))
 
-        # Should finalize the flush result directly
-        assert mock_publisher.publish_finalization.call_count >= 1
+        # No pending state means no finalization should be emitted.
+        mock_publisher.publish_finalization.assert_not_called()
 
 class TestPrevNormalizedCaching:
     """Tests for caching of previous normalized words."""
@@ -492,8 +486,8 @@ class TestPrevNormalizedCaching:
         """Cache should be invalidated when no overlap is found."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result1 = RecognitionResult('hello world', 0.0, 1.0, 'incremental', [0, 1])
-        result2 = RecognitionResult('completely different', 2.0, 3.0, 'incremental', [3, 4])
+        result1 = RecognitionResult(text='hello world', start_time=0.0, end_time=1.0, chunk_ids=[0, 1])
+        result2 = RecognitionResult(text='completely different', start_time=2.0, end_time=3.0, chunk_ids=[3, 4])
 
         matcher.process_incremental(result1)
         matcher.process_incremental(result2)
@@ -504,11 +498,11 @@ class TestPrevNormalizedCaching:
         """Cache should be None after flush resets state."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
 
-        result = RecognitionResult('hello world', 0.0, 1.0, 'incremental', [0, 1])
+        result = RecognitionResult(text='hello world', start_time=0.0, end_time=1.0, chunk_ids=[0, 1])
         matcher.process_incremental(result)
 
-        flush = RecognitionResult('hello world', 0.0, 1.0, 'flush', [0, 1])
-        matcher.process_flush(flush)
+        flush = SpeechEndSignal(utterance_id=1, end_time=1.0)
+        matcher.process_speech_end(flush)
 
         assert matcher._prev_normalized_words is None
         assert matcher.previous_result is None
