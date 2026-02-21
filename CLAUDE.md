@@ -163,12 +163,12 @@ The system uses a **pipeline architecture** with threaded components communicati
 
 1. **AudioSource** → captures 32ms frames → raw audio dict → `chunk_queue`
 2. **SoundPreProcessor** → reads `chunk_queue` → RMS normalization + VAD + buffering → preliminary `AudioSegment` → `speech_queue`
-3. **SoundPreProcessor** → calls **AdaptiveWindower** (sync) → finalized `AudioSegment` → `speech_queue`
+3. **SoundPreProcessor** → calls **GrowingWindowAssembler** (sync) → incremental `AudioSegment` → `speech_queue`
 4. **Recognizer** → reads `speech_queue` → processes AudioSegments → `RecognitionResult` → `text_queue`
 5. **TextMatcher** → filters/processes text → routes to `TextFormatter` (controller)
 6. **TextFormatter** → calculates formatting logic → triggers `TextDisplayWidget` (view)
 
-**Key Components:** `AudioSource`, `SoundPreProcessor`, `VoiceActivityDetector`, `AdaptiveWindower`, `Recognizer`, `TextMatcher`, `TextFormatter`, `TextDisplayWidget`
+**Key Components:** `AudioSource`, `SoundPreProcessor`, `VoiceActivityDetector`, `GrowingWindowAssembler`, `Recognizer`, `TextMatcher`, `TextFormatter`, `TextDisplayWidget`
 
 **Data Types:** `AudioSegment`, `RecognitionResult`
 

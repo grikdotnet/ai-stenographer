@@ -37,7 +37,6 @@ class TestIntegrationThreadedPipeline:
                 'threshold': 0.5
             },
             'windowing': {
-                'window_duration': 3.0,
                 'max_window_duration': 7.0,
                 'max_speech_duration_ms': 3000,
                 'silence_timeout': 0.5

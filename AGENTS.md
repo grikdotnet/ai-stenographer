@@ -83,13 +83,13 @@ If assumptions conflict with implementation details, defer to `ARCHITECTURE.md` 
 ### Pipeline Quick Reference
 1. `AudioSource` -> 32ms frames -> raw audio dict -> `chunk_queue`
 2. `SoundPreProcessor` -> reads `chunk_queue` -> normalization + VAD + buffering -> preliminary `AudioSegment` -> `speech_queue`
-3. `SoundPreProcessor` -> `AdaptiveWindower` (sync) -> finalized `AudioSegment` -> `speech_queue`
+3. `SoundPreProcessor` -> `GrowingWindowAssembler` (sync) -> incremental `AudioSegment` -> `speech_queue`
 4. `Recognizer` -> reads `speech_queue` -> `RecognitionResult` -> `text_queue`
 5. `TextMatcher` -> filters/processes text -> `TextFormatter`
 6. `TextFormatter` -> formatting logic -> `TextDisplayWidget`
 
 ### Key Components
-`AudioSource`, `SoundPreProcessor`, `VoiceActivityDetector`, `AdaptiveWindower`, `Recognizer`, `TextMatcher`, `TextFormatter`, `TextDisplayWidget`
+`AudioSource`, `SoundPreProcessor`, `VoiceActivityDetector`, `GrowingWindowAssembler`, `Recognizer`, `TextMatcher`, `TextFormatter`, `TextDisplayWidget`
 
 ### Core Data Types
 `AudioSegment`, `RecognitionResult`

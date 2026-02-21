@@ -29,10 +29,10 @@ The codebase is organized into domain-based subfolders within `src/`:
 - **AudioSource.py**: Microphone audio capture with sounddevice callback
 - **FileAudioSource.py**: WAV file audio source for testing
 - **SoundPreProcessor.py**: VAD processing, RMS normalization, speech buffering
+- **GrowingWindowAssembler.py**: Assembles speech segments into growing recognition windows (up to `max_window_duration`, oldest segments dropped when limit exceeded)
 
 ### Speech Recognition (`src/asr/`)
 - **Recognizer.py**: STT model inference with context-aware recognition
-- **AdaptiveWindower.py**: Aggregates segments into 3s recognition windows
 - **VoiceActivityDetector.py**: Detects speech vs silence
 - **ModelManager.py**: Model download and management
 - **DownloadProgressReporter.py**: Model download progress tracking
@@ -153,8 +153,8 @@ Microphone Input (16kHz, mono)
 │    │     ├─→ Hard-cut splitting (max duration)                          │
 │    │     │     └─→ Emits full buffer, resets, stays in ACTIVE_SPEECH    │
 │    │     │                                                                │
-│    │     └─→ AdaptiveWindower.process_segment(segment) [sync call]      │
-│    │           └─→ Aggregates into finalized windows                    │
+│    │     └─→ GrowingWindowAssembler.process_segment(segment) [sync call]│
+│    │           └─→ Emits growing incremental window                     │
 │    │                                                                      │
 │    ├─→ Observer: ApplicationState (component observer)                 │
 │    │   └─→ on_state_change(): pause → flush() pending segments         │
@@ -162,18 +162,19 @@ Microphone Input (16kHz, mono)
 │    └─→ Silence timeout detection → windower.flush()                     │
 └──────────────────────────────────────────────────────────────────────────┘
         │
-        │  AdaptiveWindower (NO THREAD - synchronous calls from SoundPreProcessor)
-        │  ├─→ Aggregates preliminary segments into 3s windows
-        │  ├─→ Creates finalized AudioSegment
-        │  │     └─→ type='finalized'
+        │  GrowingWindowAssembler (NO THREAD - synchronous calls from SoundPreProcessor)
+        │  ├─→ Appends segment to growing window buffer
+        │  ├─→ Enforces max_window_duration (drops oldest segments if needed)
+        │  ├─→ Creates incremental AudioSegment (entire window each time)
+        │  │     └─→ type='incremental'
         │  │     └─→ chunk_ids=[id1, id2, id3, ...]  (merged IDs)
-        │  └─→ speech_queue.put(finalized_window)
+        │  └─→ speech_queue.put(incremental_window)
         │
         ↓
 ┌──────────────────────────────────────────────────────────────────────────┐
 │  Queue: speech_queue (maxsize=200)                                       │
 │  Data Type: AudioSegment (dataclass)                                     │
-│    - type: 'preliminary' | 'finalized' | 'flush'                         │
+│    - type: 'incremental' | 'flush'                                       │
 │    - data: npt.NDArray[np.float32] (speech chunks only)                  │
 │    - left_context: npt.NDArray[np.float32] (pre-speech audio)            │
 │    - right_context: npt.NDArray[np.float32] (always empty from SPP)      │
@@ -298,7 +299,7 @@ Microphone Input (16kHz, mono)
 |-----------|-------------|---------|---------------------|
 | **AudioSource** | Daemon (sounddevice callback) | Captures microphone input only | `chunk_queue.put_nowait()` (non-blocking, drops if full) |
 | **SoundPreProcessor** | Daemon | VAD processing, RMS normalization, speech buffering | `chunk_queue.get(timeout=0.1)`, `speech_queue.put()` |
-| **AdaptiveWindower** | **NO THREAD** | Aggregates segments into windows | Called synchronously by SoundPreProcessor |
+| **GrowingWindowAssembler** | **NO THREAD** | Assembles segments into growing windows (max `max_window_duration`, sliding drop) | Called synchronously by SoundPreProcessor |
 | **Recognizer** | Daemon | Runs STT model on audio segments | `speech_queue.get(timeout=0.1)`, model inference |
 | **TextMatcher** | Daemon | Routes preliminary/finalized, overlap resolution, publishes results | `text_queue.get(timeout=0.1)`, calls publisher methods |
 | **RecognitionResultPublisher** | **NO THREAD** | Observer pattern publisher (manages subscribers) | Called by TextMatcher, notifies subscribers with thread-safe copy |
@@ -442,13 +443,12 @@ AudioSegment (incremental)
   └─→ type='incremental', data + left_context (right_context always empty)
   └─→ chunk_ids: [42, 43, 44]
         │
-        ├─→ speech_queue (instant)
-        └─→ AdaptiveWindower.process_segment() (sync)
+        └─→ GrowingWindowAssembler.process_segment() (sync)
               │
-              ↓ Window Aggregation (≥3s)
+              ↓ Growing Window (up to max_window_duration=7s, sliding)
               │
-        AudioSegment (finalized)
-          └─→ type='finalized', data (3s window)
+        AudioSegment (incremental window)
+          └─→ type='incremental', data (entire growing window)
           └─→ chunk_ids: [42, ..., 94] (merged)
                 │
                 ↓ speech_queue
@@ -562,17 +562,18 @@ Uses **Strategy Pattern** for hardware-specific ONNX Runtime optimizations.
 **Output:** Preliminary AudioSegments with context → `speech_queue`
 **Side Effect:** Synchronously calls `windower.process_segment()` for finalized windows
 
-### 3. AdaptiveWindower (NO THREAD)
+### 3. GrowingWindowAssembler (NO THREAD)
 
-**Responsibility:** Aggregate word-level segments into 3s recognition windows
+**Responsibility:** Assemble speech segments into growing recognition windows
 
 **Strategy:**
-- Accumulates preliminary segments until total duration ≥3s
-- Emits finalized window when threshold reached
-- Preserves trailing segments (≥1s) for overlap with next window
+- Each new segment extends the current window (emit as `type='incremental'`)
+- Windows grow up to `max_window_duration` (e.g. 7 seconds)
+- When max duration exceeded, oldest segments are dropped (sliding window)
+- Flush emits remaining segments as final incremental window with right context
 
 **Called synchronously by:** SoundPreProcessor
-**Output:** Finalized AudioSegments → `speech_queue`
+**Output:** Incremental AudioSegments → `speech_queue`
 
 ### 4. Recognizer
 
@@ -646,7 +647,7 @@ Uses **Strategy Pattern** for hardware-specific ONNX Runtime optimizations.
 
 1. **AudioSource** → captures 32ms frames (non-blocking) → raw audio dict → `chunk_queue`
 2. **SoundPreProcessor** → reads `chunk_queue` → RMS normalization + VAD + buffering → preliminary `AudioSegment` → `speech_queue`
-3. **SoundPreProcessor** → calls **AdaptiveWindower** synchronously → aggregates into finalized `AudioSegment` → `speech_queue`
+3. **SoundPreProcessor** → calls **GrowingWindowAssembler** synchronously → emits growing incremental `AudioSegment` → `speech_queue`
 4. **Recognizer** → reads `speech_queue` → processes both preliminary and finalized AudioSegments → `RecognitionResult` → `text_queue`
 5. **TextMatcher** → filters/processes text → publishes via **RecognitionResultPublisher** → notifies subscribers (TextFormatter, etc.)
 
@@ -654,14 +655,14 @@ Uses **Strategy Pattern** for hardware-specific ONNX Runtime optimizations.
 - Two-queue design: `chunk_queue` (raw audio) → `speech_queue` (AudioSegments)
 - AudioSource callback is non-blocking (<1ms) to prevent buffer overflows
 - SoundPreProcessor runs in dedicated thread, handling all audio processing
-- AdaptiveWindower is called synchronously by SoundPreProcessor (not a separate thread)
+- GrowingWindowAssembler is called synchronously by SoundPreProcessor (not a separate thread)
 
 ### 1. Single Responsibility Principle (SRP)
 
 Each component has one clear responsibility:
 - **AudioSource:** Audio capture only (minimal callback)
 - **SoundPreProcessor:** VAD, RMS normalization, speech buffering
-- **AdaptiveWindower:** Window aggregation
+- **GrowingWindowAssembler:** Growing window assembly
 - **Recognizer:** Speech recognition
 - **TextMatcher:** Text processing and overlap resolution (publishes results)
 - **RecognitionResultPublisher:** Subscriber management and event notification (Observer pattern)
