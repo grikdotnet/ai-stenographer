@@ -143,7 +143,13 @@ Uses a WAV file as input instead of microphone for reproducible testing.
 python -m pytest tests/
 ```
 
-Runs all tests in the tests directory.
+Runs all tests in the tests directory (excluding GUI tests).
+
+```bash
+python -m pytest tests/gui -m gui
+```
+
+Runs GUI tests separately. GUI tests live in `tests/gui/` and use tkinter, which fails when run many times in the same process, so they are kept separate from the main test suite.
 
 ## Architecture
 

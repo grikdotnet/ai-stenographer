@@ -3,6 +3,8 @@ import pytest
 from unittest.mock import MagicMock, patch, call
 import tkinter as tk
 
+pytestmark = pytest.mark.gui
+
 
 @pytest.fixture
 def root():

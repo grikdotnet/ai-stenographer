@@ -1,4 +1,5 @@
 import unittest
+import pytest
 from unittest.mock import Mock
 
 try:
@@ -6,6 +7,8 @@ try:
     TKINTER_AVAILABLE = True
 except ImportError:
     TKINTER_AVAILABLE = False
+
+pytestmark = pytest.mark.gui
 
 
 @unittest.skipUnless(TKINTER_AVAILABLE, "tkinter not available")

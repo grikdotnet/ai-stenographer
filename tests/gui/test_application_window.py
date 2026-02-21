@@ -5,10 +5,10 @@ NOTE: These tests may occasionally fail on Windows due to tkinter/TCL interprete
 state corruption when creating multiple Tk() instances in the same process.
 
 To run these tests reliably, use pytest-xdist to isolate each test in its own process:
-    python -m pytest tests/test_application_window.py -n auto
+    python -m pytest tests/gui/test_application_window.py -n auto
 
 Or run tests individually:
-    python -m pytest tests/test_application_window.py::test_name -v
+    python -m pytest tests/gui/test_application_window.py::test_name -v
 """
 import pytest
 import os

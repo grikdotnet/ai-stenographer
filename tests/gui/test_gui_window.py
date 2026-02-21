@@ -1,6 +1,7 @@
 import unittest
 import sys
 import os
+import pytest
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -19,6 +20,8 @@ except ImportError:
 except Exception:
     # Catch any tkinter initialization errors
     TKINTER_AVAILABLE = False
+
+pytestmark = pytest.mark.gui
 
 
 @unittest.skipUnless(TKINTER_AVAILABLE, "tkinter not available or properly configured")
