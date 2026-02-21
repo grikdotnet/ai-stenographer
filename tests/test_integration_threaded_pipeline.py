@@ -2,13 +2,13 @@
 import pytest
 import queue
 import numpy as np
-import time
 from unittest.mock import Mock
 from src.sound.AudioSource import AudioSource
 from src.sound.SoundPreProcessor import SoundPreProcessor
 from src.asr.VoiceActivityDetector import VoiceActivityDetector
 from src.sound.GrowingWindowAssembler import GrowingWindowAssembler
-from src.types import AudioSegment, SpeechEndSignal
+from src.SpeechEndRouter import SpeechEndRouter
+from src.types import AudioSegment, RecognizerAck, RecognizerFreeSignal, SpeechEndSignal
 
 
 class TestIntegrationThreadedPipeline:
@@ -47,31 +47,29 @@ class TestIntegrationThreadedPipeline:
     def test_raw_audio_flows_to_windower(self, pipeline_config):
         """Raw audio chunks should flow through SoundPreProcessor to windower.
 
-        Logic: AudioSource puts raw chunks → SoundPreProcessor processes → windower receives AudioSegments.
+        Logic: AudioSource puts raw chunks → SoundPreProcessor processes → windower receives AudioSegments
+        with the original (non-normalized) audio data.
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
 
-        # Mock VAD
-        mock_vad = Mock()
+        # Mock VAD: first 3 chunks are speech, then silence
         call_count = 0
         def vad_side_effect(audio):
             nonlocal call_count
             call_count += 1
-            # First 3 are speech, then silence
             if call_count <= 3:
                 return {'is_speech': True, 'speech_probability': 0.9}
             else:
                 return {'is_speech': False, 'speech_probability': 0.1}
 
+        mock_vad = Mock()
         mock_vad.process_frame = Mock(side_effect=vad_side_effect)
 
-        # Mock windower
         mock_windower = Mock()
         mock_windower.process_segment = Mock()
         mock_windower.flush = Mock()
 
-        # Create SoundPreProcessor
         preprocessor = SoundPreProcessor(
             chunk_queue=chunk_queue,
             speech_queue=speech_queue,
@@ -81,32 +79,23 @@ class TestIntegrationThreadedPipeline:
             verbose=False
         )
 
-        # Start preprocessor thread
-        preprocessor.start()
+        sent_audio_chunks = []
+        for i in range(5):
+            audio_chunk = np.full(512, 0.01 * (i + 1), dtype=np.float32)
+            sent_audio_chunks.append(audio_chunk.copy())
+            preprocessor._process_chunk({
+                'audio': audio_chunk,
+                'timestamp': 1.0 + i * 0.032,
+                'chunk_id': i
+            })
 
-        try:
-            # Simulate AudioSource putting raw chunks
-            for i in range(5):
-                chunk_data = {
-                    'audio': np.random.randn(512).astype(np.float32) * 0.1,
-                    'timestamp': 1.0 + i * 0.032,
-                    'chunk_id': i
-                }
-                chunk_queue.put(chunk_data)
-
-            # Give preprocessor time to process
-            time.sleep(0.5)
-
-            # Windower should have received segments
-            assert mock_windower.process_segment.called or mock_windower.flush.called
-            if mock_windower.process_segment.called:
-                segment = mock_windower.process_segment.call_args[0][0]
-                assert isinstance(segment, AudioSegment)
-                assert segment.type == 'incremental'
-                assert len(segment.data) > 0
-
-        finally:
-            preprocessor.stop()
+        assert mock_windower.process_segment.called or mock_windower.flush.called
+        if mock_windower.process_segment.called:
+            segment = mock_windower.process_segment.call_args[0][0]
+            assert isinstance(segment, AudioSegment)
+            assert segment.type == 'incremental'
+            expected_audio = np.concatenate(sent_audio_chunks)
+            np.testing.assert_array_equal(segment.data, expected_audio)
 
 
     def test_incremental_segments_in_speech_queue(self, pipeline_config):
@@ -117,8 +106,6 @@ class TestIntegrationThreadedPipeline:
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
 
-        # Mock VAD
-        mock_vad = Mock()
         call_count = 0
         def vad_side_effect(audio):
             nonlocal call_count
@@ -128,9 +115,9 @@ class TestIntegrationThreadedPipeline:
             else:
                 return {'is_speech': False, 'speech_probability': 0.1}
 
+        mock_vad = Mock()
         mock_vad.process_frame = Mock(side_effect=vad_side_effect)
 
-        # Real GrowingWindowAssembler
         windower = GrowingWindowAssembler(
             speech_queue=speech_queue,
             config=pipeline_config,
@@ -146,38 +133,23 @@ class TestIntegrationThreadedPipeline:
             verbose=False
         )
 
-        preprocessor.start()
+        for i in range(6):
+            preprocessor._process_chunk({
+                'audio': np.random.randn(512).astype(np.float32) * 0.1,
+                'timestamp': 1.0 + i * 0.032,
+                'chunk_id': i
+            })
 
-        try:
-            # Feed chunks
-            for i in range(6):
-                chunk_data = {
-                    'audio': np.random.randn(512).astype(np.float32) * 0.1,
-                    'timestamp': 1.0 + i * 0.032,
-                    'chunk_id': i
-                }
-                chunk_queue.put(chunk_data)
+        segments = []
+        while not speech_queue.empty():
+            segments.append(speech_queue.get_nowait())
 
-            # Wait for processing
-            time.sleep(0.5)
-
-            segments = []
-            while not speech_queue.empty():
-                try:
-                    segments.append(speech_queue.get(timeout=0.1))
-                except queue.Empty:
-                    break
-
-            assert len(segments) > 0
-
-            for s in segments:
-                if isinstance(s, AudioSegment):
-                    assert s.type == 'incremental'
-                    continue
-                assert isinstance(s, SpeechEndSignal)
-
-        finally:
-            preprocessor.stop()
+        assert len(segments) == 3
+        assert isinstance(segments[0], AudioSegment)
+        assert segments[0].type == 'incremental'
+        assert isinstance(segments[1], SpeechEndSignal)
+        assert isinstance(segments[2], AudioSegment)
+        assert segments[2].type == 'incremental'
 
 
     def test_preprocessor_delegates_to_windower(self, pipeline_config):
@@ -188,7 +160,6 @@ class TestIntegrationThreadedPipeline:
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
 
-        # Mock VAD: speech then silence
         call_count = 0
         def vad_side_effect(audio):
             nonlocal call_count
@@ -201,7 +172,6 @@ class TestIntegrationThreadedPipeline:
         mock_vad = Mock()
         mock_vad.process_frame = Mock(side_effect=vad_side_effect)
 
-        # Mock windower
         mock_windower = Mock()
         mock_windower.process_segment = Mock()
         mock_windower.flush = Mock()
@@ -215,26 +185,18 @@ class TestIntegrationThreadedPipeline:
             verbose=False
         )
 
-        preprocessor.start()
+        sent_audio_chunks = []
+        for i in range(5):
+            audio_chunk = np.full(512, 0.01 * (i + 1), dtype=np.float32)
+            sent_audio_chunks.append(audio_chunk.copy())
+            preprocessor._process_chunk({
+                'audio': audio_chunk,
+                'timestamp': 1.0 + i * 0.032,
+                'chunk_id': i
+            })
 
-        try:
-            # Feed chunks (3 speech + 2 silence to trigger finalization)
-            for i in range(5):
-                chunk_data = {
-                    'audio': np.random.randn(512).astype(np.float32) * 0.1,
-                    'timestamp': 1.0 + i * 0.032,
-                    'chunk_id': i
-                }
-                chunk_queue.put(chunk_data)
-
-            # Wait for processing
-            time.sleep(0.5)
-
-            # Windower should have received segments
-            assert mock_windower.process_segment.called or mock_windower.flush.called
-            for call in mock_windower.process_segment.call_args_list:
-                segment = call[0][0]
-                assert isinstance(segment, AudioSegment)
-
-        finally:
-            preprocessor.stop()
+        assert mock_windower.process_segment.call_count == 1
+        segment = mock_windower.process_segment.call_args[0][0]
+        assert isinstance(segment, AudioSegment)
+        expected_audio = np.concatenate(sent_audio_chunks)
+        np.testing.assert_array_equal(segment.data, expected_audio)

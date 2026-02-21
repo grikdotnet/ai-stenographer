@@ -99,25 +99,6 @@ def test_append_to_speech_buffer(spp):
 # Test: Segment Finalization
 # ============================================================================
 
-def test_keep_remainder_after_breakpoint(spp):
-    """Test _keep_remainder_after_breakpoint keeps remainder in buffer."""
-    spp.audio_state.speech_start_time = 1.0
-    for i in range(60):
-        spp.audio_state.speech_buffer.append({
-            'audio': make_audio(),
-            'timestamp': 1.0 + i * 0.032,
-            'chunk_id': i,
-            'is_speech': True
-        })
-
-    spp._keep_remainder_after_breakpoint(40)
-
-    # Verify remainder
-    assert len(spp.audio_state.speech_buffer) == 19  # 60 - 41
-    assert spp.audio_state.speech_start_time == 1.0 + 41 * 0.032
-    assert spp.audio_state.silence_energy == 0.0
-
-
 def test_reset_segment_state(spp):
     """Test _reset_segment_state clears all segment state."""
     spp.audio_state.speech_buffer = [{'audio': make_audio(), 'timestamp': 1.0, 'chunk_id': 0, 'is_speech': True}]

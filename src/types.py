@@ -69,6 +69,19 @@ class RecognizerAck:
     error: str | None = None
 
 
+@dataclass
+class RecognizerFreeSignal:
+    """Control signal emitted when recognizer becomes free (ACKs in-flight segment).
+
+    Used for ACK-driven early hard-cut: preprocessor can cut buffered speech
+    earlier than max_duration when recognizer capacity is available.
+    """
+    seq: int              # Monotonic sequence number (never resets)
+    message_id: int       # AudioSegment message_id that was ACKed
+    utterance_id: int     # utterance_id from the ACKed segment
+
+
+RouterControlItem = RecognizerFreeSignal
 SpeechQueueItem = Union[AudioSegment, SpeechEndSignal]
 RecognizerOutputItem = Union[RecognitionTextMessage, RecognizerAck]
 MatcherQueueItem = Union[RecognitionResult, SpeechEndSignal]

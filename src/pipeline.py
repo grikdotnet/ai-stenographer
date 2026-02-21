@@ -57,6 +57,7 @@ class STTPipeline:
         self.recognizer_queue: queue.Queue = queue.Queue(maxsize=200)           # AudioSegment
         self.recognizer_output_queue: queue.Queue = queue.Queue(maxsize=200)    # RecognitionTextMessage | RecognizerAck
         self.matcher_queue: queue.Queue = queue.Queue(maxsize=50)               # RecognitionResult | SpeechEndSignal
+        self.router_control_queue: queue.Queue = queue.Queue(maxsize=2)         # RecognizerFreeSignal
 
         self.execution_provider_manager: ExecutionProviderManager = ExecutionProviderManager(self.config)
         providers = self.execution_provider_manager.build_provider_list()
@@ -126,6 +127,7 @@ class STTPipeline:
             windower=self.growing_window_assembler,
             config=self.config,
             app_state=self.app_state,
+            control_queue=self.router_control_queue,
             verbose=verbose
         )
 
@@ -163,6 +165,7 @@ class STTPipeline:
             recognizer_output_queue=self.recognizer_output_queue,
             matcher_queue=self.matcher_queue,
             app_state=self.app_state,
+            control_queue=self.router_control_queue,
             verbose=verbose
         )
 

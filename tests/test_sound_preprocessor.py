@@ -432,25 +432,21 @@ class TestSoundPreProcessor:
         assert len(segment.left_context) == expected_samples
 
 
-    def test_right_context_extraction(self, preprocessor_config, mock_windower):
-        """Verify right context contains trailing silence chunks when segment finalized.
+    def test_utterance_end_all_audio_in_data(self, preprocessor_config, mock_windower):
+        """Verify hard-cut: all audio (speech + silence) is in data, right_context empty.
 
-        Logic: 10 speech chunks, then 3 silence chunks that finalize segment.
+        Logic: 10 speech chunks, then 2 silence chunks that finalize the segment.
         First 3 speech chunks trigger confirmation, so speech_buffer gets:
         - 3 chunks from confirmation (chunk_ids 0-2)
         - 7 more speech chunks (chunk_ids 3-9)
-        - 2 silence chunks before finalization (chunk_ids 10-11)
-        Note: 3rd silence chunk not processed because finalization triggers after 2nd.
+        - 2 silence chunks (chunk_ids 10-11)
+        Note: finalization triggers after 2nd silence (energy=1.8 >= 1.5).
 
-        With silence_start_idx tracking (silence_start_idx=10):
-        - data = chunks [0-10] (11 chunks: 10 speech + first silence at breakpoint)
-        - right_context = chunk [11] (1 silence chunk after breakpoint)
-        - chunk_ids = [0-10] (11 IDs)
+        Hard-cut model: all 12 chunks in data, right_context empty.
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
 
-        # Mock VAD: 10 speech chunks, then 3 silence to finalize
         call_count = 0
         def vad_side_effect(audio):
             nonlocal call_count
@@ -472,41 +468,30 @@ class TestSoundPreProcessor:
             verbose=False
         )
 
-        # Feed 10 speech chunks
         for i in range(10):
             audio = np.random.randn(512).astype(np.float32) * 0.1
-            chunk = {
-                'audio': audio,
-                'timestamp': 1.0 + i * 0.032,
-            }
+            chunk = {'audio': audio, 'timestamp': 1.0 + i * 0.032}
             preprocessor._process_chunk(chunk)
 
-        # Feed 3 silence chunks to finalize
         for i in range(3):
             audio = np.random.randn(512).astype(np.float32) * 0.01
-            chunk = {
-                'audio': audio,
-                'timestamp': 1.0 + (10 + i) * 0.032,
-            }
+            chunk = {'audio': audio, 'timestamp': 1.0 + (10 + i) * 0.032}
             preprocessor._process_chunk(chunk)
 
-        # Segment goes to windower.process_segment()
         assert mock_windower.process_segment.called
         segment = mock_windower.process_segment.call_args[0][0]
 
-        # Verify data: 10 speech + 1 silence at breakpoint
-        assert len(segment.data) == 11 * 512, \
-            f"Expected data length {11 * 512}, got {len(segment.data)}"
+        # Hard cut: all 12 chunks (10 speech + 2 silence) in data
+        assert len(segment.data) == 12 * 512, \
+            f"Expected data length {12 * 512}, got {len(segment.data)}"
 
-        # Verify right_context: 1 silence chunk after breakpoint
-        assert len(segment.right_context) == 1 * 512, \
-            f"Expected right_context length {1 * 512}, got {len(segment.right_context)}"
+        assert segment.right_context.size == 0, \
+            f"right_context should be empty, got {segment.right_context.size} samples"
 
-        # Verify chunk_ids: [0-10] (11 IDs)
-        assert len(segment.chunk_ids) == 11, \
-            f"Expected 11 chunk_ids, got {len(segment.chunk_ids)}"
-        assert segment.chunk_ids == list(range(11)), \
-            f"Expected chunk_ids [0-10], got {segment.chunk_ids}"
+        assert len(segment.chunk_ids) == 12, \
+            f"Expected 12 chunk_ids, got {len(segment.chunk_ids)}"
+        assert segment.chunk_ids == list(range(12)), \
+            f"Expected chunk_ids [0-11], got {segment.chunk_ids}"
 
 
     def test_no_left_context_at_startup(self, preprocessor_config, mock_windower):
@@ -688,16 +673,15 @@ class TestSoundPreProcessor:
 
     # Consecutive Speech Chunk Tests (False Positive Prevention)
 
-    def test_max_duration_skips_last_three_chunks_in_search(self, preprocessor_config, mock_windower):
-        """Backward search should skip last 3 chunks to ensure right_context.
+    def test_max_duration_hard_cut_with_silence_in_buffer(self, preprocessor_config, mock_windower):
+        """Max duration always hard-cuts all buffered chunks, ignoring silence positions.
 
         Pattern: 88 speech → 1 silence → 5 speech (total 94 chunks)
-        Expected: Search skips chunks 91-93, finds silence at chunk 88.
+        Expected: All 94 chunks in data, right_context empty, buffer reset.
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
 
-        # Mock VAD: 88 speech, 1 silence (at idx 88), 5 speech
         call_count = 0
         def vad_side_effect(audio):
             nonlocal call_count
@@ -727,28 +711,25 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        # Segment goes to windower.process_segment()
         assert mock_windower.process_segment.called
         segment = mock_windower.process_segment.call_args[0][0]
 
-        # Segment data: chunks 0-88 (89 chunks: 88 speech + 1 silence)
-        assert len(segment.chunk_ids) == 89
+        assert len(segment.chunk_ids) == 94
+        assert segment.right_context.size == 0
+        assert len(preprocessor.audio_state.speech_buffer) == 0
+        from src.sound.SoundPreProcessor import ProcessingStatesEnum
+        assert preprocessor.audio_state.state == ProcessingStatesEnum.ACTIVE_SPEECH
 
-        # Right context: chunks 89-93
-        assert len(segment.right_context) == 512 * 5
 
-
-    def test_max_duration_silence_close_to_end(self, preprocessor_config, mock_windower):
-        """Silence within searchable range should be used as breakpoint.
+    def test_max_duration_hard_cut_always_cuts_entire_buffer(self, preprocessor_config, mock_windower):
+        """Max duration always hard-cuts the entire buffer regardless of silence position.
 
         Pattern: 87 speech → 1 silence → 6 speech (total 94 chunks)
-        Edge case: Silence at position 87, search range 0-90 (skipping 91-93).
-        Expected: Silence found and used.
+        Expected: All 94 chunks in data, right_context empty, buffer reset.
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
 
-        # Mock VAD: 87 speech, 1 silence (at idx 87), 6 speech
         call_count = 0
         def vad_side_effect(audio):
             nonlocal call_count
@@ -771,7 +752,6 @@ class TestSoundPreProcessor:
             verbose=False
         )
 
-        # Feed 94 chunks
         for i in range(94):
             chunk = {
                 'audio': np.random.randn(512).astype(np.float32) * 0.1,
@@ -779,20 +759,19 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        # Segment goes to windower.process_segment()
         assert mock_windower.process_segment.called
         segment = mock_windower.process_segment.call_args[0][0]
 
-        # Segment data: chunks 0-87 (88 chunks: 87 speech + 1 silence)
-        assert len(segment.chunk_ids) == 88
+        assert len(segment.chunk_ids) == 94
+        assert segment.right_context.size == 0
+        assert len(preprocessor.audio_state.speech_buffer) == 0
 
 
-    def test_max_duration_multiple_silence_uses_last_one(self, preprocessor_config, mock_windower):
-        """Backward search should find the last silence chunk.
+    def test_max_duration_hard_cut_ignores_multiple_silences(self, preprocessor_config, mock_windower):
+        """Max duration hard-cuts the full buffer, ignoring any silence positions.
 
         Pattern: 30 speech → 1 silence → 30 speech → 1 silence → 32 speech (total 94 chunks)
-        Silences at: positions 30 and 61.
-        Expected: Backward search finds silence at position 61.
+        Expected: All 94 chunks in data, right_context empty, buffer reset.
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
@@ -826,26 +805,25 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        # Segment goes to windower.process_segment()
         assert mock_windower.process_segment.called
         segment = mock_windower.process_segment.call_args[0][0]
 
-        # Segment data: chunks 0-61
-        assert len(segment.chunk_ids) == 62
-        assert segment.chunk_ids == list(range(62))
+        assert len(segment.chunk_ids) == 94
+        assert segment.chunk_ids == list(range(94))
+        assert segment.right_context.size == 0
+        assert len(preprocessor.audio_state.speech_buffer) == 0
 
 
-    def test_hard_cut_no_breakpoint_found(self, preprocessor_config, mock_windower):
-        """When NO silence breakpoint found, hard cut with empty right_context.
+    def test_max_duration_hard_cut_continuous_speech(self, preprocessor_config, mock_windower):
+        """Max duration always hard-cuts all buffered audio.
 
         Pattern: 94 chunks of continuous speech (no silence)
-        Search range: chunks [0-90] (skips last 3: [91-93])
-        Breakpoint found: None (no silence in searchable range)
 
-        Expected (hard cut = no natural boundary):
+        Expected:
         - data = all chunks [0-93] (94 chunks)
-        - right_context = empty (no silence boundary exists)
+        - right_context = empty
         - chunk_ids = [0-93] (94 IDs)
+        - speech_buffer reset, state stays ACTIVE_SPEECH
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
@@ -882,23 +860,25 @@ class TestSoundPreProcessor:
         assert mock_windower.process_segment.called
         segment = mock_windower.process_segment.call_args[0][0]
 
-        # Hard cut: all data, no right_context
         expected_data = np.concatenate(all_chunks_audio[:94])
         assert np.array_equal(segment.data, expected_data), \
-            "segment.data should contain all chunks 0-93 in order (hard cut)"
+            "segment.data should contain all chunks 0-93 in order"
 
-        # Verify right_context: empty (no silence boundary)
-        assert len(segment.right_context) == 0, \
-            f"right_context should be empty for hard cut, got {len(segment.right_context)} samples"
+        assert segment.right_context.size == 0, \
+            f"right_context should be empty, got {segment.right_context.size} samples"
 
         assert len(segment.chunk_ids) == 94, \
             f"Expected 94 chunk_ids, got {len(segment.chunk_ids)}"
         assert segment.chunk_ids == list(range(94)), \
             f"Expected chunk_ids [0-93], got {segment.chunk_ids[:5]}...{segment.chunk_ids[-5:]}"
 
+        assert len(preprocessor.audio_state.speech_buffer) == 0
+        from src.sound.SoundPreProcessor import ProcessingStatesEnum
+        assert preprocessor.audio_state.state == ProcessingStatesEnum.ACTIVE_SPEECH
+
 
     def test_normal_finalization_with_mixed_chunks(self, preprocessor_config, mock_windower):
-        """Normal finalization: data includes both speech AND silence chunks.
+        """Normal finalization: data includes ALL chunks (speech AND silence).
 
         Pattern: 5 speech → 1 silence → 7 speech → 3 silence (total 16 chunks)
         Finalization triggers after 2nd final silence (energy=1.8 > 1.5).
@@ -906,15 +886,12 @@ class TestSoundPreProcessor:
         Flow:
         - chunks 0-2: confirm speech → speech_buffer initialized with chunk_ids 0-2
         - chunks 3-4: speech → chunk_ids 3-4
-        - chunk 5: silence → ACCUMULATING_SILENCE, silence_start_idx=5, chunk_id 5
-        - chunks 6-12: speech → ACTIVE_SPEECH, silence_start_idx reset, chunk_ids 6-12
-        - chunk 13: silence → ACCUMULATING_SILENCE, silence_start_idx=13, chunk_id 13
+        - chunk 5: silence → ACCUMULATING_SILENCE, chunk_id 5
+        - chunks 6-12: speech → ACTIVE_SPEECH, chunk_ids 6-12
+        - chunk 13: silence → ACCUMULATING_SILENCE, chunk_id 13
         - chunk 14: silence → energy=1.8 > 1.5 → FINALIZE (chunk 15 never processed)
 
-        With silence_start_idx=13:
-        - data = chunks [0-13] (14 chunks: all up to and including breakpoint)
-        - right_context = chunk [14] (1 silence chunk after breakpoint)
-        - chunk_ids = [0-13] (14 IDs)
+        Hard-cut model: all 15 buffered chunks in data, right_context empty.
         """
         chunk_queue = queue.Queue()
         speech_queue = queue.Queue()
@@ -923,13 +900,13 @@ class TestSoundPreProcessor:
         def vad_side_effect(audio):
             nonlocal call_count
             call_count += 1
-            if call_count <= 5:          # chunks 0-4: speech
+            if call_count <= 5:
                 return {'is_speech': True, 'speech_probability': 0.9}
-            elif call_count == 6:        # chunk 5: silence
+            elif call_count == 6:
                 return {'is_speech': False, 'speech_probability': 0.1}
-            elif call_count <= 13:       # chunks 6-12: speech
+            elif call_count <= 13:
                 return {'is_speech': True, 'speech_probability': 0.9}
-            else:                        # chunks 13-15: silence (triggers finalization)
+            else:
                 return {'is_speech': False, 'speech_probability': 0.1}
 
         mock_vad = Mock()
@@ -944,39 +921,28 @@ class TestSoundPreProcessor:
             verbose=False
         )
 
-        # Feed 16 chunks total and verify segment contains correct data in correct order
         all_chunks_audio = []
         for i in range(16):
             audio = np.random.randn(512).astype(np.float32) * 0.1
             all_chunks_audio.append(audio)
-            chunk = {
-                'audio': audio,
-                'timestamp': 1.0 + i * 0.032,
-            }
+            chunk = {'audio': audio, 'timestamp': 1.0 + i * 0.032}
             preprocessor._process_chunk(chunk)
 
-        # Segment goes to windower.process_segment()
         assert mock_windower.process_segment.called
         segment = mock_windower.process_segment.call_args[0][0]
 
-        # Verify data: 14 chunks (all up to and including breakpoint at chunk 13)
-        expected_data = np.concatenate(all_chunks_audio[:14])
+        # Hard cut: all 15 chunks in data (chunk 15 never processed — finalization triggers after 14)
+        expected_data = np.concatenate(all_chunks_audio[:15])
         assert np.array_equal(segment.data, expected_data), \
-            "segment.data should contain exactly chunks 0-13 in order"
+            "segment.data should contain all 15 buffered chunks in order"
 
-        # Verify right_context: 1 silence chunk after breakpoint (chunk 14)
-        expected_right_context = all_chunks_audio[14]
-        assert np.array_equal(segment.right_context, expected_right_context), \
-            "right_context should contain exactly chunk 14"
+        assert segment.right_context.size == 0, \
+            f"right_context should be empty, got {segment.right_context.size} samples"
 
-        # Verify chunk_ids: [0-13] (14 IDs)
-        assert len(segment.chunk_ids) == 14, \
-            f"Expected 14 chunk_ids, got {len(segment.chunk_ids)}"
-        assert segment.chunk_ids == list(range(14)), \
-            f"Expected chunk_ids [0-13], got {segment.chunk_ids}"
-
-        assert 14 not in segment.chunk_ids, \
-            "chunk_id 14 should NOT be in segment.chunk_ids (belongs to right_context)"
+        assert len(segment.chunk_ids) == 15, \
+            f"Expected 15 chunk_ids, got {len(segment.chunk_ids)}"
+        assert segment.chunk_ids == list(range(15)), \
+            f"Expected chunk_ids [0-14], got {segment.chunk_ids}"
 
 
 def test_pause_state_flushes_segments():

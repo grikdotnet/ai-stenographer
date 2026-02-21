@@ -136,27 +136,23 @@ Microphone Input (16kHz, mono)
 │    │                                                                      │
 │    ├─→ Context buffer management (circular buffer, 20 chunks = 640ms) │
 │    │     ├─→ All chunks stored: speech + silence                       │
-│    │     ├─→ Left context: snapshot captured when speech starts        │
-│    │     └─→ Right context: extracted from trailing silence            │
+│    │     └─→ Left context: snapshot captured when speech starts        │
 │    │                                                                      │
 │    ├─→ Speech buffering (_handle_speech_frame, _handle_silence_frame)   │
 │    │     ├─→ Consecutive speech logic: 3 chunks to start segment       │
 │    │     └─→ Accumulates chunks until finalization                      │
 │    │                                                                      │
 │    ├─→ _finalize_segment() [on silence threshold or max duration]       │
-│    │     ├─→ Creates preliminary AudioSegment with context              │
-│    │     │     └─→ type='preliminary'                                    │
+│    │     ├─→ Creates incremental AudioSegment with context              │
+│    │     │     └─→ type='incremental'                                    │
 │    │     │     └─→ chunk_ids=[id1, id2, ...]                            │
-│    │     │     └─→ data: np.ndarray (speech only)                       │
+│    │     │     └─→ data: np.ndarray (all buffered audio)                │
 │    │     │     └─→ left_context: pre-speech audio                       │
-│    │     │     └─→ right_context: trailing silence                      │
+│    │     │     └─→ right_context: always empty (hard-cut model)         │
 │    │     │                                                                │
-│    │     ├─→ Intelligent breakpoint splitting (max duration)            │
-│    │     │     ├─→ _find_silence_breakpoint(): backward search          │
-│    │     │     ├─→ Skips last 6 chunks for right_context                │
-│    │     │     └─→ Preserves buffer continuity with overlap             │
+│    │     ├─→ Hard-cut splitting (max duration)                          │
+│    │     │     └─→ Emits full buffer, resets, stays in ACTIVE_SPEECH    │
 │    │     │                                                                │
-│    │     ├─→ speech_queue.put(preliminary_segment)  [instant output]    │
 │    │     └─→ AdaptiveWindower.process_segment(segment) [sync call]      │
 │    │           └─→ Aggregates into finalized windows                    │
 │    │                                                                      │
@@ -180,7 +176,7 @@ Microphone Input (16kHz, mono)
 │    - type: 'preliminary' | 'finalized' | 'flush'                         │
 │    - data: npt.NDArray[np.float32] (speech chunks only)                  │
 │    - left_context: npt.NDArray[np.float32] (pre-speech audio)            │
-│    - right_context: npt.NDArray[np.float32] (trailing silence)           │
+│    - right_context: npt.NDArray[np.float32] (always empty from SPP)      │
 │    - start_time: float                                                   │
 │    - end_time: float                                                     │
 │    - chunk_ids: list[int]                                                │
@@ -399,16 +395,16 @@ Main Thread        AudioSource Thread    SoundPreProcessor Thread    Recognizer 
 ```python
 @dataclass
 class AudioSegment:
-    """Unified type for preliminary/finalized audio segments + flush signals"""
-    type: Literal['preliminary', 'finalized', 'flush']  # Discriminator
-    data: npt.NDArray[np.float32]              # Audio samples [-1.0, 1.0], speech only
+    """Unified type for incremental/finalized audio segments + flush signals"""
+    type: Literal['incremental', 'finalized', 'flush']  # Discriminator
+    data: npt.NDArray[np.float32]              # Audio samples [-1.0, 1.0], all buffered audio
     left_context: npt.NDArray[np.float32]      # Pre-speech context audio
-    right_context: npt.NDArray[np.float32]     # Post-speech context audio
+    right_context: npt.NDArray[np.float32]     # Always empty from SPP (hard-cut model)
     start_time: float                           # Segment start (seconds, data only)
     end_time: float                             # Segment end (seconds, data only)
     chunk_ids: list[int]                        # Tracking IDs
 
-    # preliminary: chunk_ids = [id1, id2, ...]  (silence-bounded segments)
+    # incremental: chunk_ids = [id1, id2, ...]  (hard-cut segments mid-utterance)
     # finalized:   chunk_ids = [id1, id2, id3, ...]  (aggregated windows)
     # flush:       chunk_ids = [last_id]  (end-of-segment signal with final chunk ID)
 
@@ -442,8 +438,8 @@ SoundPreProcessor
         │
         ↓ Segment Finalization
         │
-AudioSegment (preliminary)
-  └─→ type='preliminary', data + left_context + right_context
+AudioSegment (incremental)
+  └─→ type='incremental', data + left_context (right_context always empty)
   └─→ chunk_ids: [42, 43, 44]
         │
         ├─→ speech_queue (instant)
@@ -587,7 +583,7 @@ Uses **Strategy Pattern** for hardware-specific ONNX Runtime optimizations.
 **Hardware Acceleration:** DirectML GPU (auto-select) → CPU fallback (see Hardware Acceleration Architecture)
 
 **Context-Aware Recognition:**
-- Concatenates left_context + data + right_context for better acoustic modeling
+- Concatenates left_context + data (right_context always empty from SPP) for better acoustic modeling
 - Filters tokens by timestamp to remove hallucinations from context regions
 - 0.37s tolerance for VAD warm-up delay
 - Benefits: Better short-word recognition (50-128ms), eliminates silence padding artifacts
@@ -719,17 +715,14 @@ This architecture provides:
 **Context Buffer Strategy:**
 - 20-chunk circular buffer (640ms) captures pre/post-speech audio
 - Left context snapshot immune to wraparound
-- Right context extraction from trailing silence
-- Enables better STT for short words (<100ms) without hallucinations
+- Left context snapshot enables better STT for short words (<100ms) without hallucinations
 
-**Intelligent Breakpoint Splitting:**
-- Backward search for natural silence boundaries
-- Skips last 6 chunks to preserve right_context
-- 6-chunk overlap maintains buffer continuity
-- Eliminates mid-word cuts from max_speech_duration
+**Hard-Cut Splitting:**
+- Max duration triggers a hard cut: full buffer emitted, reset, stays in ACTIVE_SPEECH
+- No silence search, no right_context; right_context is always empty from SPP
 
 **Timestamped Token Filtering:**
-- Context concatenation: left_context + data + right_context
+- Context concatenation: left_context + data
 - Token-level timestamp alignment from TimestampedResultsAsrAdapter
 - 0.37s tolerance for VAD warm-up delay
 - Removes hallucinations ("yeah", "mm-hmm") from silence padding
