@@ -122,7 +122,7 @@ class TestPipelineSessionOptionsStrategy:
                 }
             },
             "vad": {"frame_duration_ms": 32, "threshold": 0.5},
-            "windowing": {"max_window_duration": 7.0, "max_speech_duration_ms": 1500, "silence_timeout": 0.5},
+            "windowing": {"max_window_duration": 7.0, "max_speech_duration_ms": 1500},
             "recognition": {"model_name": "parakeet", "inference": "cpu"}
         }
 
@@ -196,3 +196,4 @@ class TestPipelineSessionOptionsStrategy:
             "DmlExecutionProvider should be tuple with options"
         assert providers[0][0] == 'DmlExecutionProvider', \
             "First provider should be DmlExecutionProvider"
+

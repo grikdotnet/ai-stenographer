@@ -23,7 +23,6 @@ def _config() -> dict:
         },
         "windowing": {
             "max_speech_duration_ms": 5000,
-            "silence_timeout": 0.5,
         },
     }
 

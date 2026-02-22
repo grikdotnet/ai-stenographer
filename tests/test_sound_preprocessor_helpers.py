@@ -30,8 +30,7 @@ def spp_config():
             'threshold': 0.5
         },
         'windowing': {
-            'max_speech_duration_ms': 3000,
-            'silence_timeout': 2.0
+            'max_speech_duration_ms': 3000
         }
     }
 

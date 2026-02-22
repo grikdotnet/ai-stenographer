@@ -33,8 +33,7 @@ class TestSoundPreProcessorQueueFull:
                 'threshold': 0.5
             },
             'windowing': {
-                'max_speech_duration_ms': 3000,
-                'silence_timeout': 0.5
+                'max_speech_duration_ms': 3000
             }
         }
 
@@ -94,3 +93,4 @@ class TestSoundPreProcessorQueueFull:
         segment = mock_windower.process_segment.call_args[0][0]
         assert isinstance(segment, AudioSegment)
         assert segment.type == 'incremental'
+

@@ -85,14 +85,11 @@ class AudioProcessingState:
     # Context
     left_context_snapshot: list[np.ndarray] | None = None
 
-    # Control flags
-    speech_before_silence: bool = False
-
     def reset_segment(self) -> None:
         """Reset state after segment finalization.
 
-        Clears buffer, energy, and context but preserves timing flags
-        (last_speech_timestamp, speech_before_silence) for timeout logic.
+        Clears segment buffers and silence energy while preserving timeline markers
+        used for boundary events and diagnostics.
         """
         self.speech_buffer = []
         self.silence_energy = 0.0
@@ -139,11 +136,6 @@ class SoundPreProcessor:
     - Finalize when energy >= silence_energy_threshold (e.g., 1.5)
     - Strong silence (prob=0.1) finalizes faster than weak silence (prob=0.3)
 
-    Silence Timeout Logic:
-    - After speech ends, track silence duration from timestamp parameter
-    - If silence exceeds timeout AND speech was detected before, flush windower
-    - Reset speech_before_silence flag after flush to prevent repeated flushes
-
     Args:
         chunk_queue: Queue to read raw audio chunks from AudioSource
         speech_queue: Queue to write AudioSegments (incremental + flush)
@@ -176,7 +168,6 @@ class SoundPreProcessor:
         self.frame_duration_ms: int = config['vad']['frame_duration_ms']
         self.max_speech_duration_ms: int = config['windowing']['max_speech_duration_ms']
         self.silence_energy_threshold: float = config['audio']['silence_energy_threshold']
-        self.silence_timeout: float = config['windowing']['silence_timeout']
 
         # RMS normalization (AGC)
         rms_config = config['audio']['rms_normalization']
@@ -282,16 +273,6 @@ class SoundPreProcessor:
                     self.state = ProcessingStatesEnum.WAITING_CONFIRMATION
                 self._append_to_idle_buffer(audio, timestamp, is_speech=is_speech)
 
-                # Flush windower if silence timeout exceeded after speech
-                if s.speech_before_silence:
-                    silence_duration = timestamp - s.last_speech_timestamp
-                    if silence_duration >= self.silence_timeout:
-                        if self.verbose:
-                            logging.debug(f"SoundPreProcessor: silence_timeout reached ({silence_duration:.2f}s)")
-                        self.windower.flush()
-                        self._emit_speech_end_if_open(end_time=s.last_speech_timestamp)
-                        s.speech_before_silence = False
-
             case ProcessingStatesEnum.WAITING_CONFIRMATION:
                 self._append_to_idle_buffer(audio, timestamp, is_speech=is_speech)
 
@@ -322,7 +303,6 @@ class SoundPreProcessor:
                         self._initialize_speech_buffer_from_idle(confirmation_chunks_from_idle)
 
                         s.last_speech_timestamp = timestamp
-                        s.speech_before_silence = True
                         s.silence_energy = 0.0
 
                         if self.verbose:
@@ -355,7 +335,6 @@ class SoundPreProcessor:
                     s.chunk_id_counter += 1
 
             case ProcessingStatesEnum.ACCUMULATING_SILENCE:
-                # s.speech_before_silence is still True
                 if is_speech:
                     # ACCUMULATING_SILENCE → ACTIVE_SPEECH
                     self.state = ProcessingStatesEnum.ACTIVE_SPEECH
@@ -389,6 +368,7 @@ class SoundPreProcessor:
                             logging.debug(f"SoundPreProcessor: emitting segment")
                             logging.debug(f"  chunk_ids=[{segment.chunk_ids[0] if segment.chunk_ids else ''}...{segment.chunk_ids[-1] if segment.chunk_ids else ''}]")
                             logging.debug(f"  left_context={len(segment.left_context)/512} chunks, right_context={len(segment.right_context)/512} chunks")
+
 
     def _normalize_rms(self, audio_chunk: np.ndarray) -> np.ndarray:
         """Normalize audio chunk to target RMS level with temporal smoothing (AGC).
@@ -650,14 +630,14 @@ class SoundPreProcessor:
             timestamp: Current chunk timestamp for logging
         """
         s = self.audio_state
+        segment = self._build_audio_segment()
+        self.windower.process_segment(segment)
+
         if self.verbose:
             offset = timestamp - s.first_chunk_timestamp
             logging.debug(f"----------------------------")
             logging.debug(f"SoundPreProcessor: max_speech_duration reached, splitting at {offset:.2f}")
             logging.debug(f"  chunk_ids=[{segment.chunk_ids[0] if segment.chunk_ids else ''}...{segment.chunk_ids[-1] if segment.chunk_ids else ''}]")
-
-        segment = self._build_audio_segment()
-        self.windower.process_segment(segment)
 
         s.speech_buffer = []
         s.speech_start_time = timestamp

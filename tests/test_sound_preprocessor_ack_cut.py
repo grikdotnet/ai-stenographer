@@ -28,8 +28,7 @@ def preprocessor_config():
         },
         'windowing': {
             'max_speech_duration_ms': 1500,
-            'min_segment_duration_ms': 200,
-            'silence_timeout': 0.5
+            'min_segment_duration_ms': 200
         }
     }
 
@@ -68,7 +67,7 @@ def test_min_segment_duration_fallback(mock_vad_speech, mock_windower):
         'audio': {'sample_rate': 16000, 'chunk_duration': 0.032, 'silence_energy_threshold': 1.5,
                   'rms_normalization': {'target_rms': 0.05, 'silence_threshold': 0.001, 'gain_smoothing': 0.9}},
         'vad': {'frame_duration_ms': 32, 'threshold': 0.5},
-        'windowing': {'max_speech_duration_ms': 1500, 'min_segment_duration_ms': 300, 'silence_timeout': 0.5}
+        'windowing': {'max_speech_duration_ms': 1500, 'min_segment_duration_ms': 300}
     }
     preprocessor = SoundPreProcessor(
         chunk_queue=chunk_queue,
@@ -83,7 +82,7 @@ def test_min_segment_duration_fallback(mock_vad_speech, mock_windower):
         'audio': {'sample_rate': 16000, 'chunk_duration': 0.032, 'silence_energy_threshold': 1.5,
                   'rms_normalization': {'target_rms': 0.05, 'silence_threshold': 0.001, 'gain_smoothing': 0.9}},
         'vad': {'frame_duration_ms': 32, 'threshold': 0.5},
-        'windowing': {'max_speech_duration_ms': 1500, 'silence_timeout': 0.5}
+        'windowing': {'max_speech_duration_ms': 1500}
     }
     preprocessor_fb = SoundPreProcessor(
         chunk_queue=chunk_queue,

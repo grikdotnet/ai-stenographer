@@ -38,8 +38,7 @@ class TestIntegrationThreadedPipeline:
             },
             'windowing': {
                 'max_window_duration': 7.0,
-                'max_speech_duration_ms': 3000,
-                'silence_timeout': 0.5
+                'max_speech_duration_ms': 3000
             }
         }
 
@@ -199,3 +198,4 @@ class TestIntegrationThreadedPipeline:
         assert isinstance(segment, AudioSegment)
         expected_audio = np.concatenate(sent_audio_chunks)
         np.testing.assert_array_equal(segment.data, expected_audio)
+

@@ -42,8 +42,7 @@ class TestSoundPreProcessor:
                 'threshold': 0.5
             },
             'windowing': {
-                'max_speech_duration_ms': 3000,
-                'silence_timeout': 0.5
+                'max_speech_duration_ms': 3000
             }
         }
 
@@ -162,56 +161,6 @@ class TestSoundPreProcessor:
         vad_rms = np.sqrt(np.mean(vad_audio**2))
 
         assert vad_rms > raw_rms
-
-
-    def test_silence_timeout_triggers_windower_flush(self, preprocessor_config, mock_windower):
-        """Silence duration >= timeout should trigger windower.flush().
-
-        """
-        chunk_queue = queue.Queue()
-        speech_queue = queue.Queue()
-
-        # VAD: 3 speech to trigger, then silence
-        call_count = 0
-        def vad_side_effect(audio):
-            nonlocal call_count
-            call_count += 1
-            if call_count <= 3:
-                return {'is_speech': True, 'speech_probability': 0.9}
-            else:
-                return {'is_speech': False, 'speech_probability': 0.1}
-
-        mock_vad = Mock()
-        mock_vad.process_frame = Mock(side_effect=vad_side_effect)
-
-        preprocessor = SoundPreProcessor(
-            chunk_queue=chunk_queue,
-            speech_queue=speech_queue,
-            vad=mock_vad,
-            windower=mock_windower,
-            config=preprocessor_config,
-            verbose=False
-        )
-
-        for i in range(3):
-            chunk = {
-                'audio': np.random.randn(512).astype(np.float32) * 0.1,
-                'timestamp': 1.0 + i * 0.032,
-            }
-            preprocessor._process_chunk(chunk)
-
-        # Feed silence chunks for > 0.5s (silence_timeout)
-        # 0.5s / 0.032s = ~16 chunks
-        for i in range(20):
-            chunk = {
-                'audio': np.random.randn(512).astype(np.float32) * 0.01,
-                'timestamp': 1.0 + (3 + i) * 0.032,
-            }
-            preprocessor._process_chunk(chunk)
-
-        assert mock_windower.flush.called
-
-
     def test_flush_emits_pending_segment(self, preprocessor_config, mock_vad, mock_windower):
         """flush() should emit pending segment and call windower.flush().
 
@@ -977,8 +926,7 @@ def test_pause_state_flushes_segments():
             'threshold': 0.5
         },
         'windowing': {
-            'max_speech_duration_ms': 3000,
-            'silence_timeout': 0.5
+            'max_speech_duration_ms': 3000
         }
     }
 
@@ -1039,8 +987,7 @@ def test_sound_preprocessor_shutdown_calls_flush():
             'threshold': 0.5
         },
         'windowing': {
-            'max_speech_duration_ms': 3000,
-            'silence_timeout': 0.5
+            'max_speech_duration_ms': 3000
         }
     }
 
@@ -1068,4 +1015,3 @@ def test_sound_preprocessor_shutdown_calls_flush():
     # flush() passes segment to windower.flush()
     assert mock_windower.flush.called, "stop() should call flush() which calls windower.flush()"
     assert preprocessor.is_running == False
-

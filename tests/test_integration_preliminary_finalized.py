@@ -40,8 +40,7 @@ class TestIncrementalFlushIntegration:
             },
             'windowing': {
                 'max_window_duration': 7.0,
-                'max_speech_duration_ms': 3000,
-                'silence_timeout': 0.5
+                'max_speech_duration_ms': 3000
             }
         }
 

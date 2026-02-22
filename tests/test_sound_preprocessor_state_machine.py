@@ -29,8 +29,7 @@ def spp_config():
             'threshold': 0.5
         },
         'windowing': {
-            'max_speech_duration_ms': 3000,
-            'silence_timeout': 2.0
+            'max_speech_duration_ms': 3000
         }
     }
 
@@ -395,51 +394,3 @@ def test_state_property_is_speech_active(spp, mock_vad):
     spp._process_chunk(chunk)
     assert spp.state == ProcessingStatesEnum.ACCUMULATING_SILENCE
     assert spp.is_speech_active == True
-
-
-# ============================================================================
-# Test 6: Timeout Flush Logic
-# ============================================================================
-
-def test_timeout_flush_in_idle_state(spp, mock_vad):
-    """Test timeout flush triggers in IDLE state after segment finalization."""
-    from src.sound.SoundPreProcessor import ProcessingStatesEnum
-
-    # Activate speech
-    mock_vad.process_frame.return_value = {
-        'is_speech': True,
-        'speech_probability': 0.8
-    }
-    for i in range(3):
-        chunk = make_speech_chunk(timestamp=i * 0.032)
-        spp._process_chunk(chunk)
-
-    assert spp.state == ProcessingStatesEnum.ACTIVE_SPEECH
-    assert spp.audio_state.speech_before_silence == True
-    last_speech_time = spp.audio_state.last_speech_timestamp
-
-    # Feed silence to finalize segment (3 chunks with prob=0.1 → 3 * 0.9 = 2.7 > 1.5 threshold)
-    mock_vad.process_frame.return_value = {
-        'is_speech': False,
-        'speech_probability': 0.1
-    }
-    for i in range(3):
-        chunk = make_silence_chunk(timestamp=(3 + i) * 0.032)
-        spp._process_chunk(chunk)
-
-    # Should be in IDLE, speech_before_silence still True (not reset yet)
-    assert spp.state == ProcessingStatesEnum.IDLE
-    assert spp.audio_state.speech_before_silence == True
-    assert spp.windower.process_segment.called
-
-    # Feed silence chunks until timeout is reached (silence_timeout = 2.0s from config)
-    # Need to reach last_speech_time + 2.0s
-    current_time = last_speech_time + 2.1  # Exceed timeout
-    chunk = make_silence_chunk(timestamp=current_time)
-    spp._process_chunk(chunk)
-
-    # Windower flush should have been called
-    assert spp.windower.flush.called
-    # speech_before_silence should now be False
-    assert spp.audio_state.speech_before_silence == False
-

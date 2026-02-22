@@ -138,11 +138,11 @@ Microphone Input (16kHz, mono)
 │    │     ├─→ All chunks stored: speech + silence                       │
 │    │     └─→ Left context: snapshot captured when speech starts        │
 │    │                                                                      │
-│    ├─→ Speech buffering (_handle_speech_frame, _handle_silence_frame)   │
+│    ├─→ Speech buffering                                                 │
 │    │     ├─→ Consecutive speech logic: 3 chunks to start segment       │
 │    │     └─→ Accumulates chunks until finalization                      │
 │    │                                                                      │
-│    ├─→ _finalize_segment() [on silence threshold or max duration]       │
+│    ├─→ Segment finalization [on silence-energy threshold or max dur.]  │
 │    │     ├─→ Creates incremental AudioSegment with context              │
 │    │     │     └─→ type='incremental'                                    │
 │    │     │     └─→ chunk_ids=[id1, id2, ...]                            │
@@ -153,13 +153,14 @@ Microphone Input (16kHz, mono)
 │    │     ├─→ Hard-cut splitting (max duration)                          │
 │    │     │     └─→ Emits full buffer, resets, stays in ACTIVE_SPEECH    │
 │    │     │                                                                │
+│    │     ├─→ Silence-energy threshold (ACCUMULATING_SILENCE → IDLE)    │
+│    │     │     └─→ Emits segment + boundary signal + windower.flush()   │
+│    │     │                                                                │
 │    │     └─→ GrowingWindowAssembler.process_segment(segment) [sync call]│
 │    │           └─→ Emits growing incremental window                     │
 │    │                                                                      │
-│    ├─→ Observer: ApplicationState (component observer)                 │
-│    │   └─→ on_state_change(): pause → flush() pending segments         │
-│    │                                                                      │
-│    └─→ Silence timeout detection → windower.flush()                     │
+│    └─→ Observer: ApplicationState (component observer)                 │
+│        └─→ on_state_change(): pause → flush() pending segments         │
 └──────────────────────────────────────────────────────────────────────────┘
         │
         │  GrowingWindowAssembler (NO THREAD - synchronous calls from SoundPreProcessor)
