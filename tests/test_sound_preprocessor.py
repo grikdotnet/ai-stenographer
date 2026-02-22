@@ -73,6 +73,7 @@ class TestSoundPreProcessor:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -108,6 +109,7 @@ class TestSoundPreProcessor:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -141,6 +143,7 @@ class TestSoundPreProcessor:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -177,6 +180,7 @@ class TestSoundPreProcessor:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -230,6 +234,7 @@ class TestSoundPreProcessor:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -290,6 +295,7 @@ class TestSoundPreProcessor:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -338,6 +344,7 @@ class TestSoundPreProcessor:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -412,6 +419,7 @@ class TestSoundPreProcessor:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -465,6 +473,7 @@ class TestSoundPreProcessor:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -522,6 +531,7 @@ class TestSoundPreProcessor:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -582,6 +592,7 @@ class TestSoundPreProcessor:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -647,6 +658,7 @@ class TestSoundPreProcessor:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -695,6 +707,7 @@ class TestSoundPreProcessor:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -741,6 +754,7 @@ class TestSoundPreProcessor:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -787,6 +801,7 @@ class TestSoundPreProcessor:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -864,6 +879,7 @@ class TestSoundPreProcessor:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -933,6 +949,7 @@ def test_pause_state_flushes_segments():
         vad=mock_vad,
         windower=mock_windower,
         config=config,
+        control_queue=queue.Queue(),
         app_state=mock_app_state,
         verbose=False
     )
@@ -994,6 +1011,7 @@ def test_sound_preprocessor_shutdown_calls_flush():
         vad=mock_vad,
         windower=mock_windower,
         config=config,
+        control_queue=queue.Queue(),
         app_state=mock_app_state,
         verbose=False
     )

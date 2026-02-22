@@ -67,6 +67,7 @@ class TestSoundPreProcessorQueueFull:
             vad=mock_vad,
             windower=mock_windower,
             config=preprocessor_config,
+            control_queue=queue.Queue(),
             verbose=True
         )
 

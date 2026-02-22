@@ -54,6 +54,7 @@ def test_emits_boundary_when_utterance_ends() -> None:
         vad=vad,
         windower=windower,
         config=_config(),
+        control_queue=queue.Queue(),
         app_state=Mock(),
     )
 
@@ -74,6 +75,7 @@ def test_flush_without_open_utterance_does_not_emit_boundary() -> None:
         vad=Mock(),
         windower=Mock(flush=Mock(), process_segment=Mock()),
         config=_config(),
+        control_queue=queue.Queue(),
         app_state=Mock(),
     )
     spp.flush()

@@ -189,6 +189,8 @@ class SpeechEndRouter:
         )
         self._control_seq += 1
 
+        if self.verbose:
+            logging.debug(f"SpeechEndRouter: sent RecognizerFreeSignal seq={signal.seq} message_id={signal.message_id} utterance_id={signal.utterance_id}")
         try:
             self.control_queue.put_nowait(signal)
         except queue.Full:

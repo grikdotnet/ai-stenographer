@@ -59,6 +59,7 @@ def spp(spp_config, mock_vad, mock_windower):
         vad=mock_vad,
         windower=mock_windower,
         config=spp_config,
+        control_queue=queue.Queue(),
         verbose=False
     )
 

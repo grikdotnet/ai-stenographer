@@ -74,6 +74,7 @@ class TestIntegrationThreadedPipeline:
             vad=mock_vad,
             windower=mock_windower,
             config=pipeline_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -128,6 +129,7 @@ class TestIntegrationThreadedPipeline:
             vad=mock_vad,
             windower=windower,
             config=pipeline_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 
@@ -178,6 +180,7 @@ class TestIntegrationThreadedPipeline:
             vad=mock_vad,
             windower=mock_windower,
             config=pipeline_config,
+            control_queue=queue.Queue(),
             verbose=False
         )
 

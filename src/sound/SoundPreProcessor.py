@@ -154,8 +154,8 @@ class SoundPreProcessor:
                  vad: VoiceActivityDetector,
                  windower: GrowingWindowAssembler,
                  config: Dict[str, Any],
+                 control_queue: queue.Queue,
                  app_state: Optional['ApplicationState'] = None,
-                 control_queue: queue.Queue | None = None,
                  verbose: bool = False):
 
         self.chunk_queue: queue.Queue = chunk_queue      # INPUT: raw audio
@@ -180,13 +180,14 @@ class SoundPreProcessor:
         self.audio_state = AudioProcessingState()
 
         # Control queue for ACK-driven early cut
-        self.control_queue: queue.Queue | None = control_queue
+        self.control_queue: queue.Queue = control_queue
 
         # Config with fallback (no strict key requirement in this PR)
         self.min_segment_duration_ms: int = config['windowing'].get('min_segment_duration_ms', 200)
 
         # ACK sequencing state
         self._last_ack_seq_processed: int = -1
+        self._pending_ack_signal: RecognizerFreeSignal | None = None
 
         # Threading control
         self.is_running: bool = False
@@ -366,6 +367,7 @@ class SoundPreProcessor:
                             logging.debug(f"  chunk_ids=[{segment.chunk_ids[0] if segment.chunk_ids else ''}...{segment.chunk_ids[-1] if segment.chunk_ids else ''}]")
                             logging.debug(f"  left_context={len(segment.left_context)/512} chunks, right_context={len(segment.right_context)/512} chunks")
 
+        self._check_pending_ack_cut(timestamp)
 
     def _normalize_rms(self, audio_chunk: np.ndarray) -> np.ndarray:
         """Normalize audio chunk to target RMS level with temporal smoothing (AGC).
@@ -484,54 +486,112 @@ class SoundPreProcessor:
     def _check_ack_signals(self, current_timestamp: float) -> None:
         """Check control_queue for RecognizerFreeSignal and execute ACK-cut if eligible.
 
-        Drains the queue and acts only on the last (highest-seq) signal.
-        Args:
-            current_timestamp: Timestamp of current chunk (for logging)
-        """
-        if self.control_queue is None:
-            return  # Feature not enabled
+        Algorithm:
+        1. Drain queue, keeping only the last (highest-seq) signal.
+        2. If a new signal arrived and is eligible (seq/utterance/state):
+           a. Buffer sufficient: execute cut immediately.
+           b. Buffer too small: store as _pending_ack_signal (replacing any prior lower-seq pending).
+        3. Return early when a new signal was processed — _process_chunk's bottom call handles
+           the pending check for this iteration.
+        4. If no new signal arrived: delegate to _check_pending_ack_cut.
 
-        signal = None
+        Args:
+            current_timestamp: Timestamp of current chunk
+        """
+        signal: RecognizerFreeSignal | None = None
         try:
             while True:
                 signal = self.control_queue.get_nowait()
         except queue.Empty:
             pass
 
-        if signal and self._can_ack_cut(signal):
+        if signal is not None:
+            if self.verbose:
+                logging.debug(
+                    "SoundPreProcessor: received RecognizerFreeSignal seq=%d message_id=%d utterance_id=%d",
+                    signal.seq, signal.message_id, signal.utterance_id
+                )
+            if self._is_signal_eligible(signal):
+                buffered_ms = len(self.audio_state.speech_buffer) * self.frame_duration_ms
+                if buffered_ms >= self.min_segment_duration_ms:
+                    self._execute_ack_cut(current_timestamp)
+                    self._last_ack_seq_processed = signal.seq
+                else:
+                    if self.verbose:
+                        logging.debug(
+                            "SoundPreProcessor: deferring ACK-cut seq=%d buffered_ms=%d < min=%d",
+                            signal.seq, buffered_ms, self.min_segment_duration_ms
+                        )
+                    if (self._pending_ack_signal is None
+                            or signal.seq > self._pending_ack_signal.seq):
+                        self._pending_ack_signal = signal
+            return
+
+        self._check_pending_ack_cut(current_timestamp)
+
+    def _check_pending_ack_cut(self, current_timestamp: float) -> None:
+        """Fire deferred ACK-cut if pending signal is eligible and buffer threshold is now met.
+
+        Algorithm:
+        1. Return immediately if no pending signal.
+        2. Re-check eligibility (seq/utterance/state); clear and return if stale.
+        3. Measure buffered_ms; fire cut and clear pending if threshold met.
+
+        Args:
+            current_timestamp: Timestamp of current chunk
+        """
+        if self._pending_ack_signal is None:
+            return
+        pending = self._pending_ack_signal
+        if not self._is_signal_eligible(pending):
+            if self.verbose:
+                logging.debug(
+                    "SoundPreProcessor: clearing stale pending ACK-cut seq=%d", pending.seq
+                )
+            self._pending_ack_signal = None
+            return
+        buffered_ms = len(self.audio_state.speech_buffer) * self.frame_duration_ms
+        if buffered_ms >= self.min_segment_duration_ms:
+            if self.verbose:
+                logging.debug(
+                    "SoundPreProcessor: executing deferred ACK-cut seq=%d buffered_ms=%d",
+                    pending.seq, buffered_ms
+                )
             self._execute_ack_cut(current_timestamp)
-            self._last_ack_seq_processed = signal.seq
+            self._last_ack_seq_processed = pending.seq
+            self._pending_ack_signal = None
 
-    def _can_ack_cut(self, signal: RecognizerFreeSignal) -> bool:
-        """Check if ACK-driven cut is eligible.
+    def _is_signal_eligible(self, signal: RecognizerFreeSignal) -> bool:
+        """Check if signal passes seq, utterance, and state eligibility.
 
-        Eligibility requires all:
-        - signal.seq > _last_ack_seq_processed (monotonic seq check)
-        - signal.utterance_id == current_utterance_id (no cross-utterance cuts)
-        - current_utterance_id is not None
-        - state in (ACTIVE_SPEECH, ACCUMULATING_SILENCE)
-        - buffered_ms >= min_segment_duration_ms
+        Does NOT check buffer duration — that is a timing concern handled separately
+        by _check_ack_signals and _check_pending_ack_cut.
 
         Args:
             signal: RecognizerFreeSignal from control_queue
 
         Returns:
-            True if ACK-cut should proceed
+            True if signal has a fresh seq, matches the current utterance,
+            and the processor is in an ACK-cuttable state.
         """
         s = self.audio_state
-        
         if (signal.seq <= self._last_ack_seq_processed
-            or s.current_utterance_id is None 
-            or signal.utterance_id != s.current_utterance_id):
+                or s.current_utterance_id is None
+                or signal.utterance_id != s.current_utterance_id):
+            if self.verbose:
+                logging.debug(
+                    "SoundPreProcessor: RecognizerFreeSignal seq=%d not eligible"
+                    " (last_seq=%d, current_utterance_id=%s)",
+                    signal.seq, self._last_ack_seq_processed, s.current_utterance_id
+                )
             return False
 
-        # State gating
         if s.state not in (ProcessingStatesEnum.ACTIVE_SPEECH, ProcessingStatesEnum.ACCUMULATING_SILENCE):
-            return False
-
-        # Buffer duration check
-        buffered_ms = len(s.speech_buffer) * self.frame_duration_ms
-        if buffered_ms < self.min_segment_duration_ms:
+            if self.verbose:
+                logging.debug(
+                    "SoundPreProcessor: RecognizerFreeSignal seq=%d not eligible (state=%s)",
+                    signal.seq, s.state
+                )
             return False
 
         return True
@@ -563,6 +623,7 @@ class SoundPreProcessor:
 
         # Transition to ACTIVE_SPEECH (speech continues after cut)
         s.state = ProcessingStatesEnum.ACTIVE_SPEECH
+        self._pending_ack_signal = None
 
         if self.verbose:
             logging.info(
@@ -614,8 +675,10 @@ class SoundPreProcessor:
         - speech_buffer
         - silence_energy
         - left_context_snapshot
+        Also clears any pending ACK signal to prevent stale deferred cuts.
         """
         self.audio_state.reset_segment()
+        self._pending_ack_signal = None
 
     def _handle_max_duration_split(self, timestamp: float) -> None:
         """Handle segment splitting when max_speech_duration_ms is reached.
@@ -639,6 +702,7 @@ class SoundPreProcessor:
         s.speech_buffer = []
         s.speech_start_time = timestamp
         s.left_context_snapshot = None
+        self._pending_ack_signal = None
 
     def flush(self) -> None:
         """Emit pending segment and flush windower.

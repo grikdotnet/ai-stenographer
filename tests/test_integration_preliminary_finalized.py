@@ -68,7 +68,8 @@ class TestIncrementalFlushIntegration:
             speech_queue=speech_queue,
             vad=mock_vad,
             windower=mock_windower,
-            config=config
+            config=config,
+            control_queue=queue.Queue(),
         )
 
         # Feed raw audio chunks (simulating AudioSource)
@@ -195,7 +196,8 @@ class TestIncrementalFlushIntegration:
             speech_queue=speech_queue,
             vad=mock_vad,
             windower=windower,
-            config=config
+            config=config,
+            control_queue=queue.Queue(),
         )
 
         # Set up recognizer with mock model

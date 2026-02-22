@@ -75,6 +75,7 @@ def test_min_segment_duration_fallback(mock_vad_speech, mock_windower):
         vad=mock_vad_speech,
         windower=mock_windower,
         config=config_explicit,
+        control_queue=queue.Queue(),
     )
     assert preprocessor.min_segment_duration_ms == 300
 
@@ -90,6 +91,7 @@ def test_min_segment_duration_fallback(mock_vad_speech, mock_windower):
         vad=mock_vad_speech,
         windower=mock_windower,
         config=config_fallback,
+        control_queue=queue.Queue(),
     )
     assert preprocessor_fb.min_segment_duration_ms == 200
 
@@ -125,7 +127,6 @@ def test_ack_cut_fires_at_min_duration(preprocessor_config, mock_vad_speech, moc
     preprocessor._process_chunk(_speech_chunk(timestamp=7 * 0.032))
 
     assert mock_windower.process_segment.call_count == 1
-    assert mock_windower.process_segment.call_count == 1
 
 
 def test_ack_cut_fires_above_min_duration(preprocessor_config, mock_vad_speech, mock_windower):
@@ -156,8 +157,8 @@ def test_ack_cut_fires_above_min_duration(preprocessor_config, mock_vad_speech, 
     assert mock_windower.process_segment.call_count == 1
 
 
-def test_ack_cut_rejected_below_min_duration(preprocessor_config, mock_vad_speech, mock_windower):
-    """Buffer < min ignored."""
+def test_ack_cut_deferred_when_buffer_too_small(preprocessor_config, mock_vad_speech, mock_windower):
+    """ACK signal deferred (not discarded) when buffer < min_segment_duration_ms."""
     chunk_queue = queue.Queue()
     speech_queue = queue.Queue()
     control_queue = queue.Queue(maxsize=10)
@@ -181,6 +182,182 @@ def test_ack_cut_rejected_below_min_duration(preprocessor_config, mock_vad_speec
 
     preprocessor._process_chunk(_speech_chunk(timestamp=3 * 0.032))
 
+    assert mock_windower.process_segment.call_count == 0
+    assert preprocessor._pending_ack_signal is not None
+
+
+def test_deferred_ack_cut_fires_when_buffer_reaches_minimum(preprocessor_config, mock_vad_speech, mock_windower):
+    """Deferred ACK-cut fires exactly when speech_buffer crosses min_segment_duration_ms."""
+    chunk_queue = queue.Queue()
+    speech_queue = queue.Queue()
+    control_queue = queue.Queue(maxsize=10)
+
+    preprocessor = SoundPreProcessor(
+        chunk_queue=chunk_queue,
+        speech_queue=speech_queue,
+        vad=mock_vad_speech,
+        windower=mock_windower,
+        config=preprocessor_config,
+        control_queue=control_queue,
+    )
+
+    for i in range(3):
+        preprocessor._process_chunk(_speech_chunk(timestamp=float(i) * 0.032))
+
+    utterance_id = preprocessor.audio_state.current_utterance_id
+    signal = RecognizerFreeSignal(seq=1, message_id=1, utterance_id=utterance_id)
+    control_queue.put(signal)
+
+    # Chunk 4: pending stored (buffer=3 frames=96ms < 200ms)
+    preprocessor._process_chunk(_speech_chunk(timestamp=3 * 0.032))
+    assert mock_windower.process_segment.call_count == 0
+    assert preprocessor._pending_ack_signal is not None
+
+    # Chunks 5-6: still below threshold
+    preprocessor._process_chunk(_speech_chunk(timestamp=4 * 0.032))
+    preprocessor._process_chunk(_speech_chunk(timestamp=5 * 0.032))
+    assert mock_windower.process_segment.call_count == 0
+
+    # Chunk 7: buffer reaches 224ms >= 200ms → deferred cut fires
+    preprocessor._process_chunk(_speech_chunk(timestamp=6 * 0.032))
+    assert mock_windower.process_segment.call_count == 1
+    assert preprocessor._pending_ack_signal is None
+    assert preprocessor._last_ack_seq_processed == signal.seq
+
+
+def test_deferred_ack_cut_cleared_on_max_duration_split(preprocessor_config, mock_vad_speech, mock_windower):
+    """Max-duration split clears pending ACK signal; no additional ACK-cut fires."""
+    config = {
+        **preprocessor_config,
+        'windowing': {'max_speech_duration_ms': 96, 'min_segment_duration_ms': 200}
+    }
+
+    chunk_queue = queue.Queue()
+    speech_queue = queue.Queue()
+    control_queue = queue.Queue(maxsize=10)
+
+    preprocessor = SoundPreProcessor(
+        chunk_queue=chunk_queue,
+        speech_queue=speech_queue,
+        vad=mock_vad_speech,
+        windower=mock_windower,
+        config=config,
+        control_queue=control_queue,
+    )
+
+    for i in range(3):
+        preprocessor._process_chunk(_speech_chunk(timestamp=float(i) * 0.032))
+
+    utterance_id = preprocessor.audio_state.current_utterance_id
+    signal = RecognizerFreeSignal(seq=1, message_id=1, utterance_id=utterance_id)
+    control_queue.put(signal)
+
+    # Chunk 4: pending stored (96ms < 200ms min); buffer now 4 frames=128ms > max=96ms → split fires
+    preprocessor._process_chunk(_speech_chunk(timestamp=3 * 0.032))
+
+    assert mock_windower.process_segment.call_count == 1
+    assert preprocessor._pending_ack_signal is None
+
+
+def test_deferred_ack_cut_cleared_on_utterance_end(preprocessor_config, mock_vad_speech, mock_windower):
+    """flush() clears pending ACK signal; windower.flush called, not process_segment."""
+    chunk_queue = queue.Queue()
+    speech_queue = queue.Queue()
+    control_queue = queue.Queue(maxsize=10)
+
+    preprocessor = SoundPreProcessor(
+        chunk_queue=chunk_queue,
+        speech_queue=speech_queue,
+        vad=mock_vad_speech,
+        windower=mock_windower,
+        config=preprocessor_config,
+        control_queue=control_queue,
+    )
+
+    for i in range(3):
+        preprocessor._process_chunk(_speech_chunk(timestamp=float(i) * 0.032))
+
+    utterance_id = preprocessor.audio_state.current_utterance_id
+    signal = RecognizerFreeSignal(seq=1, message_id=1, utterance_id=utterance_id)
+    control_queue.put(signal)
+
+    preprocessor._process_chunk(_speech_chunk(timestamp=3 * 0.032))
+    assert preprocessor._pending_ack_signal is not None
+
+    preprocessor.flush()
+
+    assert preprocessor._pending_ack_signal is None
+    assert mock_windower.flush.call_count == 1
+    assert mock_windower.process_segment.call_count == 0
+
+
+def test_deferred_ack_cut_replaced_by_newer_signal(preprocessor_config, mock_vad_speech, mock_windower):
+    """Higher-seq ACK signal replaces lower-seq pending; only the newer seq is recorded."""
+    chunk_queue = queue.Queue()
+    speech_queue = queue.Queue()
+    control_queue = queue.Queue(maxsize=10)
+
+    preprocessor = SoundPreProcessor(
+        chunk_queue=chunk_queue,
+        speech_queue=speech_queue,
+        vad=mock_vad_speech,
+        windower=mock_windower,
+        config=preprocessor_config,
+        control_queue=control_queue,
+    )
+
+    for i in range(3):
+        preprocessor._process_chunk(_speech_chunk(timestamp=float(i) * 0.032))
+
+    utterance_id = preprocessor.audio_state.current_utterance_id
+
+    control_queue.put(RecognizerFreeSignal(seq=1, message_id=1, utterance_id=utterance_id))
+    preprocessor._process_chunk(_speech_chunk(timestamp=3 * 0.032))
+    assert preprocessor._pending_ack_signal.seq == 1
+
+    control_queue.put(RecognizerFreeSignal(seq=2, message_id=2, utterance_id=utterance_id))
+    preprocessor._process_chunk(_speech_chunk(timestamp=4 * 0.032))
+    assert preprocessor._pending_ack_signal.seq == 2
+
+    preprocessor._process_chunk(_speech_chunk(timestamp=5 * 0.032))
+    preprocessor._process_chunk(_speech_chunk(timestamp=6 * 0.032))
+
+    assert mock_windower.process_segment.call_count == 1
+    assert preprocessor._last_ack_seq_processed == 2
+
+
+def test_deferred_ack_cut_cleared_on_ineligible_state(preprocessor_config, mock_vad_speech, mock_windower):
+    """Pending ACK cleared when state becomes ineligible; no spurious cut fires."""
+    from src.sound.SoundPreProcessor import ProcessingStatesEnum
+
+    chunk_queue = queue.Queue()
+    speech_queue = queue.Queue()
+    control_queue = queue.Queue(maxsize=10)
+
+    preprocessor = SoundPreProcessor(
+        chunk_queue=chunk_queue,
+        speech_queue=speech_queue,
+        vad=mock_vad_speech,
+        windower=mock_windower,
+        config=preprocessor_config,
+        control_queue=control_queue,
+    )
+
+    for i in range(3):
+        preprocessor._process_chunk(_speech_chunk(timestamp=float(i) * 0.032))
+
+    utterance_id = preprocessor.audio_state.current_utterance_id
+    signal = RecognizerFreeSignal(seq=1, message_id=1, utterance_id=utterance_id)
+    control_queue.put(signal)
+
+    preprocessor._process_chunk(_speech_chunk(timestamp=3 * 0.032))
+    assert preprocessor._pending_ack_signal is not None
+
+    preprocessor.audio_state.state = ProcessingStatesEnum.IDLE
+
+    preprocessor._process_chunk(_speech_chunk(timestamp=4 * 0.032))
+
+    assert preprocessor._pending_ack_signal is None
     assert mock_windower.process_segment.call_count == 0
 
 
