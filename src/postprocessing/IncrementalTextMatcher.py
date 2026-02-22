@@ -70,6 +70,22 @@ class IncrementalTextMatcher:
         """
         return [self.text_normalizer.normalize_text(w) for w in text.split()]
 
+    def _prefix_match_length(self, curr_normalized: list[str]) -> int:
+        """Return the common prefix length between previous and current normalized words.
+
+        Args:
+            curr_normalized: Pre-normalized words for the current result.
+
+        Returns:
+            Number of words that match at the start of both sequences.
+        """
+        prev = self._prev_normalized_words or []
+        length = 0
+        while (length < len(prev) and length < len(curr_normalized)
+               and prev[length] == curr_normalized[length]):
+            length += 1
+        return length
+
     def find_word_overlap(self, curr_normalized: list[str]) -> tuple[int, int, int]:
         """Find longest overlapping word sequence between previous and current result.
 
@@ -117,15 +133,18 @@ class IncrementalTextMatcher:
         """Process incremental result using prefix comparison for stability detection.
 
         Algorithm:
-        1. If no previous_result: publish entire text as preliminary, store, return
-        2. Split current text into words
-        3. Use find_word_overlap to find longest common word sequence (previous result cached)
-        4. If common_length == 0: no match, replace preliminary, return
+        1. If no previous_result: publish entire text as preliminary, store, return.
+        2. Split current text into words and normalize.
+        3. Determine matching strategy:
+           - If either chunk_ids is empty: force reset (no finalization, safe fallback).
+           - If chunk_ids[0] matches (same growing window): prefix match at (0, 0).
+           - Otherwise (sliding window): find_word_overlap() arbitrary position.
+        4. If common_length == 0: reset state, replace preliminary, return.
         5. If common_length > 0:
-           a. Stable region = words at idx_curr to idx_curr + common_length in current
-           b. Newly finalized = stable words beyond finalized_word_count
-           c. Unstable tail = words after stable region
-           d. Publish finalized and preliminary accordingly
+           a. Stable region ends at overlap_start_curr + common_length in current result.
+           b. Newly finalized = stable words beyond prev_finalized_words.
+           c. Unstable tail = words after stable region.
+           d. Publish finalized and preliminary accordingly.
 
         Args:
             result: RecognitionResult
@@ -150,7 +169,17 @@ class IncrementalTextMatcher:
             logging.debug(f"  previous finalized_word_count={self.prev_finalized_words}")
             logging.debug(f"  current:  '{result.text}'")
 
-        overlap_start_prev, overlap_start_curr, common_length = self.find_word_overlap(curr_normalized)
+        prev_start = self.previous_result.chunk_ids[0] if self.previous_result.chunk_ids else None
+        curr_start = result.chunk_ids[0] if result.chunk_ids else None
+        same_start = prev_start is not None and curr_start is not None and prev_start == curr_start
+        either_empty = prev_start is None or curr_start is None
+
+        if either_empty:
+            overlap_start_prev, overlap_start_curr, common_length = 0, 0, 0
+        elif same_start:
+            overlap_start_prev, overlap_start_curr, common_length = 0, 0, self._prefix_match_length(curr_normalized)
+        else:
+            overlap_start_prev, overlap_start_curr, common_length = self.find_word_overlap(curr_normalized)
 
         if self.verbose:
             logging.debug(f"  overlap: idx_prev={overlap_start_prev}, idx_curr={overlap_start_curr}, length={common_length}")

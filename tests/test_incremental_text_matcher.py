@@ -506,3 +506,167 @@ class TestPrevNormalizedCaching:
 
         assert matcher._prev_normalized_words is None
         assert matcher.previous_result is None
+
+
+class TestSameStartChunkIdPrefixMatching:
+    """Tests for same-start chunk_id prefix-only matching policy.
+
+    When chunk_ids[0] is the same between consecutive results (growing window),
+    the matcher must use strict prefix matching instead of arbitrary-position
+    find_word_overlap().
+    """
+
+    @pytest.fixture
+    def text_queue(self):
+        return queue.Queue()
+
+    @pytest.fixture
+    def mock_publisher(self):
+        return Mock(spec=['publish_partial_update', 'publish_finalization'])
+
+    @pytest.fixture
+    def mock_app_state(self):
+        return Mock()
+
+    def test_same_start_no_prefix_match_becomes_preliminary(self, text_queue, mock_publisher, mock_app_state):
+        """Same-start result with no prefix match must not finalize; becomes new preliminary."""
+        matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
+
+        result1 = RecognitionResult(text='How do I', start_time=0.0, end_time=1.0, chunk_ids=list(range(32)))
+        result2 = RecognitionResult(text='And says how do I get to W', start_time=0.0, end_time=2.0, chunk_ids=list(range(52)))
+
+        matcher.process_incremental(result1)
+        mock_publisher.reset_mock()
+
+        matcher.process_incremental(result2)
+
+        mock_publisher.publish_finalization.assert_not_called()
+        mock_publisher.publish_partial_update.assert_called_once()
+        assert mock_publisher.publish_partial_update.call_args[0][0].text == result2.text
+
+    def test_same_start_no_prefix_match_state_reset(self, text_queue, mock_publisher, mock_app_state):
+        """After same-start no-prefix-match, state must be fully reset."""
+        matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
+
+        result1 = RecognitionResult(text='How do I', start_time=0.0, end_time=1.0, chunk_ids=list(range(32)))
+        result2 = RecognitionResult(text='And says how do I get to W', start_time=0.0, end_time=2.0, chunk_ids=list(range(52)))
+
+        matcher.process_incremental(result1)
+        matcher.process_incremental(result2)
+
+        assert matcher.prev_finalized_words == 0
+        assert matcher.previous_result == result2
+        assert matcher._prev_normalized_words == matcher._split_and_normalize(result2.text)
+
+    def test_same_start_prefix_match_finalizes_prefix(self, text_queue, mock_publisher, mock_app_state):
+        """Same-start result with prefix match finalizes the stable prefix, tail is preliminary."""
+        matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
+
+        result1 = RecognitionResult(text='How do I', start_time=0.0, end_time=1.0, chunk_ids=list(range(32)))
+        result2 = RecognitionResult(text='And says how do I get to W', start_time=0.0, end_time=2.0, chunk_ids=list(range(52)))
+        result3 = RecognitionResult(text='and says, How do I get to Dublin?', start_time=0.0, end_time=3.0, chunk_ids=list(range(62)))
+
+        matcher.process_incremental(result1)
+        matcher.process_incremental(result2)
+        mock_publisher.reset_mock()
+
+        matcher.process_incremental(result3)
+
+        assert mock_publisher.publish_finalization.call_count == 1
+        finalized = mock_publisher.publish_finalization.call_args[0][0]
+        assert finalized.text == 'and says, How do I get to'
+
+        assert mock_publisher.publish_partial_update.call_count == 1
+        preliminary = mock_publisher.publish_partial_update.call_args[0][0]
+        assert preliminary.text == 'Dublin?'
+
+    def test_same_start_then_continuation_can_finalize(self, text_queue, mock_publisher, mock_app_state):
+        """Full three-step: result1 preliminary, result2 no-finalize, result3 finalizes prefix."""
+        matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
+
+        result1 = RecognitionResult(text='How do I', start_time=0.0, end_time=1.0, chunk_ids=list(range(32)))
+        result2 = RecognitionResult(text='And says how do I get to W', start_time=0.0, end_time=2.0, chunk_ids=list(range(52)))
+        result3 = RecognitionResult(text='and says, How do I get to Dublin?', start_time=0.0, end_time=3.0, chunk_ids=list(range(62)))
+
+        matcher.process_incremental(result1)
+        assert mock_publisher.publish_finalization.call_count == 0
+
+        matcher.process_incremental(result2)
+        assert mock_publisher.publish_finalization.call_count == 0
+
+        matcher.process_incremental(result3)
+        assert mock_publisher.publish_finalization.call_count == 1
+        finalized = mock_publisher.publish_finalization.call_args[0][0]
+        assert finalized.text == 'and says, How do I get to'
+
+    def test_same_start_prefix_monotonic_finalization(self, text_queue, mock_publisher, mock_app_state):
+        """prev_finalized_words only increases; no re-finalization of already-emitted words."""
+        matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
+
+        result1 = RecognitionResult(text='How do I', start_time=0.0, end_time=1.0, chunk_ids=list(range(32)))
+        result2 = RecognitionResult(text='And says how do I get to W', start_time=0.0, end_time=2.0, chunk_ids=list(range(52)))
+        result3 = RecognitionResult(text='and says, How do I get to Dublin?', start_time=0.0, end_time=3.0, chunk_ids=list(range(62)))
+        result4 = RecognitionResult(text='and says, How do I get to Dublin? Right?', start_time=0.0, end_time=4.0, chunk_ids=list(range(72)))
+
+        matcher.process_incremental(result1)
+        matcher.process_incremental(result2)
+        assert matcher.prev_finalized_words == 0
+
+        matcher.process_incremental(result3)
+        assert matcher.prev_finalized_words == 7
+
+        matcher.process_incremental(result4)
+        assert matcher.prev_finalized_words == 8
+
+    def test_start_change_no_finalization_on_zero_overlap(self, text_queue, mock_publisher, mock_app_state):
+        """Different chunk_ids[0], no word overlap → no finalization, state reset."""
+        matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
+
+        result1 = RecognitionResult(text='hello world', start_time=0.0, end_time=1.0, chunk_ids=[0, 1])
+        result2 = RecognitionResult(text='completely different', start_time=2.0, end_time=3.0, chunk_ids=[5, 6])
+
+        matcher.process_incremental(result1)
+        mock_publisher.reset_mock()
+
+        matcher.process_incremental(result2)
+
+        mock_publisher.publish_finalization.assert_not_called()
+        assert matcher.prev_finalized_words == 0
+        assert matcher.previous_result == result2
+
+    def test_start_change_with_overlap_still_finalizes(self, text_queue, mock_publisher, mock_app_state):
+        """Different chunk_ids[0] with lexical overlap → find_word_overlap path still finalizes."""
+        matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
+
+        result1 = RecognitionResult(text='one two three four', start_time=0.0, end_time=2.0, chunk_ids=[0, 1, 2, 3])
+        result2 = RecognitionResult(text='one two three four five', start_time=0.0, end_time=2.5, chunk_ids=[0, 1, 2, 3, 4])
+        matcher.process_incremental(result1)
+        matcher.process_incremental(result2)
+        mock_publisher.reset_mock()
+
+        result3 = RecognitionResult(text='florp three four five six', start_time=1.0, end_time=3.0, chunk_ids=[2, 3, 4, 5])
+        matcher.process_incremental(result3)
+
+        assert mock_publisher.publish_finalization.call_count == 1
+        finalized = mock_publisher.publish_finalization.call_args[0][0]
+        assert finalized.text == 'three four five'
+        assert mock_publisher.publish_partial_update.call_args[0][0].text == 'six'
+
+    def test_empty_chunk_ids_fallback(self, text_queue, mock_publisher, mock_app_state):
+        """Empty chunk_ids on either side must not crash and must not finalize."""
+        matcher = IncrementalTextMatcher(text_queue, mock_publisher, app_state=mock_app_state)
+
+        result1 = RecognitionResult(text='hello world', start_time=0.0, end_time=1.0, chunk_ids=[])
+        result2 = RecognitionResult(text='hello world today', start_time=0.0, end_time=2.0, chunk_ids=[0, 1, 2])
+
+        matcher.process_incremental(result1)
+        mock_publisher.reset_mock()
+
+        matcher.process_incremental(result2)
+
+        assert matcher.prev_finalized_words == 0
+        assert matcher.previous_result == result2
+
+        result3 = RecognitionResult(text='something else', start_time=3.0, end_time=4.0, chunk_ids=[])
+        matcher.process_incremental(result3)
+        assert matcher.prev_finalized_words == 0
