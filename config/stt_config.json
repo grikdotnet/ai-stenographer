@@ -15,8 +15,8 @@
   },
   "windowing": {
     "max_window_duration": 4.0,
-    "max_speech_duration_ms": 1000,
-    "min_segment_duration_ms": 300
+    "max_speech_duration_ms": 1024,
+    "min_segment_duration_ms": 320
   },
   "recognition": {
     "model_name": "parakeet",

@@ -55,7 +55,7 @@ class TestSoundPreProcessorQueueFull:
     def test_segment_delegated_to_windower(self, preprocessor_config, mock_vad, mock_windower):
         """SoundPreProcessor delegates segment emission to windower.
 
-        Logic: Speech → silence threshold → windower.process_segment() called with segment.
+        Logic: Speech → silence threshold → windower.flush(segment) called with segment.
         Queue full handling is now windower's responsibility (tested in test_growing_window_assembler.py).
         """
         chunk_queue = queue.Queue()
@@ -89,8 +89,8 @@ class TestSoundPreProcessorQueueFull:
             preprocessor._process_chunk(chunk)
 
         # Segment should be delegated to windower, not put on speech_queue directly
-        assert mock_windower.process_segment.called
-        segment = mock_windower.process_segment.call_args[0][0]
+        assert mock_windower.flush.called
+        segment = mock_windower.flush.call_args[0][0]
         assert isinstance(segment, AudioSegment)
         assert segment.type == 'incremental'
 

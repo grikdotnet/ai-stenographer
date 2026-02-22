@@ -259,9 +259,8 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        # Segment goes to windower.process_segment()
-        assert mock_windower.process_segment.called
-        segment = mock_windower.process_segment.call_args[0][0]
+        assert mock_windower.flush.called
+        segment = mock_windower.flush.call_args[0][0]
 
         # start_time should be the first speech chunk (not the prepended silence)
         assert segment.start_time == 1.032
@@ -369,9 +368,8 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        # Segment goes to windower.process_segment()
-        assert mock_windower.process_segment.called
-        segment = mock_windower.process_segment.call_args[0][0]
+        assert mock_windower.flush.called
+        segment = mock_windower.flush.call_args[0][0]
 
         # Verify left_context contains idle_buffer minus chunks extracted to speech_buffer
         # When speech is confirmed, consecutive_chunks are extracted from idle_buffer
@@ -427,8 +425,8 @@ class TestSoundPreProcessor:
             chunk = {'audio': audio, 'timestamp': 1.0 + (10 + i) * 0.032}
             preprocessor._process_chunk(chunk)
 
-        assert mock_windower.process_segment.called
-        segment = mock_windower.process_segment.call_args[0][0]
+        assert mock_windower.flush.called
+        segment = mock_windower.flush.call_args[0][0]
 
         # Hard cut: all 12 chunks (10 speech + 2 silence) in data
         assert len(segment.data) == 12 * 512, \
@@ -489,9 +487,8 @@ class TestSoundPreProcessor:
             }
             preprocessor._process_chunk(chunk)
 
-        # Segment goes to windower.process_segment()
-        assert mock_windower.process_segment.called
-        segment = mock_windower.process_segment.call_args[0][0]
+        assert mock_windower.flush.called
+        segment = mock_windower.flush.call_args[0][0]
 
         assert len(segment.left_context) == 0
 
@@ -877,8 +874,8 @@ class TestSoundPreProcessor:
             chunk = {'audio': audio, 'timestamp': 1.0 + i * 0.032}
             preprocessor._process_chunk(chunk)
 
-        assert mock_windower.process_segment.called
-        segment = mock_windower.process_segment.call_args[0][0]
+        assert mock_windower.flush.called
+        segment = mock_windower.flush.call_args[0][0]
 
         # Hard cut: all 15 chunks in data (chunk 15 never processed — finalization triggers after 14)
         expected_data = np.concatenate(all_chunks_audio[:15])

@@ -353,12 +353,9 @@ class SoundPreProcessor:
                     if s.silence_energy >= self.silence_energy_threshold:
                         # ACCUMULATING_SILENCE → IDLE
                         segment = self._build_audio_segment()
-                        self.windower.process_segment(segment)
+                        self.windower.flush(segment)
                         self._reset_segment_state()
                         self._emit_speech_end_if_open(end_time=segment.end_time)
-
-                        # Reset windower state to prevent mixing utterance IDs
-                        self.windower.flush()
 
                         self.state = ProcessingStatesEnum.IDLE
                         s.consecutive_speech_count = 0

@@ -143,7 +143,7 @@ class GrowingWindowAssembler:
         if self.verbose:
             duration_ms = len(window_audio) / self.sample_rate * 1000
             logging.debug(
-                f"GrowingWindowAssembler: emitted incremental window "
+                f"GrowingWindowAssembler: emitted window "
                 f"duration={duration_ms:.0f}ms, chunk_ids={_format_chunk_ids(unique_chunk_ids)}, "
                 f"samples={len(window_audio)}"
             )
@@ -169,17 +169,12 @@ class GrowingWindowAssembler:
             return
 
         # Emit remaining segments as final incremental window including right_context.
+        if self.verbose:
+            logging.debug(
+                f"GrowingWindowAssembler.flush(): emitting a final window"
+            )
         self._emit_window(include_right_context=True)
 
-        if self.verbose:
-            chunk_ids = []
-            for seg in self.segments:
-                chunk_ids.extend(seg.chunk_ids)
-            unique_chunk_ids = sorted(set(chunk_ids))
-            logging.debug(
-                f"GrowingWindowAssembler.flush(): emitted final incremental window "
-                f"(chunk_ids={_format_chunk_ids(unique_chunk_ids)})"
-            )
 
         # Reset state for next speech sequence
         self._reset_state()

@@ -353,7 +353,7 @@ def test_state_accumulating_to_idle_on_threshold(spp, mock_vad):
         spp._process_chunk(chunk)
 
     assert spp.state == ProcessingStatesEnum.IDLE
-    assert spp.windower.process_segment.called
+    assert spp.windower.flush.called
 
 
 # ============================================================================

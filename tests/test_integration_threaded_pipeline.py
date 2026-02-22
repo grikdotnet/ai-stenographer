@@ -142,12 +142,10 @@ class TestIntegrationThreadedPipeline:
         while not speech_queue.empty():
             segments.append(speech_queue.get_nowait())
 
-        assert len(segments) == 3
+        assert len(segments) == 2
         assert isinstance(segments[0], AudioSegment)
         assert segments[0].type == 'incremental'
         assert isinstance(segments[1], SpeechEndSignal)
-        assert isinstance(segments[2], AudioSegment)
-        assert segments[2].type == 'incremental'
 
 
     def test_preprocessor_delegates_to_windower(self, pipeline_config):
@@ -193,8 +191,8 @@ class TestIntegrationThreadedPipeline:
                 'chunk_id': i
             })
 
-        assert mock_windower.process_segment.call_count == 1
-        segment = mock_windower.process_segment.call_args[0][0]
+        assert mock_windower.flush.call_count == 1
+        segment = mock_windower.flush.call_args[0][0]
         assert isinstance(segment, AudioSegment)
         expected_audio = np.concatenate(sent_audio_chunks)
         np.testing.assert_array_equal(segment.data, expected_audio)
