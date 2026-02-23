@@ -40,8 +40,7 @@ class Recognizer:
         verbose: Enable verbose logging
     """
 
-    # Filler words to exclude when including previous complete word before data_start
-    FILLER_WORDS = {' um', ' oh', ' uh', ' ah'}
+    FILLER_WORDS: frozenset[str] = frozenset({"um", "uh", "ah", "oh", "yeah", "mm-hmm", "okay"})
 
     def __init__(self,
                  *,
@@ -103,10 +102,7 @@ class Recognizer:
         # Confidence extraction not yet implemented with new API
         token_confidences = []
 
-        # Calculate context boundaries in seconds
         data_start = len(window_data.left_context) / self.sample_rate
-        data_duration = len(window_data.data) / self.sample_rate
-        data_end = data_start + data_duration
 
         if self.verbose:
             logging.debug(f"recognize() dump:")
@@ -114,7 +110,6 @@ class Recognizer:
             logging.debug(f"  chunk_ids={_format_chunk_ids(window_data.chunk_ids)}")
             logging.debug(f"  audio duration: {duration_with_context}")
             logging.debug(f"  data_start: {data_start}")
-            logging.debug(f"  data_duration: {data_duration}")
             logging.debug(f"  text: '{result.text}'")
             logging.debug(f"  tokens: {result.tokens}")
             logging.debug(f"  timestamps: {result.timestamps}")
@@ -128,8 +123,7 @@ class Recognizer:
             result.tokens,
             result.timestamps,
             token_confidences,
-            data_start,
-            data_end
+            data_start
         )
 
         if not filtered_text or not filtered_text.strip():
@@ -173,25 +167,18 @@ class Recognizer:
                                         tokens: Optional[list[str]],
                                         timestamps: Optional[list[float]],
                                         confidences: list[float],
-                                        data_start: float,
-                                        data_end: float) -> tuple[str, list[float]]:
+                                        data_start: float) -> tuple[str, list[float]]:
         """Filter tokens and their confidences to only those within data region (exclude context).
 
         Algorithm:
-        1. If no timestamps available, return full text with empty confidences (fallback)
-        2. Timestamp filtering
-        3. Backtrack for split words (prevents word corruption from boundary cuts):
-           - Parakeet splits words into subword tokens: [" O", "ne"] for "One"
-           - Word-start tokens have leading space, continuation tokens do not
-           - If first filtered token lacks leading space, backtrack to find word-start token
-           - Include all tokens from word-start through original filtered set
-        4. Include previous complete word if first filtered token is complete:
-           - If first filtered token has space prefix (complete word)
-           - Check if previous token also has space prefix (also complete word)
-           - Exclude filler words (um, oh, uh, ah) - case-insensitive check
-           - Prepend previous token to capture short words at speech start
-        5. Reconstruct text from filtered tokens (tokens use space prefix for word boundaries)
-        6. Strip and return (text, confidences)
+        1. If tokens/timestamps missing or lengths mismatched: return (text, []) as fallback.
+        2. Group tokens into words by index. A word starts at index 0 or when the token has
+           a leading space. Word timestamp = timestamp of its first token.
+        3. For each word, include if:
+           - word_ts >= data_start  (in-range), OR
+           - word_ts < data_start AND normalized word not in FILLER_WORDS  (left non-filler)
+        4. If no words selected: return ('', []).
+        5. Reconstruct text: join tokens in original order, strip, return with aligned confidences.
 
         Args:
             text: Full recognized text
@@ -199,62 +186,38 @@ class Recognizer:
             timestamps: Timestamp list (in seconds, relative to audio start)
             confidences: Confidence scores parallel to tokens
             data_start: Start of data region in seconds
-            data_end: End of data region in seconds
 
         Returns:
             tuple: (filtered_text, filtered_confidences)
         """
-        if not tokens or not timestamps:
-            # No timestamps available - return full text with empty confidences (fallback)
+        if not tokens or not timestamps or len(tokens) != len(timestamps):
             return text, []
-
-        # Step 1: Strict timestamp filtering (data_start <= ts <= data_end)
-        filtered_tokens = []
-        filtered_confidences = []
 
         has_confidences = len(confidences) == len(tokens)
 
-        for i, (token, ts) in enumerate(zip(tokens, timestamps)):
-            if data_start <= ts <= data_end:
-                filtered_tokens.append(token)
-                if has_confidences:
-                    filtered_confidences.append(confidences[i])
+        words: list[list[int]] = []
+        for i, token in enumerate(tokens):
+            if i == 0 or token.startswith(' '):
+                words.append([i])
+            else:
+                words[-1].append(i)
 
-        if not filtered_tokens:
+        final_indices: list[int] = []
+        for word_indices in words:
+            word_ts = timestamps[word_indices[0]]
+            if word_ts >= data_start:
+                final_indices.extend(word_indices)
+            else:
+                normalized = ''.join(tokens[i] for i in word_indices).strip().lower()
+                if normalized not in self.FILLER_WORDS:
+                    final_indices.extend(word_indices)
+
+        if not final_indices:
             return "", []
 
-         # Include previous complete word (if not a filler word)
-        if filtered_tokens and filtered_tokens[0].startswith(' '):
-            first_filtered_idx = tokens.index(filtered_tokens[0])
-            if first_filtered_idx > 0:
-                prev_token = tokens[first_filtered_idx - 1]
-                if prev_token.startswith(' '):
-                    if prev_token.lower() not in self.FILLER_WORDS:
-                        filtered_tokens.insert(0, prev_token)
-                        if has_confidences:
-                            filtered_confidences.insert(0, confidences[first_filtered_idx - 1])
-
-       # Backtrack for split words
-        if filtered_tokens and not filtered_tokens[0].startswith(' '):
-            first_filtered_idx = tokens.index(filtered_tokens[0])
-
-            word_start_idx = first_filtered_idx
-            for idx in range(first_filtered_idx - 1, -1, -1):
-                if tokens[idx].startswith(' '):
-                    word_start_idx = idx
-                    break
-
-            if word_start_idx < first_filtered_idx:
-                for idx in range(word_start_idx, first_filtered_idx):
-                    filtered_tokens.insert(idx - word_start_idx, tokens[idx])
-                    if has_confidences:
-                        filtered_confidences.insert(idx - word_start_idx, confidences[idx])
-
-        # Reconstruct text from filtered tokens
-        reconstructed = ''.join(filtered_tokens)
-        reconstructed = reconstructed.strip()
-
-        return reconstructed, filtered_confidences
+        filtered_tokens = [tokens[i] for i in final_indices]
+        filtered_confidences = [confidences[i] for i in final_indices] if has_confidences else []
+        return ''.join(filtered_tokens).strip(), filtered_confidences
 
     def process(self) -> None:
         """Process AudioSegments from queue continuously.

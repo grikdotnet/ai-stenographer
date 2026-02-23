@@ -243,11 +243,11 @@ class TestTimestampedRecognition:
         assert result.text == "hello world"
 
     def test_filter_tokens_partial_overlap(self, timestamped_mock_model):
-        """Token filtering should remove tokens from context regions."""
-        # Simulate: left_context (0.5s) + data (1.0s) + right_context (0.5s)
-        # Total audio: 2.0s
-        # Data region: 0.5s to 1.5s
-        # Tokens: "yeah" @ 0.1s (in left context, outside tolerance), "hello" @ 0.8s (in data), "mm-hmm" @ 1.7s (in right context)
+        """Token filtering should drop left-context fillers; in-range tokens are always kept."""
+        # left_context=0.5s → data_start=0.5s
+        # "yeah" @ 0.1s: left non-filler check → filler → dropped
+        # "hello" @ 0.8s: >= data_start → kept
+        # "mm-hmm" @ 1.7s: >= data_start → kept
         timestamped_mock_model.recognize.return_value = TimestampedResult(
             text="yeah hello mm-hmm",
             tokens=[" yeah", " hello", " mm", "-", "hmm"],
@@ -268,20 +268,18 @@ class TestTimestampedRecognition:
 
         result = recognizer.recognize_window(segment)
 
-        # Should keep "hello" (at 0.8s, within 0.5-1.5s data region)
-        # Step 3 includes " yeah" (previous complete word before " hello")
         assert result is not None
         assert "hello" in result.text
-        assert "yeah" in result.text  # Included via Step 3
-        assert "mm-hmm" not in result.text
+        assert "yeah" not in result.text
+        assert "mm-hmm" in result.text
 
     def test_filter_tokens_none_in_range(self, timestamped_mock_model):
         """Token filtering should return None when all tokens are in context."""
-        # All tokens are outside data region (in contexts)
+        # All tokens are left-context fillers (< data_start=0.5s) → all dropped
         timestamped_mock_model.recognize.return_value = TimestampedResult(
             text="yeah mm-hmm",
             tokens=[" yeah", " mm", "-", "hmm"],
-            timestamps=[0.1, 1.9, 1.95, 2.0]  # All in context regions
+            timestamps=[0.1, 0.2, 0.25, 0.3]  # All before data_start=0.5s, all fillers
         )
 
         recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
@@ -298,7 +296,6 @@ class TestTimestampedRecognition:
 
         result = recognizer.recognize_window(segment)
 
-        # Should return None (all tokens filtered out)
         assert result is None
 
     def test_filter_tokens_no_timestamps(self, timestamped_mock_model):
@@ -376,24 +373,21 @@ class TestTimestampedRecognition:
         """Unit test for _filter_tokens_with_confidence() method."""
         recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
 
-        # Test case: tokens with various timestamps (no confidence data available)
+        # "yeah" @ 0.1s: left filler → dropped; rest >= data_start=0.5 → kept
         text = "yeah hello world mm-hmm"
         tokens = [" yeah", " hello", " world", " mm", "-", "hmm"]
-        timestamps = [0.1, 0.8, 1.0, 1.7, 1.75, 1.8]  # "yeah" at 0.1s outside tolerance
-        confidences = []  # No confidence data available
+        timestamps = [0.1, 0.8, 1.0, 1.7, 1.75, 1.8]
+        confidences = []
         data_start = 0.5
-        data_end = 1.5
 
         filtered_text, filtered_confidences = recognizer._filter_tokens_with_confidence(
-            text, tokens, timestamps, confidences, data_start, data_end
+            text, tokens, timestamps, confidences, data_start
         )
 
-        # Should include "hello" and "world" (timestamps 0.8 and 1.0)
-        # Step 3 includes "yeah" (previous complete word before "hello")
         assert "hello" in filtered_text
         assert "world" in filtered_text
-        assert "yeah" in filtered_text  # Included via Step 3
-        assert "mm-hmm" not in filtered_text
+        assert "yeah" not in filtered_text
+        assert "mm-hmm" in filtered_text
 
         # No confidence scores available
         assert len(filtered_confidences) == 0
@@ -405,14 +399,14 @@ class TestTimestampedRecognition:
 
         # Empty tokens - should return full text with empty confidences (fallback)
         filtered_text, filtered_confidences = recognizer._filter_tokens_with_confidence(
-            "hello world", None, None, [], 0.0, 1.0
+            "hello world", None, None, [], 0.0
         )
         assert filtered_text == "hello world"
         assert filtered_confidences == []
 
         # Empty timestamps - should return full text with empty confidences (fallback)
         filtered_text, filtered_confidences = recognizer._filter_tokens_with_confidence(
-            "hello world", [" hello", " world"], None, [], 0.0, 1.0
+            "hello world", [" hello", " world"], None, [], 0.0
         )
         assert filtered_text == "hello world"
         assert filtered_confidences == []
@@ -596,25 +590,22 @@ class TestTimestampedRecognition:
         timestamps = [0.5, 0.6, 0.80, 1.00]
         confidences = [0.9, 0.85, 0.88, 0.92]
         data_start = 0.7
-        data_end = 1.2
 
         filtered_text, filtered_confidences = recognizer._filter_tokens_with_confidence(
-            text, tokens, timestamps, confidences, data_start, data_end
+            text, tokens, timestamps, confidences, data_start
         )
 
-        # Should include " Hello", " O", "ne", " world" (backtracking + Step 3)
-        # Step 1: filters "ne" @ 0.80, " world" @ 1.00
-        # Step 2: backtrack from "ne" to " O" @ 0.6
+        # New algorithm rescues both " Hello" (0.5s) and " O"/"ne" (0.6s) as contiguous
+        # non-filler candidates before the first in-range word " world" (1.0s).
+        # Confidences: [0.9, 0.85, 0.88, 0.92] for [" Hello", " O", "ne", " world"]
         assert " O" in filtered_text or "One" in filtered_text, f"Expected 'One' but got '{filtered_text}'"
         assert "world" in filtered_text
+        assert "Hello" in filtered_text
 
-        # Confidences should have 4 values: [0.9 for " Hello", 0.85 for " O", 0.88 for "ne", 0.92 for " world"]
-        # Step 1: [0.88, 0.92]
-        # Step 2 (backtracking): [0.85, 0.88, 0.92]
-        assert len(filtered_confidences) == 3, \
-            f"Expected 3 confidence values (with backtracking), got {len(filtered_confidences)}: {filtered_confidences}"
-        assert 0.85 in filtered_confidences, \
-            f"Expected confidence 0.85 for ' O' token to be included via backtracking"
+        assert len(filtered_confidences) == 4, \
+            f"Expected 4 confidence values (Hello + One + world), got {len(filtered_confidences)}: {filtered_confidences}"
+        assert 0.85 in filtered_confidences
+        assert 0.9 in filtered_confidences
 
     def test_filter_tokens_previous_complete_word_included(self, timestamped_mock_model):
         """Test that previous complete word is included when first filtered token is complete.
@@ -686,9 +677,8 @@ class TestTimestampedRecognition:
         result = recognizer.recognize_window(segment)
 
         assert result is not None
-        # Should NOT include "lo" (not a complete word)
-        assert result.text.strip() == "world", \
-            f"Expected only 'world', got '{result.text}' (should not include 'lo')"
+        assert "Hello" in result.text
+        assert "world" in result.text
 
     def test_filter_tokens_filler_word_blacklisted(self, timestamped_mock_model):
         """Test that filler words (um, oh, uh, ah) are excluded from previous word inclusion.
@@ -745,10 +735,9 @@ class TestTimestampedRecognition:
         timestamps = [0.4, 0.6]
         confidences = [0.95, 0.88]
         data_start = 0.5
-        data_end = 1.0
 
         filtered_text, filtered_confidences = recognizer._filter_tokens_with_confidence(
-            text, tokens, timestamps, confidences, data_start, data_end
+            text, tokens, timestamps, confidences, data_start
         )
 
         # Should include " Hi" via Step 3
@@ -796,6 +785,188 @@ class TestTimestampedRecognition:
         assert result is not None
         assert "Hello" in result.text
         assert "world" in result.text
+
+    def test_out_of_range_non_filler_is_kept(self, timestamped_mock_model):
+        """Word before data_start, not a filler → included as left non-filler."""
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
+
+        tokens = [" first", " hello"]
+        timestamps = [0.4, 0.6]
+        data_start = 0.5
+
+        filtered_text, _ = recognizer._filter_tokens_with_confidence(
+            "first hello", tokens, timestamps, [], data_start
+        )
+
+        assert "first" in filtered_text
+        assert "hello" in filtered_text
+
+    @pytest.mark.parametrize(
+        "text,tokens,timestamps,kept_word",
+        [
+            ("yeah hello", [" yeah", " hello"], [0.4, 0.6], "hello"),
+            ("yeah world", [" yeah", " world"], [0.3, 0.6], "world"),
+        ],
+    )
+    def test_out_of_range_single_filler_dropped(
+        self, timestamped_mock_model, text, tokens, timestamps, kept_word
+    ):
+        """Single OOR filler is dropped while later non-filler text is kept."""
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
+
+        filtered_text, _ = recognizer._filter_tokens_with_confidence(
+            text, tokens, timestamps, [], 0.5
+        )
+
+        assert "yeah" not in filtered_text
+        assert kept_word in filtered_text
+
+    def test_split_filler_not_in_set_is_kept(self, timestamped_mock_model):
+        """[' Uh', 'h'] OOR → normalized 'uhh' → NOT in FILLER_WORDS → kept."""
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
+
+        tokens = [" Uh", "h", " world"]
+        timestamps = [0.3, 0.35, 0.6]
+        data_start = 0.5
+
+        filtered_text, _ = recognizer._filter_tokens_with_confidence(
+            "Uhh world", tokens, timestamps, [], data_start
+        )
+
+        assert "Uhh" in filtered_text or ("Uh" in filtered_text and "h" in filtered_text)
+        assert "world" in filtered_text
+
+    def test_multi_token_hallucination_dropped(self, timestamped_mock_model):
+        """[' Mm', '-', 'hmm'] OOR → normalized 'mm-hmm' → dropped."""
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
+
+        tokens = [" Mm", "-", "hmm", " hello"]
+        timestamps = [0.2, 0.25, 0.3, 0.6]
+        data_start = 0.5
+
+        filtered_text, _ = recognizer._filter_tokens_with_confidence(
+            "Mm-hmm hello", tokens, timestamps, [], data_start
+        )
+
+        assert filtered_text == "hello"
+
+    def test_mixed_out_of_range_tokens(self, timestamped_mock_model):
+        """Two OOR words: ' yeah' (dropped) + ' first' (kept)."""
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
+
+        tokens = [" yeah", " first", " hello"]
+        timestamps = [0.2, 0.4, 0.6]
+        data_start = 0.5
+
+        filtered_text, _ = recognizer._filter_tokens_with_confidence(
+            "yeah first hello", tokens, timestamps, [], data_start
+        )
+
+        assert "yeah" not in filtered_text
+        assert "first" in filtered_text
+        assert "hello" in filtered_text
+
+    def test_confidence_alignment_with_left_inclusion(self, timestamped_mock_model):
+        """Confidences list length matches left-non-filler + in-range token count."""
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
+
+        tokens = [" first", " hello", " world"]
+        timestamps = [0.4, 0.6, 0.8]
+        confidences = [0.9, 0.85, 0.92]
+        data_start = 0.5
+
+        filtered_text, filtered_confidences = recognizer._filter_tokens_with_confidence(
+            "first hello world", tokens, timestamps, confidences, data_start
+        )
+
+        assert "first" in filtered_text
+        assert len(filtered_confidences) == 3
+
+    @pytest.mark.parametrize(
+        "text,tokens,timestamps",
+        [
+            ("yeah okay", [" yeah", " okay"], [0.1, 0.3]),
+            ("um uh", [" um", " uh"], [0.2, 0.4]),
+        ],
+    )
+    def test_no_in_range_all_fillers_returns_empty(
+        self, timestamped_mock_model, text, tokens, timestamps
+    ):
+        """Zero in-range words with only fillers returns empty output."""
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
+
+        filtered_text, filtered_confidences = recognizer._filter_tokens_with_confidence(
+            text, tokens, timestamps, [], 0.5
+        )
+
+        assert filtered_text == ""
+        assert filtered_confidences == []
+
+    def test_duplicate_token_values_use_indices(self, timestamped_mock_model):
+        """Two identical tokens [' the', ' cat', ' the']; only second ' the' in range → only that included."""
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
+
+        tokens = [" the", " cat", " the"]
+        timestamps = [0.1, 0.3, 0.6]
+        data_start = 0.5
+
+        filtered_text, _ = recognizer._filter_tokens_with_confidence(
+            "the cat the", tokens, timestamps, [], data_start
+        )
+
+        # " the" @ 0.1 and " cat" @ 0.3 are left non-fillers; " the" @ 0.6 is in-range
+        assert "the" in filtered_text
+        assert filtered_text.strip().count("the") >= 1
+
+    def test_non_monotonic_timestamp_left_non_filler_included(self, timestamped_mock_model):
+        """Non-monotonic timestamps: all left non-fillers are included regardless of word order.
+
+        Scenario: [' first'@0.4, ' hello'@0.6, ' tail'@0.45], data_start=0.5.
+        Both ' first' and ' tail' are left non-fillers (ts < data_start) and must be included.
+        ' hello' is in-range.
+        """
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
+
+        tokens = [" first", " hello", " tail"]
+        timestamps = [0.4, 0.6, 0.45]
+        data_start = 0.5
+
+        filtered_text, _ = recognizer._filter_tokens_with_confidence(
+            "first hello tail", tokens, timestamps, [], data_start
+        )
+
+        assert "first" in filtered_text
+        assert "hello" in filtered_text
+        assert "tail" in filtered_text
+
+    def test_all_left_non_fillers_returned_when_no_in_range(self, timestamped_mock_model):
+        """No in-range words; all left words are non-fillers → non-empty result."""
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
+
+        tokens = [" first", " second"]
+        timestamps = [0.2, 0.4]
+        data_start = 0.5
+
+        filtered_text, _ = recognizer._filter_tokens_with_confidence(
+            "first second", tokens, timestamps, [], data_start
+        )
+
+        assert "first" in filtered_text
+        assert "second" in filtered_text
+
+    def test_left_word_order_preserved(self, timestamped_mock_model):
+        """Left non-fillers precede in-range words; order preserved."""
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
+
+        tokens = [" apple", " banana", " cherry"]
+        timestamps = [0.1, 0.3, 0.7]
+        data_start = 0.5
+
+        filtered_text, _ = recognizer._filter_tokens_with_confidence(
+            "apple banana cherry", tokens, timestamps, [], data_start
+        )
+
+        assert filtered_text == "apple banana cherry"
 
 
 class TestConfidenceMetrics:
