@@ -11,6 +11,7 @@ from ..types import (
     RecognizerAck,
     RecognizerOutputItem,
 )
+from ..postprocessing.PostRecognitionFilter import PostRecognitionFilter
 
 if TYPE_CHECKING:
     from onnx_asr.adapters import TimestampedResultsAsrAdapter
@@ -45,9 +46,8 @@ class Recognizer:
         sample_rate: Audio sample rate in Hz (default: 16000)
         app_state: ApplicationState for observer pattern (REQUIRED)
         verbose: Enable verbose logging
+        post_recognition_filter: Optional injected PostRecognitionFilter (defaults to new instance)
     """
-
-    FILLER_WORDS: frozenset[str] = frozenset({"um", "uh", "ah", "oh", "yeah", "mm-hmm", "okay"})
 
     def __init__(self,
                  *,
@@ -57,6 +57,7 @@ class Recognizer:
                  sample_rate: int = 16000,
                  app_state: 'ApplicationState' = None,
                  verbose: bool = False,
+                 post_recognition_filter: Optional[PostRecognitionFilter] = None,
                  ) -> None:
         self.input_queue: queue.Queue = input_queue
         self.output_queue: queue.Queue = output_queue
@@ -71,6 +72,7 @@ class Recognizer:
         self.verbose: bool = verbose
         self.app_state: 'ApplicationState' = app_state
         self.dropped_results: int = 0
+        self._post_recognition_filter = post_recognition_filter or PostRecognitionFilter()
 
         # Register as component observer
         self.app_state.register_component_observer(self.on_state_change)
@@ -104,16 +106,15 @@ class Recognizer:
         return [float(np.clip(1.0 if lp >= 0 else np.exp(lp), 0.0, 1.0)) for lp in logprobs]
 
     def recognize_window(self, window_data: AudioSegment) -> Optional[RecognitionResult]:
-        """Recognize audio with context and filter tokens by timestamp.
+        """Recognize audio with context and filter words using PostRecognitionFilter.
 
         Algorithm:
         1. Concatenate left_context + data + right_context for recognition
         2. Recognize with timestamps using TimestampedResultsAsrAdapter
-        3. Calculate data region boundaries in seconds
-        4. Filter tokens to only include those within data region
-        5. Extract per-token confidences from logprobs via exp(logprob) → [0,1].
+        3. Extract per-token confidences from logprobs via exp(logprob) → [0,1].
            Falls back to [] if logprobs is None, misaligned, empty, or contains
-           non-finite values. Filters confidences in lockstep with token filtering.
+           non-finite values.
+        4. Filter words using PostRecognitionFilter (filler/confidence rules).
 
         Args:
             window_data: AudioSegment to recognize
@@ -121,7 +122,6 @@ class Recognizer:
         Returns:
             RecognitionResult if text recognized, None if empty/silence
         """
-        # Concatenate context + data + context for recognition
         audio_parts = []
         if window_data.left_context.size > 0:
             audio_parts.append(window_data.left_context)
@@ -131,20 +131,16 @@ class Recognizer:
 
         full_audio = np.concatenate(audio_parts) if len(audio_parts) > 1 else window_data.data
 
-        # Recognize with timestamps
         result: TimestampedResult = self.model.recognize(full_audio)
         duration_with_context = len(full_audio) / self.sample_rate
 
         token_confidences = self._extract_token_confidences(result)
-
-        data_start = len(window_data.left_context) / self.sample_rate
 
         if self.verbose:
             logging.debug(f"recognize() dump:")
             logging.debug(f"  type: incremental")
             logging.debug(f"  chunk_ids={_format_chunk_ids(window_data.chunk_ids)}")
             logging.debug(f"  audio duration: {duration_with_context}")
-            logging.debug(f"  data_start: {data_start}")
             logging.debug(f"  text: '{result.text}'")
             logging.debug(f"  tokens: {_format_token_confidence_pairs(result.tokens, token_confidences)}")
             logging.debug(f"  timestamps: {result.timestamps}")
@@ -152,19 +148,13 @@ class Recognizer:
         if not result.text or not result.text.strip():
             return None
 
-        # Filter tokens and confidences within data region
-        filtered_text, filtered_confidences = self._filter_tokens_with_confidence(
-            result.text,
-            result.tokens,
-            result.timestamps,
-            token_confidences,
-            data_start
+        filtered_text, filtered_confidences = self._post_recognition_filter.filter(
+            result.text, result.tokens, token_confidences
         )
 
         if not filtered_text or not filtered_text.strip():
             return None
 
-        # Compute segment-level confidence statistics
         avg_confidence = float(np.mean(filtered_confidences)) if filtered_confidences else 0.0
         audio_rms = float(np.sqrt(np.mean(window_data.data ** 2)))
         confidence_variance = float(np.var(filtered_confidences)) if len(filtered_confidences) > 1 else 0.0
@@ -196,63 +186,6 @@ class Recognizer:
                     f"Recognizer: output_queue full, dropped message "
                     f"(total drops: {self.dropped_results})"
                 )
-
-    def _filter_tokens_with_confidence(self,
-                                        text: str,
-                                        tokens: Optional[list[str]],
-                                        timestamps: Optional[list[float]],
-                                        confidences: list[float],
-                                        data_start: float) -> tuple[str, list[float]]:
-        """Filter tokens and their confidences to only those within data region (exclude context).
-
-        Algorithm:
-        1. If tokens/timestamps missing or lengths mismatched: return (text, []) as fallback.
-        2. Group tokens into words by index. A word starts at index 0 or when the token has
-           a leading space. Word timestamp = timestamp of its first token.
-        3. For each word, include if:
-           - word_ts >= data_start  (in-range), OR
-           - word_ts < data_start AND normalized word not in FILLER_WORDS  (left non-filler)
-        4. If no words selected: return ('', []).
-        5. Reconstruct text: join tokens in original order, strip, return with aligned confidences.
-
-        Args:
-            text: Full recognized text
-            tokens: Token list from TimestampedResult (subword units with space prefix)
-            timestamps: Timestamp list (in seconds, relative to audio start)
-            confidences: Confidence scores parallel to tokens
-            data_start: Start of data region in seconds
-
-        Returns:
-            tuple: (filtered_text, filtered_confidences)
-        """
-        if not tokens or not timestamps or len(tokens) != len(timestamps):
-            return text, []
-
-        has_confidences = len(confidences) == len(tokens)
-
-        words: list[list[int]] = []
-        for i, token in enumerate(tokens):
-            if i == 0 or token.startswith(' '):
-                words.append([i])
-            else:
-                words[-1].append(i)
-
-        final_indices: list[int] = []
-        for word_indices in words:
-            word_ts = timestamps[word_indices[0]]
-            if word_ts >= data_start:
-                final_indices.extend(word_indices)
-            else:
-                normalized = ''.join(tokens[i] for i in word_indices).strip().lower()
-                if normalized not in self.FILLER_WORDS:
-                    final_indices.extend(word_indices)
-
-        if not final_indices:
-            return "", []
-
-        filtered_tokens = [tokens[i] for i in final_indices]
-        filtered_confidences = [confidences[i] for i in final_indices] if has_confidences else []
-        return ''.join(filtered_tokens).strip(), filtered_confidences
 
     def process(self) -> None:
         """Process AudioSegments from queue continuously.
