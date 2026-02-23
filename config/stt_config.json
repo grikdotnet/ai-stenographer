@@ -2,7 +2,7 @@
   "audio": {
     "sample_rate": 16000,
     "chunk_duration": 0.032,
-    "silence_energy_threshold": 3,
+    "silence_energy_threshold": 10,
     "rms_normalization": {
       "target_rms": 0.07,
       "silence_threshold": 0.0001,
@@ -14,9 +14,9 @@
     "threshold": 0.55
   },
   "windowing": {
-    "window_duration": 3.0,
-    "max_speech_duration_ms": 1500,
-    "silence_timeout": 1.0
+    "max_window_duration": 4.0,
+    "max_speech_duration_ms": 1024,
+    "min_segment_duration_ms": 320
   },
   "recognition": {
     "model_name": "parakeet",

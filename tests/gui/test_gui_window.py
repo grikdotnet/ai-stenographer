@@ -1,6 +1,7 @@
 import unittest
 import sys
 import os
+import pytest
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -19,6 +20,8 @@ except ImportError:
 except Exception:
     # Catch any tkinter initialization errors
     TKINTER_AVAILABLE = False
+
+pytestmark = pytest.mark.gui
 
 
 @unittest.skipUnless(TKINTER_AVAILABLE, "tkinter not available or properly configured")
@@ -62,13 +65,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
 
     def test_update_partial_accepts_recognition_result(self) -> None:
         """Test that update_partial() accepts RecognitionResult with chunk_ids."""
-        result = RecognitionResult(
-            text="hello",
-            start_time=0.0,
-            end_time=0.5,
-            status='preliminary',
-            chunk_ids=[1]
-        )
+        result = RecognitionResult(text="hello", start_time=0.0, end_time=0.5, chunk_ids=[1])
         self.formatter.partial_update(result)
 
         content = self.get_widget_content()
@@ -77,198 +74,132 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
     def test_finalize_text_accepts_recognition_result(self) -> None:
         """Test that finalize_text() accepts RecognitionResult with chunk_ids."""
         # Preliminary
-        prelim = RecognitionResult(
-            text="hello",
-            start_time=0.0,
-            end_time=0.5,
-            status='preliminary',
-            chunk_ids=[1]
-        )
+        prelim = RecognitionResult(text="hello", start_time=0.0, end_time=0.5, chunk_ids=[1])
         self.formatter.partial_update(prelim)
 
         # Finalize
-        final = RecognitionResult(
-            text="hello",
-            start_time=0.0,
-            end_time=0.5,
-            status='final',
-            chunk_ids=[1]
-        )
+        final = RecognitionResult(text="hello", start_time=0.0, end_time=0.5, chunk_ids=[1])
         self.formatter.finalization(final)
 
         content = self.get_widget_content()
         self.assertEqual(content, "hello ")
 
-    def test_partial_finalization_with_chunk_ids(self) -> None:
+    def test_incremental_partial_then_finalize(self) -> None:
         """
-        Test that finalize_text() uses chunk_ids to finalize only matched chunks.
+        Test incremental architecture: partial_update replaces, finalization appends.
 
         Scenario:
-        - Preliminary chunks 1-5: "hello" "world" "how" "are" "you"
-        - Finalize chunks 1-3: "hello world how"
-        - Chunks 4-5 remain preliminary: "are you"
+        - Partial update with growing text: "hello" → "hello world how are you"
+        - Finalize "hello world how"
+        - New partial: "are you"
         """
-        # Preliminary results
-        results = [
-            RecognitionResult("hello", 0.0, 0.5, True, [1]),
-            RecognitionResult("world", 0.5, 1.0, True, [2]),
-            RecognitionResult("how", 1.0, 1.5, True, [3]),
-            RecognitionResult("are", 1.5, 2.0, True, [4]),
-            RecognitionResult("you", 2.0, 2.5, True, [5]),
-        ]
-
-        for r in results:
-            self.formatter.partial_update(r)
-
-        # All preliminary
-        content = self.get_widget_content()
-        self.assertEqual(content, "hello world how are you")
-
-        # Finalize chunks 1-3
-        final = RecognitionResult(
-            text="hello world how",
-            start_time=0.0,
-            end_time=1.5,
-            status='final',
-            chunk_ids=[1, 2, 3]
+        # Incremental partial updates (each replaces previous)
+        self.formatter.partial_update(
+            RecognitionResult(text="hello world how are you", start_time=0.0, end_time=2.5, chunk_ids=[1, 2, 3, 4, 5])
         )
-        self.formatter.finalization(final)
 
-        # Content preserved: finalized + remaining preliminary
         content = self.get_widget_content()
         self.assertEqual(content, "hello world how are you")
 
-        # Check tags: "hello world how" is final
+        # Finalize stable prefix
+        self.formatter.finalization(
+            RecognitionResult(text="hello world how", start_time=0.0, end_time=1.5, chunk_ids=[1, 2, 3])
+        )
+
+        content = self.get_widget_content()
+        self.assertEqual(content, "hello world how ")
+
+        # Check tags: finalized text has "final" tag
         tags_at_start = self.text_widget.tag_names("1.0")
         self.assertIn("final", tags_at_start)
 
-        # "are you" is still preliminary
-        are_pos = "1." + str(len("hello world how "))
-        tags_at_are = self.text_widget.tag_names(are_pos)
-        self.assertIn("preliminary", tags_at_are)
-
-    def test_overlapping_window_workflow_with_chunk_ids(self) -> None:
+    def test_progressive_finalization_workflow(self) -> None:
         """
-        Test complete workflow with overlapping windows using chunk_ids.
+        Test progressive finalization with incremental architecture.
 
         Realistic pipeline simulation:
-        1. Preliminary chunks 1-3: "hello" "world" "how"
-        2. Window 1 finalizes chunks 1-2: "hello world"
-        3. More preliminary chunks 4-5: "are" "you"
-        4. Window 2 finalizes chunks 3-4: "how are"
-        5. Chunk 5 remains preliminary: "you"
+        1. Partial update: "hello world how" (growing window)
+        2. Finalize: "hello world"
+        3. Partial update: "how are you" (new unstable tail)
+        4. Finalize: "how are"
         """
-        # First batch of preliminary
-        for r in [
-            RecognitionResult("hello", 0.0, 0.5, True, [1]),
-            RecognitionResult("world", 0.5, 1.0, True, [2]),
-            RecognitionResult("how", 1.0, 1.5, True, [3]),
-        ]:
-            self.formatter.partial_update(r)
-
+        # Growing window shows preliminary text
+        self.formatter.partial_update(
+            RecognitionResult(text="hello world how", start_time=0.0, end_time=1.5, chunk_ids=[1, 2, 3])
+        )
         content = self.get_widget_content()
         self.assertEqual(content, "hello world how")
 
-        # Window 1 finalized
+        # First finalization
         self.formatter.finalization(
-            RecognitionResult("hello world", 0.0, 1.0, False, [1, 2])
+            RecognitionResult(text="hello world", start_time=0.0, end_time=1.0, chunk_ids=[1, 2])
         )
-
         content = self.get_widget_content()
-        self.assertEqual(content, "hello world how")
+        self.assertEqual(content, "hello world ")
 
-        # More preliminary chunks
-        for r in [
-            RecognitionResult("are", 1.5, 2.0, True, [4]),
-            RecognitionResult("you", 2.0, 2.5, True, [5]),
-        ]:
-            self.formatter.partial_update(r)
-
+        # New partial update replaces preliminary
+        self.formatter.partial_update(
+            RecognitionResult(text="how are you", start_time=1.0, end_time=2.5, chunk_ids=[3, 4, 5])
+        )
         content = self.get_widget_content()
         self.assertEqual(content, "hello world how are you")
 
-        # Window 2 finalized (includes overlap chunk 3)
+        # Second finalization
         self.formatter.finalization(
-            RecognitionResult("how are", 1.0, 2.0, False, [3, 4])
+            RecognitionResult(text="how are", start_time=1.0, end_time=2.0, chunk_ids=[3, 4])
         )
-
         content = self.get_widget_content()
-        self.assertEqual(content, "hello world how are you")
+        self.assertEqual(content, "hello world how are ")
 
-        # "hello world how are" is finalized
         tags_at_start = self.text_widget.tag_names("1.0")
         self.assertIn("final", tags_at_start)
 
-        # "you" is still preliminary
-        you_pos = "1." + str(len("hello world how are "))
-        tags_at_you = self.text_widget.tag_names(you_pos)
-        self.assertIn("preliminary", tags_at_you)
-
-    def test_finalize_tracks_chunk_ids_globally(self) -> None:
+    def test_finalized_text_accumulates(self) -> None:
         """
-        Test that GuiWindow tracks finalized chunk IDs globally.
+        Test that finalized_text buffer accumulates across multiple finalizations.
 
         Verifies:
-        - finalized_chunk_ids set grows with each finalization
-        - Chunks are not finalized twice
+        - Each finalization appends to finalized_text
+        - Duplicate finalization is prevented
         """
-        # Preliminary
-        for r in [
-            RecognitionResult("one", 0.0, 0.5, True, [1]),
-            RecognitionResult("two", 0.5, 1.0, True, [2]),
-            RecognitionResult("three", 1.0, 1.5, True, [3]),
-        ]:
-            self.formatter.partial_update(r)
-
-        # Finalize chunk 1
+        # Progressive finalization
         self.formatter.finalization(
-            RecognitionResult("one", 0.0, 0.5, False, [1])
+            RecognitionResult(text="one", start_time=0.0, end_time=0.5, chunk_ids=[1])
         )
-        self.assertIn(1, self.formatter.finalized_chunk_ids)
+        self.assertEqual(self.formatter.finalized_text, "one")
 
-        # Finalize chunk 2
         self.formatter.finalization(
-            RecognitionResult("two", 0.5, 1.0, False, [2])
+            RecognitionResult(text="two", start_time=0.5, end_time=1.0, chunk_ids=[2])
         )
-        self.assertIn(2, self.formatter.finalized_chunk_ids)
+        self.assertEqual(self.formatter.finalized_text, "one two")
 
-        # Both chunks tracked
-        self.assertEqual(self.formatter.finalized_chunk_ids, {1, 2})
+        # Duplicate prevention
+        self.formatter.finalization(
+            RecognitionResult(text="two", start_time=0.5, end_time=1.0, chunk_ids=[2])
+        )
+        self.assertEqual(self.formatter.finalized_text, "one two")
 
-        # Chunk 3 still preliminary
         content = self.get_widget_content()
-        self.assertEqual(content, "one two three")
+        self.assertEqual(content, "one two ")
 
-    def test_preliminary_results_stored_as_objects(self) -> None:
+    def test_current_preliminary_replaced_on_partial_update(self) -> None:
         """
-        Test that GuiWindow stores RecognitionResult objects internally.
+        Test that partial_update replaces current_preliminary (not appends).
 
-        Verifies internal state management for chunk-based tracking.
+        Verifies the incremental architecture: each partial_update replaces the previous one.
         """
-        results = [
-            RecognitionResult("hello", 0.0, 0.5, True, [1]),
-            RecognitionResult("world", 0.5, 1.0, True, [2]),
-        ]
+        result1 = RecognitionResult(text="hello", start_time=0.0, end_time=0.5, chunk_ids=[1])
+        result2 = RecognitionResult(text="hello world", start_time=0.0, end_time=1.0, chunk_ids=[1, 2])
 
-        for r in results:
-            self.formatter.partial_update(r)
+        self.formatter.partial_update(result1)
+        self.assertEqual(self.formatter.current_preliminary.text, "hello")
 
-        # GuiWindow should have stored these objects
-        self.assertEqual(len(self.formatter.preliminary_results), 2)
-        self.assertEqual(self.formatter.preliminary_results[0].text, "hello")
-        self.assertEqual(self.formatter.preliminary_results[1].text, "world")
-        self.assertEqual(self.formatter.preliminary_results[0].chunk_ids, [1])
-        self.assertEqual(self.formatter.preliminary_results[1].chunk_ids, [2])
+        self.formatter.partial_update(result2)
+        self.assertEqual(self.formatter.current_preliminary.text, "hello world")
 
     def test_finalize_text_without_preliminary(self) -> None:
         """Test that finalize_text() works when no preliminary text exists."""
-        result = RecognitionResult(
-            text="hello",
-            start_time=0.0,
-            end_time=0.5,
-            status='final',
-            chunk_ids=[1]
-        )
+        result = RecognitionResult(text="hello", start_time=0.0, end_time=0.5, chunk_ids=[1])
         self.formatter.finalization(result)
 
         content = self.get_widget_content()
@@ -277,23 +208,11 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
     def test_finalize_prevents_duplicate_finalization(self) -> None:
         """Test that finalize_text() prevents duplicate finalization."""
         # Preliminary
-        prelim = RecognitionResult(
-            text="hello",
-            start_time=0.0,
-            end_time=0.5,
-            status='preliminary',
-            chunk_ids=[1]
-        )
+        prelim = RecognitionResult(text="hello", start_time=0.0, end_time=0.5, chunk_ids=[1])
         self.formatter.partial_update(prelim)
 
         # Finalize once
-        final = RecognitionResult(
-            text="hello",
-            start_time=0.0,
-            end_time=0.5,
-            status='final',
-            chunk_ids=[1]
-        )
+        final = RecognitionResult(text="hello", start_time=0.0, end_time=0.5, chunk_ids=[1])
         self.formatter.finalization(final)
 
         # Try to finalize again with same text (duplicate call)
@@ -304,13 +223,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
 
     def test_preliminary_text_has_preliminary_tag(self) -> None:
         """Test that preliminary text has correct styling tag."""
-        result = RecognitionResult(
-            text="preliminary",
-            start_time=0.0,
-            end_time=0.5,
-            status='preliminary',
-            chunk_ids=[1]
-        )
+        result = RecognitionResult(text="preliminary", start_time=0.0, end_time=0.5, chunk_ids=[1])
         self.formatter.partial_update(result)
 
         # Get tags at the start of the text
@@ -319,13 +232,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
 
     def test_empty_partial_text(self) -> None:
         """Test handling of empty preliminary text."""
-        result = RecognitionResult(
-            text="",
-            start_time=0.0,
-            end_time=0.0,
-            status='preliminary',
-            chunk_ids=[]
-        )
+        result = RecognitionResult(text="", start_time=0.0, end_time=0.0, chunk_ids=[])
         self.formatter.partial_update(result)
 
         content = self.get_widget_content()
@@ -383,13 +290,7 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
         - Expected: paragraph break inserted automatically
         """
         # Finalize "hello world"
-        final_result = RecognitionResult(
-            text="hello world",
-            start_time=0.0,
-            end_time=1.0,
-            status='final',
-            chunk_ids=[1, 2]
-        )
+        final_result = RecognitionResult(text="hello world", start_time=0.0, end_time=1.0, chunk_ids=[1, 2])
         self.formatter.finalization(final_result)
 
         # Verify initial state
@@ -397,13 +298,7 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
         self.assertEqual(self.formatter.last_finalized_end_time, 1.0)
 
         # Preliminary after 3-second pause
-        prelim_result = RecognitionResult(
-            text="how",
-            start_time=4.0,  # 3.0s pause (4.0 - 1.0)
-            end_time=4.5,
-            status='preliminary',
-            chunk_ids=[3]
-        )
+        prelim_result = RecognitionResult(text="how", start_time=4.0, end_time=4.5, chunk_ids=[3])
         self.formatter.partial_update(prelim_result)
 
         # Paragraph break should be inserted (single newline)
@@ -426,23 +321,11 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
         - Expected: NO paragraph break
         """
         # Finalize "hello"
-        final_result = RecognitionResult(
-            text="hello",
-            start_time=0.0,
-            end_time=1.0,
-            status='final',
-            chunk_ids=[1]
-        )
+        final_result = RecognitionResult(text="hello", start_time=0.0, end_time=1.0, chunk_ids=[1])
         self.formatter.finalization(final_result)
 
         # Preliminary after 1-second pause (too short)
-        prelim_result = RecognitionResult(
-            text="world",
-            start_time=2.0,  # 1.0s pause (2.0 - 1.0) < 2.5s
-            end_time=2.5,
-            status='preliminary',
-            chunk_ids=[2]
-        )
+        prelim_result = RecognitionResult(text="world", start_time=2.0, end_time=2.5, chunk_ids=[2])
         self.formatter.partial_update(prelim_result)
 
         # No paragraph break should be inserted
@@ -466,46 +349,27 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
         - Expected: Only one paragraph break
         """
         # Finalize "hello"
-        final_result = RecognitionResult(
-            text="hello",
-            start_time=0.0,
-            end_time=1.0,
-            status='final',
-            chunk_ids=[1]
-        )
+        final_result = RecognitionResult(text="hello", start_time=0.0, end_time=1.0, chunk_ids=[1])
         self.formatter.finalization(final_result)
 
         # First preliminary after pause (inserts break)
-        prelim1 = RecognitionResult(
-            text="how",
-            start_time=4.0,  # 3.0s pause
-            end_time=4.5,
-            status='preliminary',
-            chunk_ids=[2]
-        )
+        prelim1 = RecognitionResult(text="how", start_time=4.0, end_time=4.5, chunk_ids=[2])
         self.formatter.partial_update(prelim1)
 
         # Verify paragraph break inserted
         self.assertEqual(self.formatter.finalized_text, "hello\n")
 
         # Second preliminary after same pause (should NOT insert duplicate)
-        prelim2 = RecognitionResult(
-            text="are",
-            start_time=4.5,  # Still 3.5s from finalized end (4.5 - 1.0)
-            end_time=5.0,
-            status='preliminary',
-            chunk_ids=[3]
-        )
+        prelim2 = RecognitionResult(text="how are", start_time=4.0, end_time=5.0, chunk_ids=[2, 3])
         self.formatter.partial_update(prelim2)
 
         # Should still have only one paragraph break
         self.assertEqual(self.formatter.finalized_text, "hello\n")
         self.assertEqual(self.formatter.finalized_text.count("\n"), 1)
 
-        # Widget should show both preliminaries without duplicate break
+        # Widget should show current preliminary (replaces previous)
         content = self.get_widget_content()
-        self.assertIn("how", content)
-        self.assertIn("are", content)
+        self.assertIn("how are", content)
 
     def test_no_pause_detection_without_finalization(self) -> None:
         """
@@ -521,13 +385,7 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
         self.assertEqual(self.formatter.finalized_text, "")
 
         # Preliminary without any prior finalization
-        prelim_result = RecognitionResult(
-            text="hello",
-            start_time=5.0,  # Large start time doesn't matter
-            end_time=5.5,
-            status='preliminary',
-            chunk_ids=[1]
-        )
+        prelim_result = RecognitionResult(text="hello", start_time=5.0, end_time=5.5, chunk_ids=[1])
         self.formatter.partial_update(prelim_result)
 
         # No paragraph break should be inserted
@@ -550,48 +408,24 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
         - Expected: Two paragraph breaks in finalized text
         """
         # First finalization
-        final1 = RecognitionResult(
-            text="one",
-            start_time=0.0,
-            end_time=1.0,
-            status='final',
-            chunk_ids=[1]
-        )
+        final1 = RecognitionResult(text="one", start_time=0.0, end_time=1.0, chunk_ids=[1])
         self.formatter.finalization(final1)
         self.assertEqual(self.formatter.finalized_text, "one")
 
         # First pause - preliminary triggers first break
-        prelim1 = RecognitionResult(
-            text="two",
-            start_time=4.0,  # 3.0s pause
-            end_time=5.0,
-            status='preliminary',
-            chunk_ids=[2]
-        )
+        prelim1 = RecognitionResult(text="two", start_time=4.0, end_time=5.0, chunk_ids=[2])
         self.formatter.partial_update(prelim1)
         self.assertEqual(self.formatter.finalized_text, "one\n")
 
         # Second finalization (includes "two" from preliminary)
-        final2 = RecognitionResult(
-            text="two three",
-            start_time=4.0,
-            end_time=7.0,
-            status='final',
-            chunk_ids=[2, 3]
-        )
+        final2 = RecognitionResult(text="two three", start_time=4.0, end_time=7.0, chunk_ids=[2, 3])
         self.formatter.finalization(final2)
         # finalized_text should be "one\n" + " " + "two three"
         self.assertEqual(self.formatter.finalized_text, "one\n two three")
         self.assertEqual(self.formatter.last_finalized_end_time, 7.0)
 
         # Second pause - preliminary triggers second break
-        prelim2 = RecognitionResult(
-            text="four",
-            start_time=10.0,  # 3.0s pause (10.0 - 7.0)
-            end_time=10.5,
-            status='preliminary',
-            chunk_ids=[4]
-        )
+        prelim2 = RecognitionResult(text="four", start_time=10.0, end_time=10.5, chunk_ids=[4])
         self.formatter.partial_update(prelim2)
 
         # Should have two paragraph breaks now
@@ -618,13 +452,7 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
         self.assertEqual(self.formatter.finalized_text, "")
 
         # Preliminary with pause
-        prelim_result = RecognitionResult(
-            text="hello",
-            start_time=4.0,  # 3.0s pause
-            end_time=4.5,
-            status='preliminary',
-            chunk_ids=[1]
-        )
+        prelim_result = RecognitionResult(text="hello", start_time=4.0, end_time=4.5, chunk_ids=[1])
 
         # Should not crash
         self.formatter.partial_update(prelim_result)

@@ -26,7 +26,7 @@ class TextRecognitionSubscriber(Protocol):
         may be refined or overwritten by subsequent results.
 
         Args:
-            result: RecognitionResult with status='preliminary'
+            result: Incremental RecognitionResult
         """
         ...
 
@@ -37,6 +37,6 @@ class TextRecognitionSubscriber(Protocol):
         a stable recognition result. This text should be treated as final.
 
         Args:
-            result: RecognitionResult with status='final' or 'flush'
+            result: Finalized RecognitionResult
         """
         ...

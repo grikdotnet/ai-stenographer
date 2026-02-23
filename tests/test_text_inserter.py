@@ -11,13 +11,12 @@ class TestTextInserter(unittest.TestCase):
         self.mock_keyboard = Mock()
         self.inserter = TextInserter(self.mock_keyboard, verbose=False)
 
-    def _make_result(self, text: str, status: str = 'final') -> RecognitionResult:
+    def _make_result(self, text: str) -> RecognitionResult:
         """Helper to create RecognitionResult for testing."""
         return RecognitionResult(
             text=text,
             start_time=0.0,
             end_time=1.0,
-            status=status,
             chunk_ids=[1]
         )
 
@@ -40,25 +39,25 @@ class TestTextInserter(unittest.TestCase):
 
     def test_on_finalization_inserts_text_when_enabled(self):
         self.inserter.enable()
-        result = self._make_result("hello world", status='final')
+        result = self._make_result("hello world")
         self.inserter.on_finalization(result)
         self.mock_keyboard.type_text.assert_called_once_with("hello world ")
 
     def test_on_finalization_does_nothing_when_disabled(self):
-        result = self._make_result("hello world", status='final')
+        result = self._make_result("hello world")
         self.inserter.on_finalization(result)
         self.mock_keyboard.type_text.assert_not_called()
 
     def test_on_finalization_adds_trailing_space(self):
         """Verify trailing space is added after inserted text."""
         self.inserter.enable()
-        result = self._make_result("word", status='final')
+        result = self._make_result("word")
         self.inserter.on_finalization(result)
         self.mock_keyboard.type_text.assert_called_once_with("word ")
 
     def test_on_finalization_handles_flush_status(self):
         self.inserter.enable()
-        result = self._make_result("end of speech", status='flush')
+        result = self._make_result("end of speech")
 
         self.inserter.on_finalization(result)
 
@@ -66,24 +65,24 @@ class TestTextInserter(unittest.TestCase):
 
     def test_on_finalization_skips_empty_text(self):
         self.inserter.enable()
-        result = self._make_result("", status='final')
+        result = self._make_result("")
         self.inserter.on_finalization(result)
         self.mock_keyboard.type_text.assert_not_called()
 
     def test_on_finalization_skips_whitespace_only_text(self):
         self.inserter.enable()
-        result = self._make_result("   \t\n  ", status='final')
+        result = self._make_result("   \t\n  ")
         self.inserter.on_finalization(result)
         self.mock_keyboard.type_text.assert_not_called()
 
     def test_on_partial_update_does_nothing_when_enabled(self):
         self.inserter.enable()
-        result = self._make_result("unstable", status='preliminary')
+        result = self._make_result("unstable")
         self.inserter.on_partial_update(result)
         self.mock_keyboard.type_text.assert_not_called()
 
     def test_on_partial_update_does_nothing_when_disabled(self):
-        result = self._make_result("unstable", status='preliminary')
+        result = self._make_result("unstable")
         self.inserter.on_partial_update(result)
         self.mock_keyboard.type_text.assert_not_called()
 
@@ -104,7 +103,7 @@ class TestTextInserter(unittest.TestCase):
         def finalization_loop():
             try:
                 for i in range(100):
-                    result = self._make_result(f"text{i}", status='final')
+                    result = self._make_result(f"text{i}")
                     self.inserter.on_finalization(result)
             except Exception as e:
                 errors.append(e)
@@ -132,7 +131,7 @@ class TestTextInserterProtocolCompliance(unittest.TestCase):
         # Should be callable with RecognitionResult
         result = RecognitionResult(
             text="test", start_time=0.0, end_time=1.0,
-            status='preliminary', chunk_ids=[1]
+            chunk_ids=[1]
         )
         inserter.on_partial_update(result)  # Should not raise
 

@@ -6,6 +6,8 @@ import tkinter as tk
 from unittest.mock import patch, MagicMock
 from src.gui.ModelDownloadDialog import show_download_dialog
 
+pytestmark = pytest.mark.gui
+
 
 class TestModelDownloadDialog:
     """Test suite for ModelDownloadDialog functionality."""

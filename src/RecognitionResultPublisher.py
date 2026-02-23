@@ -91,7 +91,7 @@ class RecognitionResultPublisher:
             register/unregister during callbacks.
 
         Args:
-            result: RecognitionResult with status='preliminary'
+            result: Preliminary RecognitionResult
         """
         # Copy subscriber list under lock, then notify outside lock
         # This prevents deadlocks if subscribers modify the registry
@@ -119,7 +119,7 @@ class RecognitionResultPublisher:
             then notify outside lock.
 
         Args:
-            result: RecognitionResult with status='final' or 'flush'
+            result: Finalized RecognitionResult
         """
         with self._lock:
             subscribers = list(self._subscribers)

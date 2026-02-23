@@ -7,6 +7,8 @@ import threading
 from src.gui.LoadingWindow import LoadingWindow
 from src.asr.ModelManager import ModelManager
 
+pytestmark = pytest.mark.gui
+
 
 @pytest.fixture
 def image_path():

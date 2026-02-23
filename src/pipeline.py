@@ -12,11 +12,12 @@ import tkinter as tk
 from .sound.AudioSource import AudioSource
 from .sound.FileAudioSource import FileAudioSource
 from .sound.SoundPreProcessor import SoundPreProcessor
-from .sound.AdaptiveWindower import AdaptiveWindower
+from .sound.GrowingWindowAssembler import GrowingWindowAssembler
 from .asr.Recognizer import Recognizer
+from .SpeechEndRouter import SpeechEndRouter
 from .asr.VoiceActivityDetector import VoiceActivityDetector
 from .asr.SessionOptionsFactory import SessionOptionsFactory
-from .postprocessing.TextMatcher import TextMatcher
+from .postprocessing.IncrementalTextMatcher import IncrementalTextMatcher
 from .RecognitionResultPublisher import RecognitionResultPublisher
 from .gui.TextInsertionService import TextInsertionService
 from .quickentry.QuickEntryService import QuickEntryService
@@ -52,8 +53,11 @@ class STTPipeline:
 
         # Create queues
         self.chunk_queue: queue.Queue = queue.Queue(maxsize=200)      # Raw audio chunks
-        self.speech_queue: queue.Queue = queue.Queue(maxsize=200)     # AudioSegments (prelim + final)
-        self.text_queue: queue.Queue = queue.Queue(maxsize=50)        # RecognitionResults
+        self.speech_queue: queue.Queue = queue.Queue(maxsize=200)               # AudioSegment | SpeechEndSignal
+        self.recognizer_queue: queue.Queue = queue.Queue(maxsize=200)           # AudioSegment
+        self.recognizer_output_queue: queue.Queue = queue.Queue(maxsize=200)    # RecognitionTextMessage | RecognizerAck
+        self.matcher_queue: queue.Queue = queue.Queue(maxsize=50)               # RecognitionResult | SpeechEndSignal
+        self.router_control_queue: queue.Queue = queue.Queue(maxsize=2)         # RecognizerFreeSignal
 
         self.execution_provider_manager: ExecutionProviderManager = ExecutionProviderManager(self.config)
         providers = self.execution_provider_manager.build_provider_list()
@@ -110,7 +114,7 @@ class STTPipeline:
             verbose=verbose
         )
 
-        self.adaptive_windower: AdaptiveWindower = AdaptiveWindower(
+        self.growing_window_assembler: GrowingWindowAssembler = GrowingWindowAssembler(
             speech_queue=self.speech_queue,
             config=self.config,
             verbose=verbose
@@ -120,9 +124,10 @@ class STTPipeline:
             chunk_queue=self.chunk_queue,
             speech_queue=self.speech_queue,
             vad=self.vad,
-            windower=self.adaptive_windower,
+            windower=self.growing_window_assembler,
             config=self.config,
             app_state=self.app_state,
+            control_queue=self.router_control_queue,
             verbose=verbose
         )
 
@@ -146,17 +151,27 @@ class STTPipeline:
 
         sample_rate = self.config['audio']['sample_rate']
         self.recognizer: Recognizer = Recognizer(
-            speech_queue=self.speech_queue,
-            text_queue=self.text_queue,
+            input_queue=self.recognizer_queue,
+            output_queue=self.recognizer_output_queue,
             model=self.model,
             sample_rate=sample_rate,
             app_state=self.app_state,
             verbose=verbose
         )
 
-        # Create TextMatcher with publisher (dependency injection)
-        self.text_matcher: TextMatcher = TextMatcher(
-            text_queue=self.text_queue,
+        self.speech_end_router: SpeechEndRouter = SpeechEndRouter(
+            speech_queue=self.speech_queue,
+            recognizer_queue=self.recognizer_queue,
+            recognizer_output_queue=self.recognizer_output_queue,
+            matcher_queue=self.matcher_queue,
+            app_state=self.app_state,
+            control_queue=self.router_control_queue,
+            verbose=verbose
+        )
+
+        # Create IncrementalTextMatcher with publisher (dependency injection)
+        self.incremental_text_matcher: IncrementalTextMatcher = IncrementalTextMatcher(
+            text_queue=self.matcher_queue,
             publisher=self.text_recognition_publisher,
             app_state=self.app_state,
             verbose=verbose
@@ -179,8 +194,9 @@ class STTPipeline:
         self.components: List[Any] = [
             self.audio_source,
             self.sound_preprocessor,
+            self.speech_end_router,
             self.recognizer,
-            self.text_matcher
+            self.incremental_text_matcher
         ]
 
     def _load_config(self, config_path: str) -> Dict:

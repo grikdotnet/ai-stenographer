@@ -35,7 +35,6 @@ def sample_preliminary_result():
     """Create a sample preliminary recognition result."""
     return RecognitionResult(
         text="hello world",
-        status="preliminary",
         chunk_ids=[1, 2],
         start_time=0.0,
         end_time=1.0
@@ -47,7 +46,6 @@ def sample_final_result():
     """Create a sample final recognition result."""
     return RecognitionResult(
         text="hello world",
-        status="final",
         chunk_ids=[1, 2],
         start_time=0.0,
         end_time=1.0

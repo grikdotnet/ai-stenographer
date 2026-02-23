@@ -5,6 +5,8 @@ import tkinter as tk
 import pytest
 from src.gui.HeaderPanel import HeaderPanel
 
+pytestmark = pytest.mark.gui
+
 
 @pytest.fixture
 def root():

@@ -70,7 +70,7 @@ and inserts finalized text into the active application via keyboard simulation.
         A trailing space is added after each insertion for word separation.
 
         Args:
-            result: RecognitionResult with status='final' or 'flush'
+            result: Finalized RecognitionResult
         """
         # Prevent deadlock if keyboard simulation blocks
         with self._lock:

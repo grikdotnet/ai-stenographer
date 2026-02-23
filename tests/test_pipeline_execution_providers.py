@@ -17,7 +17,7 @@ class TestPipelineSessionOptionsStrategy:
     """Tests for pipeline integration with SessionOptionsStrategy pattern."""
 
     @patch('src.pipeline.onnx_asr.load_model')
-    @patch('src.gui.ApplicationWindow.ApplicationWindow')
+    @patch('src.pipeline.ApplicationWindow')
     @patch('src.pipeline.AudioSource')
     @patch('src.pipeline.VoiceActivityDetector')
     @patch('src.asr.ExecutionProviderManager.ExecutionProviderManager._enumerate_adapters_dxgi')
@@ -54,7 +54,7 @@ class TestPipelineSessionOptionsStrategy:
                 "IntegratedGPUStrategy should disable CPU memory arena"
 
     @patch('src.pipeline.onnx_asr.load_model')
-    @patch('src.gui.ApplicationWindow.ApplicationWindow')
+    @patch('src.pipeline.ApplicationWindow')
     @patch('src.pipeline.AudioSource')
     @patch('src.pipeline.VoiceActivityDetector')
     @patch('src.asr.ExecutionProviderManager.ExecutionProviderManager._enumerate_adapters_dxgi')
@@ -91,7 +91,7 @@ class TestPipelineSessionOptionsStrategy:
                 "DiscreteGPUStrategy should enable CPU memory arena"
 
     @patch('src.pipeline.onnx_asr.load_model')
-    @patch('src.gui.ApplicationWindow.ApplicationWindow')
+    @patch('src.pipeline.ApplicationWindow')
     @patch('src.pipeline.AudioSource')
     @patch('src.pipeline.VoiceActivityDetector')
     def test_pipeline_uses_cpu_strategy(self, mock_vad, mock_audio, mock_app_window, mock_load_model):
@@ -122,7 +122,7 @@ class TestPipelineSessionOptionsStrategy:
                 }
             },
             "vad": {"frame_duration_ms": 32, "threshold": 0.5},
-            "windowing": {"window_duration": 3.0, "max_speech_duration_ms": 1500, "silence_timeout": 0.5},
+            "windowing": {"max_window_duration": 7.0, "max_speech_duration_ms": 1500},
             "recognition": {"model_name": "parakeet", "inference": "cpu"}
         }
 
@@ -149,7 +149,7 @@ class TestPipelineSessionOptionsStrategy:
             Path(config_path).unlink()
 
     @patch('src.pipeline.onnx_asr.load_model')
-    @patch('src.gui.ApplicationWindow.ApplicationWindow')
+    @patch('src.pipeline.ApplicationWindow')
     @patch('src.pipeline.AudioSource')
     @patch('src.pipeline.VoiceActivityDetector')
     @patch('src.asr.ExecutionProviderManager.ExecutionProviderManager._enumerate_adapters_dxgi')
@@ -196,3 +196,4 @@ class TestPipelineSessionOptionsStrategy:
             "DmlExecutionProvider should be tuple with options"
         assert providers[0][0] == 'DmlExecutionProvider', \
             "First provider should be DmlExecutionProvider"
+
