@@ -599,11 +599,14 @@ class SoundPreProcessor:
     def _execute_ack_cut(self, timestamp: float) -> None:
         """Execute ACK-driven hard-cut.
 
+        Buffer operation only — emits accumulated audio and resets the buffer.
+        Does not modify state machine state: the state machine determines state
+        from VAD results independently of buffer cuts.
+
         Algorithm:
         1. Build segment (hard cut, no right_context)
         2. Emit to windower
-        3. Reset buffer and silence tracking
-        4. Transition to ACTIVE_SPEECH (continuous flow)
+        3. Reset buffer
 
         Args:
             timestamp: Current chunk timestamp for speech_start_time
@@ -616,13 +619,6 @@ class SoundPreProcessor:
         s.speech_buffer = []
         s.speech_start_time = timestamp
         s.left_context_snapshot = None
-
-        # Reset silence tracking to prevent stale state corruption
-        # (critical when cutting from ACCUMULATING_SILENCE state)
-        s.reset_silence_tracking()
-
-        # Transition to ACTIVE_SPEECH (speech continues after cut)
-        s.state = ProcessingStatesEnum.ACTIVE_SPEECH
         self._pending_ack_signal = None
 
         if self.verbose:

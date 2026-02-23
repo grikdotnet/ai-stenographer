@@ -539,3 +539,158 @@ def test_ack_cut_metadata_continuity(preprocessor_config, mock_vad_speech, mock_
     assert len(segment.chunk_ids) > 0
 
 
+def _make_preprocessor(config, vad, windower, control_queue=None):
+    """Helper to construct SoundPreProcessor with optional control_queue."""
+    return SoundPreProcessor(
+        chunk_queue=queue.Queue(),
+        speech_queue=queue.Queue(),
+        vad=vad,
+        windower=windower,
+        config=config,
+        control_queue=control_queue or queue.Queue(maxsize=10),
+    )
+
+
+def _drive_to_accumulating_silence(preprocessor, speech_chunks: int, silence_prob: float = 0.1) -> int:
+    """Feed speech_chunks of speech then one silence chunk; return utterance_id.
+
+    Args:
+        preprocessor: SoundPreProcessor instance
+        speech_chunks: number of speech chunks to feed (must be >= 3 to confirm speech)
+        silence_prob: VAD probability used for the silence chunk
+
+    Returns:
+        current_utterance_id after speech confirmation
+    """
+    from src.sound.SoundPreProcessor import ProcessingStatesEnum
+
+    speech_vad = {'is_speech': True, 'speech_probability': 0.9}
+    silence_vad = {'is_speech': False, 'speech_probability': silence_prob}
+
+    preprocessor.vad.process_frame = Mock(return_value=speech_vad)
+    for i in range(speech_chunks):
+        preprocessor._process_chunk(_speech_chunk(timestamp=float(i) * 0.032))
+
+    utterance_id = preprocessor.audio_state.current_utterance_id
+    assert utterance_id is not None, "utterance must be open after speech confirmation"
+
+    preprocessor.vad.process_frame = Mock(return_value=silence_vad)
+    preprocessor._process_chunk(_speech_chunk(timestamp=float(speech_chunks) * 0.032))
+
+    assert preprocessor.audio_state.state == ProcessingStatesEnum.ACCUMULATING_SILENCE
+    return utterance_id
+
+
+def test_ack_cut_during_accumulating_silence_preserves_silence_energy(
+    preprocessor_config, mock_vad_speech, mock_windower
+):
+    """ACK-cut while in ACCUMULATING_SILENCE must not reset silence_energy to zero.
+
+    Algorithm:
+    1. Drive to ACCUMULATING_SILENCE with 10 speech chunks + 1 silence chunk.
+       silence_energy = 0.9 (one chunk, prob=0.1 → 1.0-0.1=0.9).
+    2. Send RecognizerFreeSignal; feed a second silence chunk.
+       _check_ack_signals runs first (buffer=10 chunks=320ms >= 200ms min → ACK-cut fires),
+       then state machine processes the silence chunk.
+    3. Bug: _execute_ack_cut resets silence_energy to 0 and sets state=ACTIVE_SPEECH.
+       State machine then: ACTIVE_SPEECH + silence → ACCUMULATING_SILENCE, adds 0.9.
+       After chunk: energy = 0.9.
+    4. Fix: _execute_ack_cut preserves silence_energy and stays ACCUMULATING_SILENCE.
+       State machine then: ACCUMULATING_SILENCE + silence → adds 0.9 → energy = 1.8 >= 1.5
+       → IDLE triggered → reset_segment() sets energy=0.0.
+
+    We detect the bug by checking the final state: with the fix the processor reaches
+    IDLE (energy crossed threshold); with the bug it stays ACCUMULATING_SILENCE (energy=0.9).
+    """
+    from src.sound.SoundPreProcessor import ProcessingStatesEnum
+    from unittest.mock import Mock
+
+    control_queue = queue.Queue(maxsize=10)
+    preprocessor = _make_preprocessor(preprocessor_config, mock_vad_speech, mock_windower, control_queue)
+
+    # 10 speech chunks (320ms > 200ms min) then one silence chunk → ACCUMULATING_SILENCE
+    # silence_prob=0.1 → energy contribution per silence chunk = 1.0 - 0.1 = 0.9
+    utterance_id = _drive_to_accumulating_silence(preprocessor, speech_chunks=10, silence_prob=0.1)
+    assert preprocessor.audio_state.silence_energy == pytest.approx(0.9)
+
+    signal = RecognizerFreeSignal(seq=0, message_id=1, utterance_id=utterance_id)
+    control_queue.put(signal)
+
+    # Feed a second silence chunk: ACK-cut fires first (buffer >= min),
+    # then state machine processes the silence chunk.
+    preprocessor.vad.process_frame = Mock(return_value={'is_speech': False, 'speech_probability': 0.1})
+    preprocessor._process_chunk(_speech_chunk(timestamp=11 * 0.032))
+
+    # With fix: energy accumulated (0.9+0.9=1.8 >= 1.5 threshold) → IDLE reached
+    # With bug: energy was reset → only 0.9 accumulated → still ACCUMULATING_SILENCE
+    assert preprocessor.audio_state.state == ProcessingStatesEnum.IDLE, \
+        "processor must reach IDLE when silence_energy accumulates across ACK-cut"
+
+
+def test_ack_cut_during_accumulating_silence_eventually_reaches_idle(
+    preprocessor_config, mock_vad_speech, mock_windower
+):
+    """After an ACK-cut during ACCUMULATING_SILENCE, more silence chunks must reach IDLE.
+
+    Verifies that silence_energy continues accumulating (not reset) so the
+    ACCUMULATING_SILENCE → IDLE transition fires correctly.
+
+    silence_energy_threshold = 1.5; silence_prob=0.1 → each chunk adds 0.9.
+    With fix: 2 silence chunks total → energy = 1.8 → IDLE triggered.
+    With bug: energy keeps resetting; processor never reaches IDLE.
+    """
+    from src.sound.SoundPreProcessor import ProcessingStatesEnum
+    from unittest.mock import Mock
+
+    control_queue = queue.Queue(maxsize=10)
+    preprocessor = _make_preprocessor(preprocessor_config, mock_vad_speech, mock_windower, control_queue)
+
+    utterance_id = _drive_to_accumulating_silence(preprocessor, speech_chunks=10, silence_prob=0.1)
+
+    signal = RecognizerFreeSignal(seq=0, message_id=1, utterance_id=utterance_id)
+    control_queue.put(signal)
+
+    silence_vad = {'is_speech': False, 'speech_probability': 0.1}
+    preprocessor.vad.process_frame = Mock(return_value=silence_vad)
+
+    # Feed silence chunks; with the fix IDLE is reached in ≤3 chunks (energy 0.9+0.9+0.9=2.7)
+    # With the bug, the processor loops indefinitely and never reaches IDLE
+    for i in range(11, 20):
+        preprocessor._process_chunk(_speech_chunk(timestamp=float(i) * 0.032))
+        if preprocessor.audio_state.state == ProcessingStatesEnum.IDLE:
+            break
+
+    assert preprocessor.audio_state.state == ProcessingStatesEnum.IDLE, \
+        "processor must reach IDLE after silence energy exceeds threshold"
+
+
+def test_ack_cut_during_active_speech_resets_to_active_speech(
+    preprocessor_config, mock_vad_speech, mock_windower
+):
+    """ACK-cut during ACTIVE_SPEECH still transitions to ACTIVE_SPEECH (existing behaviour).
+
+    This test documents the correct behaviour for the ACTIVE_SPEECH case so it
+    doesn't regress when fixing the ACCUMULATING_SILENCE case.
+    """
+    from src.sound.SoundPreProcessor import ProcessingStatesEnum
+
+    control_queue = queue.Queue(maxsize=10)
+    preprocessor = _make_preprocessor(preprocessor_config, mock_vad_speech, mock_windower, control_queue)
+
+    # 10 speech chunks, VAD always speech → stays ACTIVE_SPEECH
+    for i in range(10):
+        preprocessor._process_chunk(_speech_chunk(timestamp=float(i) * 0.032))
+
+    assert preprocessor.audio_state.state == ProcessingStatesEnum.ACTIVE_SPEECH
+
+    utterance_id = preprocessor.audio_state.current_utterance_id
+    signal = RecognizerFreeSignal(seq=0, message_id=1, utterance_id=utterance_id)
+    control_queue.put(signal)
+
+    preprocessor._process_chunk(_speech_chunk(timestamp=10 * 0.032))
+
+    assert preprocessor.audio_state.state == ProcessingStatesEnum.ACTIVE_SPEECH, \
+        "ACK-cut during ACTIVE_SPEECH must keep state as ACTIVE_SPEECH"
+    assert mock_windower.process_segment.call_count == 1
+
+
