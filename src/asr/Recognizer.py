@@ -22,6 +22,13 @@ def _format_chunk_ids(chunk_ids: list) -> str:
     return f"[{chunk_ids[0]}-{chunk_ids[-1]}]" if chunk_ids else "[]"
 
 
+def _format_token_confidence_pairs(tokens: Optional[list[str]], confidences: list[float]) -> list[str]:
+    """Return debug-friendly token/confidence pairs rounded to 2 decimals."""
+    if not tokens or len(tokens) != len(confidences):
+        return []
+    return [f"{token!r}:{confidence:.2f}" for token, confidence in zip(tokens, confidences)]
+
+
 class Recognizer:
     """Pure speech recognition: AudioSegment -> recognizer output protocol.
 
@@ -139,7 +146,7 @@ class Recognizer:
             logging.debug(f"  audio duration: {duration_with_context}")
             logging.debug(f"  data_start: {data_start}")
             logging.debug(f"  text: '{result.text}'")
-            logging.debug(f"  tokens: {result.tokens}")
+            logging.debug(f"  tokens: {_format_token_confidence_pairs(result.tokens, token_confidences)}")
             logging.debug(f"  timestamps: {result.timestamps}")
 
         if not result.text or not result.text.strip():
