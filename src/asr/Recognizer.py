@@ -68,6 +68,34 @@ class Recognizer:
         # Register as component observer
         self.app_state.register_component_observer(self.on_state_change)
 
+    def _extract_token_confidences(self, result: TimestampedResult) -> list[float]:
+        """Convert per-token log-probabilities to probability confidences in [0, 1].
+
+        Algorithm:
+        1. Return [] if logprobs is None, empty, or length-mismatched with tokens.
+        2. Return [] if any logprob value is non-finite (nan or inf).
+        3. Convert each logprob: conf = 1.0 if lp >= 0 else exp(lp), clamp to [0.0, 1.0].
+           Positive logprobs (should not occur in practice) are clamped to 1.0 to avoid
+           overflow in exp() and to keep semantics consistent.
+
+        Args:
+            result: TimestampedResult containing logprobs and tokens
+
+        Returns:
+            Per-token confidence list parallel to result.tokens, or [] on any fallback condition.
+        """
+        logprobs = result.logprobs
+        tokens = result.tokens
+
+        if logprobs is None or len(logprobs) == 0:
+            return []
+        if not tokens or len(logprobs) != len(tokens):
+            return []
+        if not all(np.isfinite(lp) for lp in logprobs):
+            return []
+
+        return [float(np.clip(1.0 if lp >= 0 else np.exp(lp), 0.0, 1.0)) for lp in logprobs]
+
     def recognize_window(self, window_data: AudioSegment) -> Optional[RecognitionResult]:
         """Recognize audio with context and filter tokens by timestamp.
 
@@ -76,8 +104,9 @@ class Recognizer:
         2. Recognize with timestamps using TimestampedResultsAsrAdapter
         3. Calculate data region boundaries in seconds
         4. Filter tokens to only include those within data region
-        5. Return RecognitionResult with filtered text and original timing
-           (confidence fields populated with defaults until new API integration)
+        5. Extract per-token confidences from logprobs via exp(logprob) → [0,1].
+           Falls back to [] if logprobs is None, misaligned, empty, or contains
+           non-finite values. Filters confidences in lockstep with token filtering.
 
         Args:
             window_data: AudioSegment to recognize
@@ -99,8 +128,7 @@ class Recognizer:
         result: TimestampedResult = self.model.recognize(full_audio)
         duration_with_context = len(full_audio) / self.sample_rate
 
-        # Confidence extraction not yet implemented with new API
-        token_confidences = []
+        token_confidences = self._extract_token_confidences(result)
 
         data_start = len(window_data.left_context) / self.sample_rate
 

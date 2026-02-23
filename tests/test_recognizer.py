@@ -954,6 +954,33 @@ class TestTimestampedRecognition:
         assert "first" in filtered_text
         assert "second" in filtered_text
 
+    def test_logprobs_filtered_aligned_with_tokens(self, timestamped_mock_model):
+        """Token confidences should be index-aligned after context filtering drops left filler."""
+        timestamped_mock_model.recognize.return_value = TimestampedResult(
+            text="yeah hello world",
+            tokens=[" yeah", " hello", " world"],
+            timestamps=[0.1, 0.6, 0.9],
+            logprobs=[-0.5, -0.1, -0.2],
+        )
+
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
+
+        segment = AudioSegment(
+            type='incremental',
+            data=np.full(8000, 0.1, dtype=np.float32),   # 0.5s of data
+            left_context=np.full(8000, 0.05, dtype=np.float32),  # 0.5s left context
+            right_context=np.array([], dtype=np.float32),
+            start_time=1.0,
+            end_time=1.5,
+            chunk_ids=[0],
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        assert result is not None
+        assert "yeah" not in result.text
+        assert result.token_confidences == pytest.approx([np.exp(-0.1), np.exp(-0.2)], rel=1e-6)
+
     def test_left_word_order_preserved(self, timestamped_mock_model):
         """Left non-fillers precede in-range words; order preserved."""
         recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=timestamped_mock_model, sample_rate=16000, app_state=Mock())
@@ -1033,7 +1060,8 @@ class TestConfidenceMetrics:
         mock_model_with_confidence.recognize.return_value = TimestampedResult(
             text="hello world",
             tokens=[" hello", " world"],
-            timestamps=[0.3, 0.7]
+            timestamps=[0.3, 0.7],
+            logprobs=None,
         )
 
         recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model_with_confidence, sample_rate=16000, app_state=Mock())
@@ -1091,6 +1119,129 @@ class TestConfidenceMetrics:
         # Step 3 includes " context" @ 0.1s (previous complete word before " hello")
         assert "hello" in result.text
         assert "context" in result.text  # Included via Step 3
+
+
+    def test_recognizer_extracts_logprobs_as_token_confidences(self, mock_model_with_confidence):
+        """Recognizer should convert logprobs to per-token confidences via exp(logprob)."""
+        mock_model_with_confidence.recognize.return_value = TimestampedResult(
+            text="hello world",
+            tokens=[" hello", " world"],
+            timestamps=[0.3, 0.7],
+            logprobs=[-0.1, -0.3],
+        )
+
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model_with_confidence, sample_rate=16000, app_state=Mock())
+
+        segment = AudioSegment(
+            type='incremental',
+            data=np.full(16000, 0.1, dtype=np.float32),
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
+            start_time=1.0,
+            end_time=2.0,
+            chunk_ids=[0],
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        assert result is not None
+        assert result.token_confidences[0] == pytest.approx(np.exp(-0.1), rel=1e-6)
+        assert result.token_confidences[1] == pytest.approx(np.exp(-0.3), rel=1e-6)
+        assert result.confidence == pytest.approx(np.mean([np.exp(-0.1), np.exp(-0.3)]), rel=1e-6)
+        assert result.confidence_variance == pytest.approx(np.var([np.exp(-0.1), np.exp(-0.3)]), rel=1e-6)
+
+    def test_recognizer_handles_none_logprobs(self, mock_model_with_confidence):
+        """Recognizer should degrade to empty confidences when logprobs is None."""
+        mock_model_with_confidence.recognize.return_value = TimestampedResult(
+            text="hello world",
+            tokens=[" hello", " world"],
+            timestamps=[0.3, 0.7],
+            logprobs=None,
+        )
+
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model_with_confidence, sample_rate=16000, app_state=Mock())
+
+        segment = AudioSegment(
+            type='incremental',
+            data=np.full(16000, 0.1, dtype=np.float32),
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
+            start_time=1.0,
+            end_time=2.0,
+            chunk_ids=[0],
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        assert result is not None
+        assert result.token_confidences == []
+        assert result.confidence == 0.0
+
+    def test_recognizer_handles_misaligned_logprobs(self, mock_model_with_confidence):
+        """Recognizer should degrade to empty confidences when logprobs length mismatches tokens."""
+        mock_model_with_confidence.recognize.return_value = TimestampedResult(
+            text="hello world",
+            tokens=[" hello", " world"],
+            timestamps=[0.3, 0.7],
+            logprobs=[-0.1],
+        )
+
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model_with_confidence, sample_rate=16000, app_state=Mock())
+
+        segment = AudioSegment(
+            type='incremental',
+            data=np.full(16000, 0.1, dtype=np.float32),
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
+            start_time=1.0,
+            end_time=2.0,
+            chunk_ids=[0],
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        assert result is not None
+        assert result.token_confidences == []
+        assert result.confidence == 0.0
+
+    def test_recognizer_handles_nonfinite_logprobs(self, mock_model_with_confidence):
+        """Recognizer should degrade to empty confidences when any logprob is non-finite."""
+        mock_model_with_confidence.recognize.return_value = TimestampedResult(
+            text="hello world",
+            tokens=[" hello", " world"],
+            timestamps=[0.3, 0.7],
+            logprobs=[float('nan'), -0.2],
+        )
+
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model_with_confidence, sample_rate=16000, app_state=Mock())
+
+        segment = AudioSegment(
+            type='incremental',
+            data=np.full(16000, 0.1, dtype=np.float32),
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
+            start_time=1.0,
+            end_time=2.0,
+            chunk_ids=[0],
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        assert result is not None
+        assert result.token_confidences == []
+
+    def test_recognizer_handles_large_positive_logprob(self, mock_model_with_confidence):
+        """_extract_token_confidences should clamp large positive logprobs to 1.0 without crash."""
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model_with_confidence, sample_rate=16000, app_state=Mock())
+
+        mock_result = Mock()
+        mock_result.logprobs = [1000.0, -0.1]
+        mock_result.tokens = [" a", " b"]
+
+        confidences = recognizer._extract_token_confidences(mock_result)
+
+        assert confidences[0] == pytest.approx(1.0)
+        assert confidences[1] == pytest.approx(np.exp(-0.1), rel=1e-6)
 
 
 class TestRecognizerObserverPattern:
