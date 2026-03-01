@@ -7,7 +7,7 @@ TextFormatter correctly implements the subscriber interface.
 import pytest
 from typing import get_type_hints
 from src.protocols import TextRecognitionSubscriber
-from src.gui.TextFormatter import TextFormatter
+from src.client.tk.gui.TextFormatter import TextFormatter
 from src.types import RecognitionResult
 
 

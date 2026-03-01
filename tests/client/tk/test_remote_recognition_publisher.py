@@ -1,7 +1,7 @@
 """Tests for RemoteRecognitionPublisher (Phase 6).
 
-Strategy: inject a mock TextRecognitionSubscriber; call dispatch() with JSON strings
-and verify the correct subscriber method is called with correctly decoded fields.
+Strategy: inject a mock RecognitionResultPublisher; call dispatch() with JSON strings
+and verify the correct publisher method is called with correctly decoded fields.
 """
 
 import json
@@ -37,9 +37,9 @@ def _result_json(status: str = "partial", **overrides) -> str:
 
 
 def _make_publisher() -> tuple[RemoteRecognitionPublisher, MagicMock]:
-    subscriber = MagicMock()
-    publisher = RemoteRecognitionPublisher(subscriber)
-    return publisher, subscriber
+    publisher = MagicMock()
+    remote = RemoteRecognitionPublisher(publisher)
+    return remote, publisher
 
 
 # ---------------------------------------------------------------------------
@@ -48,49 +48,49 @@ def _make_publisher() -> tuple[RemoteRecognitionPublisher, MagicMock]:
 
 class TestPartialResult:
     def test_partial_json_calls_on_partial_update(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch(_result_json(status="partial"))
-        subscriber.on_partial_update.assert_called_once()
-        subscriber.on_finalization.assert_not_called()
+        remote, publisher = _make_publisher()
+        remote.dispatch(_result_json(status="partial"))
+        publisher.publish_partial_update.assert_called_once()
+        publisher.publish_finalization.assert_not_called()
 
     def test_partial_result_text_field(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch(_result_json(status="partial", text="one two three"))
-        result: RecognitionResult = subscriber.on_partial_update.call_args[0][0]
+        remote, publisher = _make_publisher()
+        remote.dispatch(_result_json(status="partial", text="one two three"))
+        result: RecognitionResult = publisher.publish_partial_update.call_args[0][0]
         assert result.text == "one two three"
 
     def test_partial_result_timing_fields(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch(_result_json(status="partial", start_time=3.0, end_time=5.5))
-        result: RecognitionResult = subscriber.on_partial_update.call_args[0][0]
+        remote, publisher = _make_publisher()
+        remote.dispatch(_result_json(status="partial", start_time=3.0, end_time=5.5))
+        result: RecognitionResult = publisher.publish_partial_update.call_args[0][0]
         assert result.start_time == 3.0
         assert result.end_time == 5.5
 
     def test_partial_result_utterance_id(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch(_result_json(status="partial", utterance_id=7))
-        result: RecognitionResult = subscriber.on_partial_update.call_args[0][0]
+        remote, publisher = _make_publisher()
+        remote.dispatch(_result_json(status="partial", utterance_id=7))
+        result: RecognitionResult = publisher.publish_partial_update.call_args[0][0]
         assert result.utterance_id == 7
 
     def test_partial_result_confidence_fields(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch(_result_json(
+        remote, publisher = _make_publisher()
+        remote.dispatch(_result_json(
             status="partial",
             confidence=0.91,
             token_confidences=[0.95, 0.87],
             audio_rms=0.05,
             confidence_variance=0.001,
         ))
-        result: RecognitionResult = subscriber.on_partial_update.call_args[0][0]
+        result: RecognitionResult = publisher.publish_partial_update.call_args[0][0]
         assert result.confidence == 0.91
         assert result.token_confidences == [0.95, 0.87]
         assert result.audio_rms == 0.05
         assert result.confidence_variance == 0.001
 
     def test_partial_result_chunk_ids(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch(_result_json(status="partial", chunk_ids=[20, 21, 22]))
-        result: RecognitionResult = subscriber.on_partial_update.call_args[0][0]
+        remote, publisher = _make_publisher()
+        remote.dispatch(_result_json(status="partial", chunk_ids=[20, 21, 22]))
+        result: RecognitionResult = publisher.publish_partial_update.call_args[0][0]
         assert result.chunk_ids == [20, 21, 22]
 
 
@@ -100,21 +100,21 @@ class TestPartialResult:
 
 class TestFinalResult:
     def test_final_json_calls_on_finalization(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch(_result_json(status="final"))
-        subscriber.on_finalization.assert_called_once()
-        subscriber.on_partial_update.assert_not_called()
+        remote, publisher = _make_publisher()
+        remote.dispatch(_result_json(status="final"))
+        publisher.publish_finalization.assert_called_once()
+        publisher.publish_partial_update.assert_not_called()
 
     def test_final_result_text_field(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch(_result_json(status="final", text="confirmed"))
-        result: RecognitionResult = subscriber.on_finalization.call_args[0][0]
+        remote, publisher = _make_publisher()
+        remote.dispatch(_result_json(status="final", text="confirmed"))
+        result: RecognitionResult = publisher.publish_finalization.call_args[0][0]
         assert result.text == "confirmed"
 
     def test_final_result_is_recognition_result_instance(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch(_result_json(status="final"))
-        result = subscriber.on_finalization.call_args[0][0]
+        remote, publisher = _make_publisher()
+        remote.dispatch(_result_json(status="final"))
+        result = publisher.publish_finalization.call_args[0][0]
         assert isinstance(result, RecognitionResult)
 
 
@@ -124,27 +124,27 @@ class TestFinalResult:
 
 class TestUnknownMessageType:
     def test_session_created_type_does_not_call_subscriber(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch(json.dumps({"type": "session_created", "session_id": "s1"}))
-        subscriber.on_partial_update.assert_not_called()
-        subscriber.on_finalization.assert_not_called()
+        remote, publisher = _make_publisher()
+        remote.dispatch(json.dumps({"type": "session_created", "session_id": "s1"}))
+        publisher.publish_partial_update.assert_not_called()
+        publisher.publish_finalization.assert_not_called()
 
     def test_session_created_type_does_not_raise(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch(json.dumps({"type": "session_created", "session_id": "s1"}))
+        remote, _ = _make_publisher()
+        remote.dispatch(json.dumps({"type": "session_created", "session_id": "s1"}))
 
     def test_unknown_status_does_not_call_subscriber(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch(_result_json(status="unknown_status"))
-        subscriber.on_partial_update.assert_not_called()
-        subscriber.on_finalization.assert_not_called()
+        remote, publisher = _make_publisher()
+        remote.dispatch(_result_json(status="unknown_status"))
+        publisher.publish_partial_update.assert_not_called()
+        publisher.publish_finalization.assert_not_called()
 
     def test_unknown_status_does_not_raise(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch(_result_json(status="unknown_status"))
+        remote, _ = _make_publisher()
+        remote.dispatch(_result_json(status="unknown_status"))
 
     def test_error_type_does_not_call_subscriber(self) -> None:
-        publisher, subscriber = _make_publisher()
+        remote, publisher = _make_publisher()
         error_json = json.dumps({
             "type": "error",
             "session_id": "s1",
@@ -152,9 +152,9 @@ class TestUnknownMessageType:
             "message": "something broke",
             "fatal": False,
         })
-        publisher.dispatch(error_json)
-        subscriber.on_partial_update.assert_not_called()
-        subscriber.on_finalization.assert_not_called()
+        remote.dispatch(error_json)
+        publisher.publish_partial_update.assert_not_called()
+        publisher.publish_finalization.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -163,29 +163,29 @@ class TestUnknownMessageType:
 
 class TestMalformedInput:
     def test_non_json_string_does_not_raise(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch("this is not json {{{")
+        remote, _ = _make_publisher()
+        remote.dispatch("this is not json {{{")
 
     def test_non_json_string_does_not_call_subscriber(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch("this is not json {{{")
-        subscriber.on_partial_update.assert_not_called()
-        subscriber.on_finalization.assert_not_called()
+        remote, publisher = _make_publisher()
+        remote.dispatch("this is not json {{{")
+        publisher.publish_partial_update.assert_not_called()
+        publisher.publish_finalization.assert_not_called()
 
     def test_empty_string_does_not_raise(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch("")
+        remote, _ = _make_publisher()
+        remote.dispatch("")
 
     def test_missing_type_field_does_not_raise(self) -> None:
-        publisher, subscriber = _make_publisher()
-        publisher.dispatch(json.dumps({"session_id": "s1", "status": "partial"}))
+        remote, _ = _make_publisher()
+        remote.dispatch(json.dumps({"session_id": "s1", "status": "partial"}))
 
     def test_missing_text_field_does_not_raise(self) -> None:
         """Missing required recognition_result fields should not propagate KeyError."""
-        publisher, subscriber = _make_publisher()
+        remote, _ = _make_publisher()
         incomplete = json.dumps({
             "type": "recognition_result",
             "session_id": "s1",
             "status": "partial",
         })
-        publisher.dispatch(incomplete)
+        remote.dispatch(incomplete)

@@ -20,6 +20,7 @@ from src.client.tk.RemoteRecognitionPublisher import RemoteRecognitionPublisher
 from src.client.tk.WsClientTransport import WsClientTransport
 from src.ApplicationState import ApplicationState
 from src.network.codec import decode_audio_frame
+from src.RecognitionResultPublisher import RecognitionResultPublisher
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +109,9 @@ def _start_transport(
     if subscriber is None:
         subscriber = MagicMock()
 
-    remote_publisher = RemoteRecognitionPublisher(subscriber)
+    real_publisher = RecognitionResultPublisher()
+    real_publisher.subscribe(subscriber)
+    remote_publisher = RemoteRecognitionPublisher(real_publisher)
     ready = threading.Event()
     loop_holder: list[asyncio.AbstractEventLoop] = []
 
@@ -271,7 +274,9 @@ class TestDisconnect:
 
         app_state = _make_app_state()
         subscriber = MagicMock()
-        remote_publisher = RemoteRecognitionPublisher(subscriber)
+        real_publisher = RecognitionResultPublisher()
+        real_publisher.subscribe(subscriber)
+        remote_publisher = RemoteRecognitionPublisher(real_publisher)
         ready = threading.Event()
         loop_holder: list[asyncio.AbstractEventLoop] = []
 

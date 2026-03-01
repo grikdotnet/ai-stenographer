@@ -6,7 +6,7 @@ from tkinter import messagebox, ttk
 from typing import List, Dict
 import threading
 import os
-from src.asr.ModelManager import ModelManager
+from src.client.tk.asr.ModelManager import ModelManager
 
 
 # Color scheme matching reference image

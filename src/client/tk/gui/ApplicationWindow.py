@@ -6,12 +6,12 @@ from src.ApplicationState import ApplicationState
 from src.client.tk.gui.HeaderPanel import HeaderPanel
 from src.client.tk.gui.ControlPanel import ControlPanel
 from src.client.tk.gui.InsertionModePanel import InsertionModePanel
-from src.controllers.PauseController import PauseController
+from src.client.tk.controllers.PauseController import PauseController
 from src.client.tk.gui.TextDisplayWidget import TextDisplayWidget
 from src.client.tk.gui.TextFormatter import TextFormatter
 
 if TYPE_CHECKING:
-    from src.controllers.InsertionController import InsertionController
+    from src.client.tk.controllers.InsertionController import InsertionController
 
 GITHUB_ISSUES_URL = "https://github.com/grikdotnet/ai-stenographer/issues"
 

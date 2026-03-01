@@ -3,7 +3,7 @@ from tkinter import ttk
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from src.controllers.InsertionController import InsertionController
+    from src.client.tk.controllers.InsertionController import InsertionController
 
 
 class InsertionModePanel(ttk.Frame):

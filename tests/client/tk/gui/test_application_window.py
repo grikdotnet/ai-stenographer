@@ -61,7 +61,7 @@ TKINTER_AVAILABLE = _check_tkinter_available()
 if TKINTER_AVAILABLE:
     import tkinter as tk
     from src.client.tk.gui.ApplicationWindow import ApplicationWindow, SupportsPauseControl
-    from src.controllers.PauseController import PauseController
+    from src.client.tk.controllers.PauseController import PauseController
 
 pytestmark = [
     pytest.mark.gui,

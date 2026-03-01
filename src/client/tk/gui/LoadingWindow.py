@@ -194,7 +194,7 @@ class LoadingWindow:
             True if download succeeded, False if user cancelled
         """
         # Import ModelManager here to avoid circular dependencies
-        from src.asr.ModelManager import ModelManager
+        from src.client.tk.asr.ModelManager import ModelManager
 
         # Store the container frame reference
         container = None
@@ -383,7 +383,7 @@ class LoadingWindow:
                             self.root.quit()
                         else:
                             # Get detailed error information from ModelManager
-                            from src.asr.ModelManager import ModelManager
+                            from src.client.tk.asr.ModelManager import ModelManager
                             last_error = ModelManager.get_last_error()
 
                             # Build detailed error message

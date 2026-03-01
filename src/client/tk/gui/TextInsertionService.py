@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING
 
 from src.client.tk.gui.KeyboardSimulator import KeyboardSimulator
 from src.client.tk.gui.TextInserter import TextInserter
-from src.controllers.InsertionController import InsertionController
+from src.client.tk.controllers.InsertionController import InsertionController
 
 if TYPE_CHECKING:
     from src.RecognitionResultPublisher import RecognitionResultPublisher

@@ -21,8 +21,8 @@ from src.client.tk.RemoteRecognitionPublisher import RemoteRecognitionPublisher
 from src.client.tk.WsClientTransport import WsClientTransport
 from src.client.tk.gui.ApplicationWindow import ApplicationWindow
 from src.client.tk.gui.TextInsertionService import TextInsertionService
-from src.controllers.PauseController import PauseController
-from src.sound.AudioSource import AudioSource
+from src.client.tk.controllers.PauseController import PauseController
+from src.client.tk.sound.AudioSource import AudioSource
 
 logger = logging.getLogger(__name__)
 

@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import ttk
 from src.ApplicationState import ApplicationState
-from src.controllers.PauseController import PauseController
+from src.client.tk.controllers.PauseController import PauseController
 
 
 class ControlPanel(ttk.Frame):
