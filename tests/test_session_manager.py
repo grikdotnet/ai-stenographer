@@ -326,3 +326,44 @@ class TestTwoSessionsIndependence:
         loop.close()
         recognizer_service.stop()
         recognizer_service.join()
+
+
+# ---------------------------------------------------------------------------
+# Shutdown observer: state transition triggers close_all_sessions
+# ---------------------------------------------------------------------------
+
+class TestShutdownObserver:
+    def test_shutdown_state_triggers_close_all_sessions(self) -> None:
+        manager, app_state, recognizer_service = _make_manager()
+
+        loop = asyncio.new_event_loop()
+        ws = _make_mock_websocket()
+
+        mock_a = _make_mock_session("alpha")
+        mock_b = _make_mock_session("beta")
+
+        with patch("src.server.SessionManager.ClientSession") as MockClientSession:
+            MockClientSession.side_effect = [mock_a, mock_b]
+            loop.run_until_complete(manager.create_session(ws, loop))
+            loop.run_until_complete(manager.create_session(ws, loop))
+
+        import threading
+        loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+        loop_thread.start()
+
+        manager.set_event_loop(loop)
+        app_state.set_state("shutdown")
+
+        sentinel = asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop)
+        sentinel.result(timeout=2.0)
+
+        loop.call_soon_threadsafe(loop.stop)
+        loop_thread.join(timeout=2.0)
+        loop.close()
+
+        mock_a.close.assert_awaited_once()
+        mock_b.close.assert_awaited_once()
+        assert len(manager._sessions) == 0
+
+        recognizer_service.stop()
+        recognizer_service.join()

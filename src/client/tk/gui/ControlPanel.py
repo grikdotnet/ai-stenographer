@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
-from src.ApplicationState import ApplicationState
+from src.client.tk.ClientApplicationState import ClientApplicationState
 from src.client.tk.controllers.PauseController import PauseController
 
 
@@ -19,7 +19,7 @@ class ControlPanel(ttk.Frame):
     def __init__(
         self,
         parent: tk.Widget,
-        app_state: ApplicationState,
+        app_state: ClientApplicationState,
         controller: PauseController
     ):
         """

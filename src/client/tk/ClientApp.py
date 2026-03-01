@@ -15,8 +15,8 @@ import queue
 import threading
 from typing import Any
 
-from src.ApplicationState import ApplicationState
-from src.RecognitionResultPublisher import RecognitionResultPublisher
+from src.client.tk.ClientApplicationState import ClientApplicationState
+from src.client.tk.RecognitionResultFanOut import RecognitionResultFanOut
 from src.client.tk.RemoteRecognitionPublisher import RemoteRecognitionPublisher
 from src.client.tk.WsClientTransport import WsClientTransport
 from src.client.tk.gui.ApplicationWindow import ApplicationWindow
@@ -60,9 +60,9 @@ class ClientApp:
         self._bridge_thread: threading.Thread | None = None
         self._bridge_running = False
 
-        self.app_state = ApplicationState(config=config)
+        self.app_state = ClientApplicationState(config=config)
 
-        self._publisher = RecognitionResultPublisher(verbose=verbose)
+        self._publisher = RecognitionResultFanOut(verbose=verbose)
 
         self._text_insertion_service = TextInsertionService(
             publisher=self._publisher,

@@ -122,11 +122,11 @@ def _handle_text(
 
     Args:
         text: Raw JSON string from a websocket text frame.
-        session_id: Session identifier for error messages.
+        session_id: Active session identifier; validated against msg.session_id.
 
     Returns:
         Tuple of (should_stop, optional_error_to_send).
-        should_stop is True only when a valid shutdown command is received.
+        should_stop is True only when a valid, session-matched shutdown command is received.
     """
     try:
         msg = decode_client_message(text)
@@ -136,6 +136,18 @@ def _handle_text(
             session_id=session_id,
             error_code="UNKNOWN_MESSAGE_TYPE",
             message=str(exc),
+            fatal=False,
+        )
+
+    if msg.session_id != session_id:
+        logger.warning(
+            "WsAudioReceiver[%s]: session_id mismatch in control command: got %r",
+            session_id, msg.session_id,
+        )
+        return False, WsError(
+            session_id=session_id,
+            error_code="SESSION_ID_MISMATCH",
+            message=f"session_id mismatch: expected {session_id!r}, got {msg.session_id!r}",
             fatal=False,
         )
 

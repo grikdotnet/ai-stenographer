@@ -2,7 +2,7 @@ import tkinter as tk
 from tkinter import scrolledtext, ttk
 from typing import Dict, Optional, Protocol, TYPE_CHECKING
 import webbrowser
-from src.ApplicationState import ApplicationState
+from src.client.tk.ClientApplicationState import ClientApplicationState
 from src.client.tk.gui.HeaderPanel import HeaderPanel
 from src.client.tk.gui.ControlPanel import ControlPanel
 from src.client.tk.gui.InsertionModePanel import InsertionModePanel
@@ -42,7 +42,7 @@ class ApplicationWindow:
 
     def __init__(
         self,
-        app_state: ApplicationState,
+        app_state: ClientApplicationState,
         config: Dict,
         verbose: bool = False,
         insertion_controller: Optional['InsertionController'] = None,

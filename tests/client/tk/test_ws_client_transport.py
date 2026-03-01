@@ -18,9 +18,9 @@ import pytest
 
 from src.client.tk.RemoteRecognitionPublisher import RemoteRecognitionPublisher
 from src.client.tk.WsClientTransport import WsClientTransport
-from src.ApplicationState import ApplicationState
+from src.client.tk.ClientApplicationState import ClientApplicationState
 from src.network.codec import decode_audio_frame
-from src.RecognitionResultPublisher import RecognitionResultPublisher
+from src.client.tk.RecognitionResultFanOut import RecognitionResultFanOut
 
 
 # ---------------------------------------------------------------------------
@@ -31,8 +31,8 @@ _SESSION_ID = "test-session"
 _SERVER_URL = "ws://127.0.0.1:9999"
 
 
-def _make_app_state() -> ApplicationState:
-    state = ApplicationState(config={})
+def _make_app_state() -> ClientApplicationState:
+    state = ClientApplicationState(config={})
     state.set_state("running")
     return state
 
@@ -100,7 +100,7 @@ class _FakeWebSocket:
 
 def _start_transport(
     ws: _FakeWebSocket,
-    app_state: ApplicationState | None = None,
+    app_state: ClientApplicationState | None = None,
     subscriber: MagicMock | None = None,
 ) -> tuple[WsClientTransport, asyncio.AbstractEventLoop, threading.Thread]:
     """Start a WsClientTransport on a daemon asyncio loop thread, injecting a fake websocket."""
@@ -109,7 +109,7 @@ def _start_transport(
     if subscriber is None:
         subscriber = MagicMock()
 
-    real_publisher = RecognitionResultPublisher()
+    real_publisher = RecognitionResultFanOut()
     real_publisher.subscribe(subscriber)
     remote_publisher = RemoteRecognitionPublisher(real_publisher)
     ready = threading.Event()
@@ -274,7 +274,7 @@ class TestDisconnect:
 
         app_state = _make_app_state()
         subscriber = MagicMock()
-        real_publisher = RecognitionResultPublisher()
+        real_publisher = RecognitionResultFanOut()
         real_publisher.subscribe(subscriber)
         remote_publisher = RemoteRecognitionPublisher(real_publisher)
         ready = threading.Event()

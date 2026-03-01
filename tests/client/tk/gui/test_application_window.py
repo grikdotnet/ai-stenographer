@@ -9,7 +9,7 @@ import pytest
 import os
 import sys
 from unittest.mock import MagicMock, patch
-from src.ApplicationState import ApplicationState
+from src.client.tk.ClientApplicationState import ClientApplicationState
 
 # Fix TCL/TK library paths if not set (Windows Python 3.13 issue)
 if sys.platform == 'win32' and not os.environ.get('TCL_LIBRARY'):
@@ -72,7 +72,7 @@ pytestmark = [
 @pytest.fixture
 def app_state():
     """ApplicationState for testing."""
-    return ApplicationState(config={'audio': {'sample_rate': 16000}})
+    return ClientApplicationState(config={'audio': {'sample_rate': 16000}})
 
 
 @pytest.fixture

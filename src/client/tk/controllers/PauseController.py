@@ -4,7 +4,7 @@ PauseController - Minimal controller for pause/resume functionality.
 This controller ONLY updates ApplicationState. It does not manipulate
 components directly - proper MVC separation with observer pattern.
 """
-from src.ApplicationState import ApplicationState
+from src.client.tk.ClientApplicationState import ClientApplicationState
 
 
 class PauseController:
@@ -20,7 +20,7 @@ class PauseController:
         app_state: ApplicationState instance to manage
     """
 
-    def __init__(self, app_state: ApplicationState):
+    def __init__(self, app_state: ClientApplicationState):
         """
         Initialize PauseController.
 

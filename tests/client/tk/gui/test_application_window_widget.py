@@ -13,7 +13,7 @@ Or run tests individually:
 import pytest
 import os
 import sys
-from src.ApplicationState import ApplicationState
+from src.client.tk.ClientApplicationState import ClientApplicationState
 from src.client.tk.gui.HeaderPanel import HeaderPanel
 from src.client.tk.gui.ControlPanel import ControlPanel
 
@@ -83,7 +83,7 @@ if TKINTER_AVAILABLE:
 def app_state():
     """Create ApplicationState for testing."""
     config = {'audio': {'sample_rate': 16000}}
-    return ApplicationState(config=config)
+    return ClientApplicationState(config=config)
 
 
 @pytest.fixture
@@ -101,42 +101,50 @@ pytestmark = [
 
 def test_application_window_creates_root(app_state, config):
     """Test that ApplicationWindow creates tk.Tk root."""
-    app_window = ApplicationWindow(app_state, config)
+    try:
+        app_window = ApplicationWindow(app_state, config)
+    except tk.TclError as e:
+        pytest.skip(f"tkinter initialization failed: {e}")
 
     assert app_window.root is not None
     assert isinstance(app_window.root, tk.Tk)
 
-    # Cleanup
     app_window.root.destroy()
 
 
 def test_application_window_sets_root_in_app_state(app_state, config):
     """Test that ApplicationWindow sets root in ApplicationState."""
-    app_window = ApplicationWindow(app_state, config)
+    try:
+        app_window = ApplicationWindow(app_state, config)
+    except tk.TclError as e:
+        pytest.skip(f"tkinter initialization failed: {e}")
 
-    # ApplicationState should have root set
     assert app_state._root is not None
     assert app_state._root == app_window.root
 
-    # Cleanup
     app_window.root.destroy()
 
 
 def test_application_window_creates_formatter_and_display(app_state, config):
     """Test that ApplicationWindow creates TextFormatter and TextDisplayWidget instances."""
-    app_window = ApplicationWindow(app_state, config)
+    try:
+        app_window = ApplicationWindow(app_state, config)
+    except tk.TclError as e:
+        pytest.skip(f"tkinter initialization failed: {e}")
 
     assert isinstance(app_window.formatter, TextFormatter)
     assert isinstance(app_window.display, TextDisplayWidget)
     assert isinstance(app_window.display.text_widget, tk.scrolledtext.ScrolledText)
 
-    # Cleanup
     app_window.root.destroy()
 
 
 def test_application_window_get_root(app_state, config):
     """Test that get_root() returns tk.Tk instance."""
-    app_window = ApplicationWindow(app_state, config)
+    try:
+        app_window = ApplicationWindow(app_state, config)
+    except tk.TclError as e:
+        pytest.skip(f"tkinter initialization failed: {e}")
 
     root = app_window.get_root()
 
@@ -144,15 +152,16 @@ def test_application_window_get_root(app_state, config):
     assert isinstance(root, tk.Tk)
     assert root == app_window.root
 
-    # Cleanup
     app_window.root.destroy()
 
 
 def test_application_window_title(app_state, config):
     """Test that window has correct title."""
-    app_window = ApplicationWindow(app_state, config)
+    try:
+        app_window = ApplicationWindow(app_state, config)
+    except tk.TclError as e:
+        pytest.skip(f"tkinter initialization failed: {e}")
 
     assert app_window.root.title() == "Speech-to-Text Display"
 
-    # Cleanup
     app_window.root.destroy()

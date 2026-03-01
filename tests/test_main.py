@@ -147,7 +147,9 @@ class TestServerOnlyModelsPresent:
             _model_patches(stack, server_app_mock)
             _main(["main.py", "--server-only"], _FAKE_MODELS_DIR, _FAKE_LOGS_DIR, _FAKE_CONFIG_PATH)
 
+        from unittest.mock import call
         server_app_mock._ws_server.join.assert_called_once()
+        assert server_app_mock._ws_server.join.call_args in (call(), call(timeout=None))
 
 
 class TestDefaultModeModelsPresent:

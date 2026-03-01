@@ -51,6 +51,7 @@ class WsServer:
         self._thread: threading.Thread | None = None
         self._server = None
         self._ready = threading.Event()
+        self._stop_event: asyncio.Event | None = None
 
     @property
     def port(self) -> int:
@@ -75,15 +76,15 @@ class WsServer:
 
     def stop(self) -> None:
         """Stop accepting connections and shut down the event loop thread."""
-        if self._loop is None:
+        if self._loop is None or self._stop_event is None:
             return
-        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._loop.call_soon_threadsafe(self._stop_event.set)
 
-    def join(self, timeout: float = 5.0) -> None:
+    def join(self, timeout: float | None = None) -> None:
         """Wait for the event loop thread to exit.
 
         Args:
-            timeout: Seconds to wait.
+            timeout: Seconds to wait; None blocks until the thread exits.
         """
         if self._thread is not None:
             self._thread.join(timeout=timeout)
@@ -111,8 +112,10 @@ class WsServer:
             bound_port = server.sockets[0].getsockname()[1]
             self._port = bound_port
             logger.info("WsServer: listening on %s:%s", self._host, self._port)
+            self._stop_event = asyncio.Event()
+            self._session_manager.set_event_loop(asyncio.get_event_loop())
             self._ready.set()
-            await asyncio.get_event_loop().create_future()
+            await self._stop_event.wait()
 
     async def _handle_connection(self, websocket, path: str = "/") -> None:
         """Handle a single WebSocket connection for its full lifetime.

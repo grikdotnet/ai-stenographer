@@ -199,7 +199,7 @@ Schema:
 
 - `INVALID_AUDIO_FRAME`
 - `UNKNOWN_MESSAGE_TYPE`
-- `SESSION_NOT_FOUND`
+- `SESSION_ID_MISMATCH` — session_id in the frame does not match the active session
 - `BACKPRESSURE_DROP`
 - `PROTOCOL_VIOLATION`
 - `INTERNAL_ERROR`

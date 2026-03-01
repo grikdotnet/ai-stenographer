@@ -8,7 +8,7 @@ import logging
 from typing import Dict, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from src.ApplicationState import ApplicationState
+    from src.client.tk.ClientApplicationState import ClientApplicationState
 
 
 class AudioSource:
@@ -30,7 +30,7 @@ class AudioSource:
     def __init__(self,
                  chunk_queue: queue.Queue,
                  config: Dict[str, Any],
-                 app_state: Optional['ApplicationState'] = None,
+                 app_state: Optional['ClientApplicationState'] = None,
                  verbose: bool = False):
 
         self.chunk_queue: queue.Queue = chunk_queue

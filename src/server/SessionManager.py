@@ -4,6 +4,7 @@ Maintains an atomic session_index counter.  Each new WebSocket connection
 gets a unique session (1-based) that partitions its message_id space.
 """
 
+import asyncio
 import logging
 import threading
 import time
@@ -60,7 +61,20 @@ class SessionManager:
         self._sessions: dict[str, ClientSession] = {}
         self._sessions_lock = threading.Lock()
 
+        self._loop: asyncio.AbstractEventLoop | None = None
+
         app_state.register_component_observer(self._on_state_change)
+
+    def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Register the asyncio event loop used to schedule async shutdown tasks.
+
+        Must be called from WsServer after the loop is running so that
+        _on_state_change can schedule close_all_sessions via run_coroutine_threadsafe.
+
+        Args:
+            loop: The running asyncio event loop owned by WsServer.
+        """
+        self._loop = loop
 
     async def create_session(self, websocket: Any, loop: Any) -> ClientSession:
         """Create a new ClientSession for a connected WebSocket client.
@@ -143,11 +157,10 @@ class SessionManager:
         logger.info("SessionManager: all sessions closed")
 
     def _on_state_change(self, old_state: str, new_state: str) -> None:
-        """Observe server shutdown; schedule mass close_all_sessions on the event loop.
+        """Observe server shutdown and schedule close_all_sessions on the event loop.
 
-        Note: this runs on whatever thread calls set_state on ServerApplicationState.
-        close_all_sessions is async so it must run on an asyncio event loop.
-        The caller (WsServer) must coordinate shutdown externally.
+        Runs on whatever thread calls set_state; uses run_coroutine_threadsafe to
+        hand the async cleanup off to the WsServer event loop.
 
         Args:
             old_state: Previous server state.
@@ -155,3 +168,5 @@ class SessionManager:
         """
         if new_state == "shutdown":
             logger.info("SessionManager: server shutdown observed")
+            if self._loop is not None:
+                asyncio.run_coroutine_threadsafe(self.close_all_sessions(), self._loop)

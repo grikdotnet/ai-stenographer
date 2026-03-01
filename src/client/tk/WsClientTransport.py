@@ -11,7 +11,7 @@ import itertools
 import logging
 from typing import Any
 
-from src.ApplicationState import ApplicationState
+from src.client.tk.ClientApplicationState import ClientApplicationState
 from src.client.tk.RemoteRecognitionPublisher import RemoteRecognitionPublisher
 from src.network.codec import encode_audio_frame
 from src.network.types import WsAudioFrame
@@ -48,7 +48,7 @@ class WsClientTransport:
         self,
         server_url: str,
         session_id: str,
-        app_state: ApplicationState,
+        app_state: ClientApplicationState,
         publisher: RemoteRecognitionPublisher,
         loop: asyncio.AbstractEventLoop,
     ) -> None:

@@ -19,7 +19,7 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 import numpy as np
 import pytest
 
-from src.ApplicationState import ApplicationState
+from src.client.tk.ClientApplicationState import ClientApplicationState
 from src.client.tk.ClientApp import ClientApp
 
 
@@ -96,7 +96,7 @@ class TestClientAppWiring:
             patch("src.client.tk.ClientApp.AudioSource", return_value=mock_source),
             patch("src.client.tk.ClientApp.WsClientTransport", return_value=mock_transport),
             patch("src.client.tk.ClientApp.ApplicationWindow", return_value=_make_mock_app_window()),
-            patch("src.client.tk.ClientApp.RecognitionResultPublisher"),
+            patch("src.client.tk.ClientApp.RecognitionResultFanOut"),
             patch("src.client.tk.ClientApp.TextInsertionService"),
             patch("src.client.tk.ClientApp.PauseController"),
         ):
@@ -124,7 +124,7 @@ class TestClientAppWiring:
             patch("src.client.tk.ClientApp.AudioSource", return_value=mock_source),
             patch("src.client.tk.ClientApp.WsClientTransport", return_value=_make_mock_transport()),
             patch("src.client.tk.ClientApp.ApplicationWindow", return_value=_make_mock_app_window()),
-            patch("src.client.tk.ClientApp.RecognitionResultPublisher"),
+            patch("src.client.tk.ClientApp.RecognitionResultFanOut"),
             patch("src.client.tk.ClientApp.TextInsertionService"),
             patch("src.client.tk.ClientApp.PauseController"),
         ):
@@ -146,7 +146,7 @@ class TestClientAppWiring:
             patch("src.client.tk.ClientApp.AudioSource", return_value=mock_source),
             patch("src.client.tk.ClientApp.WsClientTransport", return_value=_make_mock_transport()),
             patch("src.client.tk.ClientApp.ApplicationWindow", return_value=_make_mock_app_window()),
-            patch("src.client.tk.ClientApp.RecognitionResultPublisher"),
+            patch("src.client.tk.ClientApp.RecognitionResultFanOut"),
             patch("src.client.tk.ClientApp.TextInsertionService"),
             patch("src.client.tk.ClientApp.PauseController"),
         ):
@@ -170,7 +170,7 @@ class TestClientAppSessionCreated:
             patch("src.client.tk.ClientApp.AudioSource", return_value=_make_mock_audio_source(chunk_q)),
             patch("src.client.tk.ClientApp.WsClientTransport", return_value=_make_mock_transport()),
             patch("src.client.tk.ClientApp.ApplicationWindow", return_value=_make_mock_app_window()),
-            patch("src.client.tk.ClientApp.RecognitionResultPublisher"),
+            patch("src.client.tk.ClientApp.RecognitionResultFanOut"),
             patch("src.client.tk.ClientApp.TextInsertionService"),
             patch("src.client.tk.ClientApp.PauseController"),
         ):
@@ -190,7 +190,7 @@ class TestClientAppSessionCreated:
             patch("src.client.tk.ClientApp.AudioSource", return_value=_make_mock_audio_source(chunk_q)),
             patch("src.client.tk.ClientApp.WsClientTransport", return_value=_make_mock_transport()),
             patch("src.client.tk.ClientApp.ApplicationWindow", return_value=_make_mock_app_window()),
-            patch("src.client.tk.ClientApp.RecognitionResultPublisher"),
+            patch("src.client.tk.ClientApp.RecognitionResultFanOut"),
             patch("src.client.tk.ClientApp.TextInsertionService"),
             patch("src.client.tk.ClientApp.PauseController"),
         ):
@@ -217,7 +217,7 @@ class TestClientAppPublisherWiring:
             patch("src.client.tk.ClientApp.AudioSource", return_value=_make_mock_audio_source(chunk_q)),
             patch("src.client.tk.ClientApp.WsClientTransport", return_value=_make_mock_transport()),
             patch("src.client.tk.ClientApp.ApplicationWindow", return_value=mock_window),
-            patch("src.client.tk.ClientApp.RecognitionResultPublisher", return_value=mock_publisher),
+            patch("src.client.tk.ClientApp.RecognitionResultFanOut", return_value=mock_publisher),
             patch("src.client.tk.ClientApp.TextInsertionService"),
             patch("src.client.tk.ClientApp.PauseController"),
         ):
@@ -238,7 +238,7 @@ class TestClientAppPublisherWiring:
             patch("src.client.tk.ClientApp.AudioSource", return_value=_make_mock_audio_source(chunk_q)),
             patch("src.client.tk.ClientApp.WsClientTransport") as MockTransport,
             patch("src.client.tk.ClientApp.ApplicationWindow", return_value=_make_mock_app_window()),
-            patch("src.client.tk.ClientApp.RecognitionResultPublisher", return_value=mock_publisher),
+            patch("src.client.tk.ClientApp.RecognitionResultFanOut", return_value=mock_publisher),
             patch("src.client.tk.ClientApp.TextInsertionService"),
             patch("src.client.tk.ClientApp.PauseController"),
             patch("src.client.tk.ClientApp.RemoteRecognitionPublisher") as MockRemote,

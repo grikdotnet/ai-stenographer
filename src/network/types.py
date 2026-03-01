@@ -127,7 +127,7 @@ class WsError:
     error_code: Literal[
         "INVALID_AUDIO_FRAME",
         "UNKNOWN_MESSAGE_TYPE",
-        "SESSION_NOT_FOUND",
+        "SESSION_ID_MISMATCH",
         "BACKPRESSURE_DROP",
         "PROTOCOL_VIOLATION",
         "INTERNAL_ERROR",

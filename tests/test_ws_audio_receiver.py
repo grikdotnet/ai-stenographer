@@ -222,6 +222,51 @@ class TestShutdownCommand:
 # Tests: full chunk_queue drops frame and sends BACKPRESSURE_DROP error
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Tests: session_id mismatch in control command text frame
+# ---------------------------------------------------------------------------
+
+class TestSessionIdValidation:
+    def test_mismatched_session_id_sends_session_id_mismatch_error(self) -> None:
+        chunk_queue: queue.Queue = queue.Queue()
+        ws = _WebSocketSequence([_shutdown_command(session_id="wrong-session")])
+
+        asyncio.run(receive_audio(ws, session_id=_SESSION_ID, chunk_queue=chunk_queue))
+
+        assert len(ws.sent) == 1
+        obj = json.loads(ws.sent[0])
+        assert obj["type"] == "error"
+        assert obj["error_code"] == "SESSION_ID_MISMATCH"
+
+    def test_mismatched_session_id_does_not_stop_loop(self) -> None:
+        chunk_queue: queue.Queue = queue.Queue()
+        ws = _WebSocketSequence([
+            _shutdown_command(session_id="wrong-session"),
+            _make_audio_frame(chunk_id=5),
+        ])
+
+        asyncio.run(receive_audio(ws, session_id=_SESSION_ID, chunk_queue=chunk_queue))
+
+        assert chunk_queue.qsize() == 1
+
+    def test_mismatched_session_id_error_is_non_fatal(self) -> None:
+        chunk_queue: queue.Queue = queue.Queue()
+        ws = _WebSocketSequence([_shutdown_command(session_id="wrong-session")])
+
+        asyncio.run(receive_audio(ws, session_id=_SESSION_ID, chunk_queue=chunk_queue))
+
+        obj = json.loads(ws.sent[0])
+        assert obj["fatal"] is False
+
+    def test_correct_session_id_shutdown_still_works(self) -> None:
+        chunk_queue: queue.Queue = queue.Queue()
+        ws = _WebSocketSequence([_shutdown_command(session_id=_SESSION_ID)])
+
+        reason = asyncio.run(receive_audio(ws, session_id=_SESSION_ID, chunk_queue=chunk_queue))
+
+        assert reason == "shutdown"
+
+
 class TestBackpressure:
     def test_full_queue_drops_frame_and_sends_error(self) -> None:
         chunk_queue: queue.Queue = queue.Queue(maxsize=1)

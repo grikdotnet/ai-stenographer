@@ -13,7 +13,7 @@ try:
     from src.client.tk.gui.TextDisplayWidget import TextDisplayWidget
     from src.client.tk.gui.ApplicationWindow import ApplicationWindow
     from src.types import RecognitionResult
-    from src.ApplicationState import ApplicationState
+    from src.client.tk.ClientApplicationState import ClientApplicationState
     TKINTER_AVAILABLE = True
 except ImportError:
     TKINTER_AVAILABLE = False
@@ -38,7 +38,7 @@ class TestGuiWindowWithChunkIds(unittest.TestCase):
         try:
             # Create minimal config and ApplicationState for testing
             test_config = {'audio': {}}  # Minimal config needed by ApplicationState
-            test_app_state = ApplicationState(config=test_config)
+            test_app_state = ClientApplicationState(config=test_config)
             self.app_window = ApplicationWindow(test_app_state, test_config)
             self.root = self.app_window.get_root()
 
@@ -254,7 +254,7 @@ class TestGuiWindowAudioParagraphBreaks(unittest.TestCase):
         try:
             # Create minimal config and ApplicationState for testing
             test_config = {'audio': {}}  # Minimal config needed by ApplicationState
-            test_app_state = ApplicationState(config=test_config)
+            test_app_state = ClientApplicationState(config=test_config)
             self.app_window = ApplicationWindow(test_app_state, test_config)
             self.root = self.app_window.get_root()
 
