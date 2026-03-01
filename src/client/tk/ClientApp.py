@@ -9,6 +9,7 @@ each chunk to WsClientTransport.send_audio_chunk() so the sync audio callback
 is fully decoupled from the async transport internals.
 """
 
+import asyncio
 import json
 import logging
 import queue
@@ -59,6 +60,7 @@ class ClientApp:
 
         self._bridge_thread: threading.Thread | None = None
         self._bridge_running = False
+        self._loop: asyncio.AbstractEventLoop | None = None
 
         self.app_state = ClientApplicationState(config=config)
 
@@ -143,6 +145,14 @@ class ClientApp:
         """
         return self._session_id
 
+    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Provide the asyncio event loop so stop() can await transport teardown.
+
+        Args:
+            loop: The running asyncio event loop used by WsClientTransport.
+        """
+        self._loop = loop
+
     def start(self) -> None:
         """Start the audio bridge thread and the AudioSource.
 
@@ -157,15 +167,24 @@ class ClientApp:
         logger.info("ClientApp[%s]: started", self._session_id)
 
     def stop(self) -> None:
-        """Stop AudioSource and audio bridge thread.
+        """Stop AudioSource, audio bridge thread, and WebSocket transport.
 
         Algorithm:
             1. Stop AudioSource.
             2. Stop audio bridge drain thread.
-            3. Transition app_state to shutdown if not already.
+            3. Await WsClientTransport.stop() on the asyncio loop if available.
+            4. Transition app_state to shutdown if not already.
         """
         self._audio_source.stop()
         self._stop_audio_bridge()
+
+        if self._loop is not None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._transport.stop(), self._loop
+                ).result(timeout=3.0)
+            except Exception:
+                logger.exception("ClientApp[%s]: error stopping transport", self._session_id)
 
         try:
             self.app_state.set_state("shutdown")

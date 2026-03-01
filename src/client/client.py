@@ -27,7 +27,7 @@ else:
     _SCRIPT_PATH = Path(__file__).resolve()
 
 # Add repo root to path so ``src`` imports work when spawned as subprocess
-_REPO_ROOT = _SCRIPT_PATH.parent
+_REPO_ROOT = _SCRIPT_PATH.parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -153,6 +153,7 @@ if __name__ == "__main__":
             verbose=verbose,
         )
 
+        client_app.set_loop(loop)
         client_app._transport._loop = loop
 
         start_future = asyncio.run_coroutine_threadsafe(

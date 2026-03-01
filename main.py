@@ -37,7 +37,7 @@ def _spawn_client(server_url: str) -> "subprocess.Popen":
         Running subprocess handle.
     """
     import subprocess
-    client_script = Path(__file__).parent / "client.py"
+    client_script = Path(__file__).parent / "src" / "client" / "client.py"
     cmd = [sys.executable, str(client_script), f"--server-url={server_url}"]
     return subprocess.Popen(cmd)
 

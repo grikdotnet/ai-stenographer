@@ -160,6 +160,61 @@ class TestClientAppWiring:
 
         mock_source.stop.assert_called_once()
 
+    def test_stop_calls_transport_stop(self) -> None:
+        """ClientApp.stop() awaits WsClientTransport.stop() when a loop is set."""
+        chunk_q: queue.Queue = queue.Queue()
+        mock_source = _make_mock_audio_source(chunk_q)
+        mock_transport = _make_mock_transport()
+
+        loop = asyncio.new_event_loop()
+        loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
+        loop_thread.start()
+
+        try:
+            with (
+                patch("src.client.tk.ClientApp.AudioSource", return_value=mock_source),
+                patch("src.client.tk.ClientApp.WsClientTransport", return_value=mock_transport),
+                patch("src.client.tk.ClientApp.ApplicationWindow", return_value=_make_mock_app_window()),
+                patch("src.client.tk.ClientApp.RecognitionResultFanOut"),
+                patch("src.client.tk.ClientApp.TextInsertionService"),
+                patch("src.client.tk.ClientApp.PauseController"),
+            ):
+                app = ClientApp(
+                    server_url=_SERVER_URL,
+                    session_id="test-session-uuid",
+                    config=_CONFIG,
+                )
+                app.set_loop(loop)
+                app.start()
+                app.stop()
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            loop_thread.join(timeout=3.0)
+            loop.close()
+
+        mock_transport.stop.assert_awaited_once()
+
+    def test_stop_without_loop_does_not_raise(self) -> None:
+        """ClientApp.stop() completes without error when no loop has been set."""
+        chunk_q: queue.Queue = queue.Queue()
+        mock_source = _make_mock_audio_source(chunk_q)
+
+        with (
+            patch("src.client.tk.ClientApp.AudioSource", return_value=mock_source),
+            patch("src.client.tk.ClientApp.WsClientTransport", return_value=_make_mock_transport()),
+            patch("src.client.tk.ClientApp.ApplicationWindow", return_value=_make_mock_app_window()),
+            patch("src.client.tk.ClientApp.RecognitionResultFanOut"),
+            patch("src.client.tk.ClientApp.TextInsertionService"),
+            patch("src.client.tk.ClientApp.PauseController"),
+        ):
+            app = ClientApp(
+                server_url=_SERVER_URL,
+                session_id="test-session-uuid",
+                config=_CONFIG,
+            )
+            app.start()
+            app.stop()  # no set_loop() call — must not raise
+
 
 class TestClientAppSessionCreated:
     def test_session_created_message_sets_session_id(self) -> None:
