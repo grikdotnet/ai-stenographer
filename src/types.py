@@ -46,6 +46,7 @@ class RecognitionResult:
     start_time: float
     end_time: float
     chunk_ids: list[int] = field(default_factory=list)
+    utterance_id: int = 0
     confidence: float = 0.0
     token_confidences: list[float] = field(default_factory=list)
     audio_rms: float = 0.0

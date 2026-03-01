@@ -9,9 +9,9 @@ class TestTextInsertionService(unittest.TestCase):
         mock_publisher = Mock()
         mock_keyboard = Mock()
 
-        with patch('src.gui.TextInsertionService.KeyboardSimulator', return_value=mock_keyboard):
-            with patch('src.gui.TextInsertionService.TextInserter') as MockInserter:
-                from src.gui.TextInsertionService import TextInsertionService
+        with patch('src.client.tk.gui.TextInsertionService.KeyboardSimulator', return_value=mock_keyboard):
+            with patch('src.client.tk.gui.TextInsertionService.TextInserter') as MockInserter:
+                from src.client.tk.gui.TextInsertionService import TextInsertionService
                 service = TextInsertionService(mock_publisher, verbose=True)
 
                 MockInserter.assert_called_once_with(mock_keyboard, True)
@@ -21,10 +21,10 @@ class TestTextInsertionService(unittest.TestCase):
         mock_publisher = Mock()
         mock_inserter = Mock()
 
-        with patch('src.gui.TextInsertionService.KeyboardSimulator'):
-            with patch('src.gui.TextInsertionService.TextInserter', return_value=mock_inserter):
-                with patch('src.gui.TextInsertionService.InsertionController') as MockController:
-                    from src.gui.TextInsertionService import TextInsertionService
+        with patch('src.client.tk.gui.TextInsertionService.KeyboardSimulator'):
+            with patch('src.client.tk.gui.TextInsertionService.TextInserter', return_value=mock_inserter):
+                with patch('src.client.tk.gui.TextInsertionService.InsertionController') as MockController:
+                    from src.client.tk.gui.TextInsertionService import TextInsertionService
                     service = TextInsertionService(mock_publisher)
 
                     MockController.assert_called_once_with(mock_inserter)
@@ -34,10 +34,10 @@ class TestTextInsertionService(unittest.TestCase):
         mock_publisher = Mock()
         mock_inserter = Mock()
 
-        with patch('src.gui.TextInsertionService.KeyboardSimulator'):
-            with patch('src.gui.TextInsertionService.TextInserter', return_value=mock_inserter):
-                with patch('src.gui.TextInsertionService.InsertionController'):
-                    from src.gui.TextInsertionService import TextInsertionService
+        with patch('src.client.tk.gui.TextInsertionService.KeyboardSimulator'):
+            with patch('src.client.tk.gui.TextInsertionService.TextInserter', return_value=mock_inserter):
+                with patch('src.client.tk.gui.TextInsertionService.InsertionController'):
+                    from src.client.tk.gui.TextInsertionService import TextInsertionService
                     service = TextInsertionService(mock_publisher)
 
                     mock_publisher.subscribe.assert_called_once_with(mock_inserter)
@@ -47,10 +47,10 @@ class TestTextInsertionService(unittest.TestCase):
         mock_publisher = Mock()
         mock_controller = Mock()
 
-        with patch('src.gui.TextInsertionService.KeyboardSimulator'):
-            with patch('src.gui.TextInsertionService.TextInserter'):
-                with patch('src.gui.TextInsertionService.InsertionController', return_value=mock_controller):
-                    from src.gui.TextInsertionService import TextInsertionService
+        with patch('src.client.tk.gui.TextInsertionService.KeyboardSimulator'):
+            with patch('src.client.tk.gui.TextInsertionService.TextInserter'):
+                with patch('src.client.tk.gui.TextInsertionService.InsertionController', return_value=mock_controller):
+                    from src.client.tk.gui.TextInsertionService import TextInsertionService
                     service = TextInsertionService(mock_publisher)
 
                     self.assertIs(service.controller, mock_controller)
@@ -64,8 +64,8 @@ class TestTextInsertionServiceIntegration(unittest.TestCase):
         mock_publisher = Mock()
 
         # Only mock pynput's Controller to avoid actual keyboard control
-        with patch('src.gui.KeyboardSimulator.Controller'):
-            from src.gui.TextInsertionService import TextInsertionService
+        with patch('src.client.tk.gui.KeyboardSimulator.Controller'):
+            from src.client.tk.gui.TextInsertionService import TextInsertionService
             from src.controllers.InsertionController import InsertionController
 
             service = TextInsertionService(mock_publisher, verbose=False)

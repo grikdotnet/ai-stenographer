@@ -40,6 +40,7 @@ class SpeechEndRouter:
         app_state: "ApplicationState",
         control_queue: queue.Queue,
         verbose: bool = False,
+        first_message_id: int = 1,
     ) -> None:
         self.speech_queue: queue.Queue[SpeechQueueItem] = speech_queue
         self.recognizer_queue: queue.Queue[AudioSegment] = recognizer_queue
@@ -55,7 +56,7 @@ class SpeechEndRouter:
         self._audio_fifo: deque[AudioSegment] = deque()
         self._held_boundary: Optional[SpeechEndSignal] = None
         self._skipped_ack_ids: set[int] = set()
-        self._next_message_id: int = 1
+        self._next_message_id: int = first_message_id
 
         # An optimization channel to signal SoundPreProcessor that Recognizer is free.
         self.control_queue: queue.Queue[RecognizerFreeSignal] = control_queue
