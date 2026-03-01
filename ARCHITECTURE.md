@@ -2,482 +2,395 @@
 
 ## System Overview
 
-The Speech-to-Text pipeline is a multi-threaded, queue-based architecture that processes audio from microphone to text output in real-time.
+The Speech-to-Text system is a **two-process client-server application**. The server process handles all audio processing, VAD, and ASR inference. The client process handles microphone capture, the Tk GUI, and text insertion. The two processes communicate over a local WebSocket connection (protocol v1).
 
-Application state management with pause/resume functionality is handled through an observer pattern, allowing components to react independently to state changes.
+Launching `python main.py` starts the server in-process and spawns `src/client/client.py` as a subprocess. A daemon watcher thread in `main.py` monitors the subprocess: when it exits (user closes the window or crash), the watcher calls `server_app.stop()`. Running `python main.py --server-only` starts the server headlessly without spawning a client.
+
+Application state is split: `ServerApplicationState` manages server lifecycle (`starting → running → shutdown`, component observers only, no pause, no GUI scheduling). `ClientApplicationState` manages the full client lifecycle (`starting → running ⟷ paused → shutdown`) including GUI observers and tkinter scheduling.
 
 ## Router Protocol Overview
 
-`SpeechEndRouter` mediates flow between `SoundPreProcessor`, `Recognizer`, and `IncrementalTextMatcher`.
-It enforces one in-flight `AudioSegment` at a time, assigns monotonic `message_id` values, forwards
-`RecognitionTextMessage` payloads to matcher input, and unblocks on terminal `RecognizerAck`.
-`SpeechEndSignal` boundaries are held until all in-flight audio for that utterance is acknowledged.
+`SpeechEndRouter` mediates flow between `SoundPreProcessor`, `RecognizerService`, and `IncrementalTextMatcher`. It enforces one in-flight `AudioSegment` at a time per session, assigns monotonic `message_id` values, forwards `RecognitionTextMessage` payloads to the matcher input queue, and unblocks on terminal `RecognizerAck`. `SpeechEndSignal` boundaries are held until all in-flight audio for that utterance is acknowledged.
+
+In the multi-session server each `SpeechEndRouter` instance receives a `first_message_id` constructor parameter equal to `session_index * 10_000_000 + 1`. This partitions the message ID space so `RecognizerService` can route results back to the correct session by pure arithmetic (`message_id // 10_000_000`), with no routing table lookup on the hot path.
+
+---
+
+## Entry Points and Process Startup
+
+### `main.py`
+
+1. Resolves paths and loads config.
+2. Checks for missing ASR models. In `--server-only` mode: prints missing model names to stderr and exits with code 1 if any are absent (no GUI dialogs).
+3. Constructs `ServerApp` and calls `server_app.start()` — binds the WebSocket server to an OS-assigned port.
+4. **Default mode**: spawns `src/client/client.py` as a subprocess with `--server-url=ws://127.0.0.1:<port>`. Starts a daemon watcher thread calling `client_proc.wait()`, then `server_app.stop()` + `client_proc.terminate()`.
+5. **`--server-only` mode**: blocks on `WsServer.join()`.
+
+### `src/client/client.py`
+
+Subprocess entry script. Not intended for direct user invocation.
+
+1. Parses `--server-url=ws://host:port` (required).
+2. Displays `LoadingWindow` while connecting to the WebSocket server.
+3. Reads the `session_created` JSON frame; calls `ClientApp.from_session_created()`.
+4. Sets `transport._loop` to the asyncio loop started by `WsClientTransport`.
+5. Calls `client_app.start()` and runs `root.mainloop()`.
+6. On `ConnectionClosed`: `WsClientTransport` transitions `ClientApplicationState` to `shutdown`; the observer chain stops `AudioSource` and exits the Tk loop. Exits with code 1.
+
+### CLI Flags
+
+| Flag | Effect |
+|---|---|
+| *(default)* | Server + Tk client subprocess |
+| `--server-only` | Headless server; no GUI |
+| `-v` | Verbose logging |
+| `--input-file=path` | `FileAudioSource` replaces `AudioSource` (client-side, for testing) |
+
+---
+
+## Network Protocol (v1)
+
+All wire types are defined in `src/network/types.py`; encode/decode is in `src/network/codec.py`.
+
+### Client → Server
+
+| Type | Wire format | Description |
+|---|---|---|
+| `WsAudioFrame` | Binary | 4-byte little-endian header_len + JSON header + raw float32 PCM payload |
+| `WsControlCommand` | JSON text | `{"type": "control_command", "command": "shutdown", "session_id": ..., "timestamp": ...}` |
+
+### Server → Client
+
+| Type | Wire format | Description |
+|---|---|---|
+| `WsSessionCreated` | JSON text | Sent immediately on connect; contains `session_id`, `protocol_version`, `server_config` |
+| `WsRecognitionResult` | JSON text | `status`: `"partial"` or `"final"`; contains text, timing, chunk_ids, utterance_id, confidence fields |
+| `WsSessionClosed` | JSON text | Reason: `"shutdown"`, `"timeout"`, or `"error"` |
+| `WsError` | JSON text | Non-fatal errors continue the session; `fatal: true` closes the connection |
+
+### Error Codes (`WsError.error_code`)
+
+`INVALID_AUDIO_FRAME`, `UNKNOWN_MESSAGE_TYPE`, `SESSION_ID_MISMATCH`, `BACKPRESSURE_DROP`, `PROTOCOL_VIOLATION`, `INTERNAL_ERROR`
+
+### Session Lifecycle
+
+```
+client connects
+  → server sends session_created (session_id, protocol_version, server_config)
+  → client stamps session_id on all outbound WsAudioFrame headers
+  → server streams recognition_result frames (partial + final)
+  → client sends control_command shutdown (or closes WebSocket)
+  → server sends session_closed, tears down ClientSession
+```
 
 ---
 
 ## Module Organization
 
-The codebase is organized into domain-based subfolders within `src/`:
-
 ### Root (`src/`)
-- **ApplicationState.py**: State manager with observer pattern
-- **RecognitionResultPublisher.py**: Observer pattern publisher
-- **Pipeline.py**: Main pipeline orchestration
-- **types.py**: Data type definitions (AudioSegment, RecognitionResult)
 
-### Audio Processing (`src/sound/`)
-- **AudioSource.py**: Microphone audio capture with sounddevice callback
-- **FileAudioSource.py**: WAV file audio source for testing
-- **SoundPreProcessor.py**: VAD processing, RMS normalization, speech buffering
-- **GrowingWindowAssembler.py**: Assembles speech segments into growing recognition windows (up to `max_window_duration`, oldest segments dropped when limit exceeded)
+- **`ApplicationState.py`**: Base class; full state machine (`starting → running ⟷ paused → shutdown`); component + GUI observers; thread-safe mutations. Used as base by `ClientApplicationState`.
+- **`ServerApplicationState.py`**: 3-state server-only state machine (`starting → running → shutdown`); component observers only; no GUI scheduling; no `paused` state.
+- **`RecognitionResultPublisher.py`**: `@runtime_checkable` Protocol with `publish_partial_update()` and `publish_finalization()`. Implemented by `WsResultSender` (server) and `RecognitionResultFanOut` (client).
+- **`SpeechEndRouter.py`**: Routes audio and results between `SoundPreProcessor`, `RecognizerService`, and `IncrementalTextMatcher`; enforces single-in-flight per session.
+- **`types.py`**: `AudioSegment`, `RecognitionResult`, `RecognitionTextMessage`, `RecognizerAck`, `RecognizerFreeSignal`, `SpeechEndSignal`.
+- **`protocols.py`**: `TextRecognitionSubscriber` protocol.
 
-### Speech Recognition (`src/asr/`)
-- **Recognizer.py**: STT model inference with context-aware recognition
-- **VoiceActivityDetector.py**: Detects speech vs silence
-- **ModelManager.py**: Model download and management
-- **DownloadProgressReporter.py**: Model download progress tracking
-- **ExecutionProviderManager.py**: GPU/CPU detection and selection
-- **SessionOptionsFactory.py**: ONNX Runtime session configuration
-- **SessionOptionsStrategy.py**: Hardware-specific optimization strategies
+### Server (`src/server/`)
 
-### Post-Processing (`src/postprocessing/`)
-- **TextMatcher.py**: Overlap resolution, duplicate detection, result publishing
-- **TextNormalizer.py**: Text normalization for fuzzy matching
+- **`ServerApp.py`**: Orchestrates `WsServer` + `RecognizerService`; server-mode entry point.
+- **`WsServer.py`**: `websockets.serve()` asyncio loop on a daemon thread; delegates connections to `SessionManager`.
+- **`SessionManager.py`**: Allocates 1-based session indices (atomic); creates and destroys `ClientSession` instances; observes `ServerApplicationState` for shutdown.
+- **`ClientSession.py`**: Owns all per-client queues and pipeline workers; `start()` / `close()` lifecycle.
+- **`RecognizerService.py`**: Single shared inference daemon thread; routes results by `message_id // 10_000_000`; `register_session()` / `unregister_session()` per-session output queues.
+- **`WsAudioReceiver.py`**: Async coroutine running inside the WS connection handler; decodes binary `WsAudioFrame` → puts audio dicts onto `ClientSession.chunk_queue`; sends `BACKPRESSURE_DROP` error if queue is full.
+- **`WsResultSender.py`**: Implements `RecognitionResultPublisher` protocol; sync-to-async bridge via bounded `asyncio.Queue(20)`; single drain async task sends JSON to the client WebSocket.
 
-### GUI (`src/gui/`)
-- **TextDisplayWidget.py**: Tkinter text display with thread-safety
-- **TextFormatter.py**: Text formatting logic (MVC controller)
-- **ControlPanel.py**: Pause/Resume button widget
-- **ModelDownloadDialog.py**: Model download dialog
+### Network (`src/network/`)
 
-### Controllers (`src/controllers/`)
-- **PauseController.py**: MVC controller for pause/resume
-- **InsertionController.py**: MVC controller for text insertion mode
+- **`types.py`**: `WsAudioFrame`, `WsControlCommand`, `WsSessionCreated`, `WsRecognitionResult`, `WsSessionClosed`, `WsError`; union aliases `ServerMessage`, `ClientTextMessage`.
+- **`codec.py`**: `encode_audio_frame()`, `decode_audio_frame()`, `encode_server_message()`, `decode_client_message()`.
 
-### Quick Entry (`src/quickentry/`)
-- **QuickEntryService.py**: Quick entry service orchestration
-- **QuickEntryController.py**: MVC controller for quick entry
-- **QuickEntrySubscriber.py**: Subscriber to recognition results
-- **QuickEntryPopup.py**: Popup window for quick entry
-- **GlobalHotkeyListener.py**: Global hotkey detection
-- **FocusTracker.py**: Window focus tracking
-- **windows_effects.py**: Windows-specific visual effects
+### Client (`src/client/`)
+
+- **`client.py`**: Subprocess entry script; parses `--server-url`; shows `LoadingWindow`; calls `ClientApp.from_session_created()`.
+- **`tk/ClientApp.py`**: Wires `AudioSource` + `AudioBridge` thread + `WsClientTransport` + Tk GUI; `from_session_created()` factory.
+- **`tk/ClientApplicationState.py`**: Re-exports `ApplicationState`; full 4-state machine with GUI observer support; used by `AudioSource`, `PauseController`, `ControlPanel`, `WsClientTransport`.
+- **`tk/WsClientTransport.py`**: Asyncio event loop on daemon thread; sync `send_audio_chunk()` → bounded `asyncio.Queue` → WebSocket; async receive loop → `RemoteRecognitionPublisher`.
+- **`tk/RemoteRecognitionPublisher.py`**: Decodes incoming WS JSON text frames → dispatches to `RecognitionResultFanOut`.
+- **`tk/RecognitionResultFanOut.py`**: Concrete client-side fan-out publisher; implements `RecognitionResultPublisher` protocol; manages subscribers (`TextFormatter`, `TextInsertionService`, `QuickEntryService`); thread-safe copy-on-notify.
+- **`tk/asr/`**: Client copies of `ModelManager` and `DownloadProgressReporter` (used by `client.py` for model download dialogs).
+- **`tk/controllers/`**: `PauseController`, `InsertionController` (moved from `src/controllers/`).
+- **`tk/gui/`**: All Tk GUI widgets: `ApplicationWindow`, `ControlPanel`, `HeaderPanel`, `InsertionModePanel`, `TextDisplayWidget`, `TextFormatter`, `TextInserter`, `TextInsertionService`, `KeyboardSimulator`, `LoadingWindow`, `ModelDownloadDialog` (moved from `src/gui/`).
+- **`tk/quickentry/`**: `QuickEntryService`, `QuickEntryController`, `QuickEntrySubscriber`, `QuickEntryPopup`, `GlobalHotkeyListener`, `FocusTracker`, `windows_effects` (moved from `src/quickentry/`).
+- **`tk/sound/`**: `AudioSource`, `FileAudioSource` (moved from `src/sound/`; client-side only).
+
+### Shared Processing (server-side at runtime)
+
+- **`src/sound/`**: `SoundPreProcessor`, `GrowingWindowAssembler` — server-side; one instance per `ClientSession`.
+- **`src/asr/`**: `Recognizer` (pure callable; see note below), `VoiceActivityDetector` (stateful, one per session), `ModelManager`, `ExecutionProviderManager`, `SessionOptionsFactory`, `SessionOptionsStrategy`, `DownloadProgressReporter`.
+- **`src/postprocessing/`**: `IncrementalTextMatcher`, `PostRecognitionFilter`, `TextNormalizer`.
 
 ---
 
 ## Architecture Diagram
 
-### High-Level Flow
+### Server-Side Session Pipeline
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                         STT PIPELINE ARCHITECTURE                        │
-└─────────────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│  SERVER PROCESS                                                           │
+│  asyncio event loop thread (WsServer)                                     │
+│    WsAudioReceiver coroutine (per session)                                │
+│      ← binary WsAudioFrame from client                                    │
+│      → chunk_queue (per session, maxsize=100)                             │
+├──────────────────────────────────────────────────────────────────────────┤
+│  Per-Session Daemon Threads (owned by ClientSession)                      │
+│                                                                           │
+│  SoundPreProcessor thread                                                 │
+│    ← chunk_queue.get()                                                    │
+│    → _normalize_rms() → VoiceActivityDetector.process_frame()            │
+│    → GrowingWindowAssembler.process_segment() [sync, no thread]          │
+│    → speech_queue (AudioSegment + SpeechEndSignal)                        │
+│                                                                           │
+│  SpeechEndRouter thread                                                   │
+│    ← speech_queue.get()                                                   │
+│    → assigns message_id = session_index * 10_000_000 + local_id          │
+│    → RecognizerService.input_queue (shared across all sessions)           │
+│    ← recognizer_output_queue (per session, keyed by session_index)       │
+│    → matcher_queue (RecognitionResult + SpeechEndSignal)                  │
+│                                                                           │
+│  IncrementalTextMatcher thread                                            │
+│    ← matcher_queue.get()                                                  │
+│    → overlap resolution, duplicate detection                              │
+│    → WsResultSender.publish_partial_update / publish_finalization         │
+├──────────────────────────────────────────────────────────────────────────┤
+│  Server-Global                                                            │
+│                                                                           │
+│  RecognizerService daemon thread (shared, one per server)                 │
+│    ← input_queue.get() (AudioSegment from any session)                   │
+│    → Recognizer.recognize_window(segment) [blocking inference]            │
+│    → session_index = message_id // 10_000_000                            │
+│    → session_output_queues[session_index].put_nowait(result / ack)        │
+│                                                                           │
+│  WsResultSender (per session, asyncio task in WsServer loop)              │
+│    ← publish_*() calls from IncrementalTextMatcher thread                 │
+│    → loop.call_soon_threadsafe → asyncio.Queue(20) → websocket.send()    │
+│    → JSON WsRecognitionResult frame → client                             │
+└──────────────────────────────────────────────────────────────────────────┘
+```
 
-Microphone Input (16kHz, mono)
-        │
-        ├─ 32ms frames (512 samples)
-        ↓
+### Client-Side Pipeline
+
+```
 ┌──────────────────────────────────────────────────────────────────────────┐
-│  TIER 1: Audio Capture                                                   │
-│  Thread: AudioSource (daemon, sounddevice callback)                      │
-├──────────────────────────────────────────────────────────────────────────┤
-│  AudioSource.audio_callback()                                            │
-│    ├─→ Captures raw audio (32ms frames, 512 samples)                    │
-│    ├─→ Assigns chunk_id (monotonic counter)                             │
-│    ├─→ chunk_queue.put_nowait({audio, timestamp, chunk_id})             │
-│    ├─→ Observer: ApplicationState (component observer)                 │
-│    │   └─→ on_state_change(): pause → close stream, resume → start()   │
-│    └─→ FAST RETURN (<1ms) - no blocking operations!                     │
-└──────────────────────────────────────────────────────────────────────────┘
-        │
-        ├─ ApplicationState observes: state changes
-        ↓
-┌──────────────────────────────────────────────────────────────────────────┐
-│  APPLICATION STATE MANAGEMENT                                            │
-├──────────────────────────────────────────────────────────────────────────┤
-│  ApplicationState (shared object, dependency injection)                  │
-│    ├─→ States: starting → running ⟷ paused → shutdown                   │
-│    ├─→ Component observers: AudioSource, SoundPreProcessor, Recognizer, TextMatcher │
-│    ├─→ GUI observers: ControlPanel                                      │
-│    └─→ Thread-safe mutations (threading.Lock)                           │
+│  CLIENT PROCESS (src/client/client.py subprocess)                        │
 │                                                                           │
-│  ControlPanel (GUI widget, top of window)                               │
-│    ├─→ Observes ApplicationState (GUI observer)                         │
-│    ├─→ Button states: "Loading..." | "Pause" | "Resume"                 │
-│    └─→ Delegates to PauseController.toggle()                            │
+│  AudioSource (sounddevice callback, daemon)                               │
+│    → chunk_queue.put_nowait({audio, timestamp, chunk_id})                 │
 │                                                                           │
-│  PauseController (MVC controller)                                       │
-│    └─→ ONLY updates ApplicationState.set_state()                        │
-│        └─→ NO component manipulation (proper encapsulation)             │
-└──────────────────────────────────────────────────────────────────────────┘
-        │
-        ├─ Raw audio dicts: {audio, timestamp, chunk_id}
-        ↓
-┌──────────────────────────────────────────────────────────────────────────┐
-│  Queue: chunk_queue (maxsize=200)                                        │
-│  Data Type: dict                                                         │
-│    - audio: npt.NDArray[np.float32]  (512 samples)                      │
-│    - timestamp: float                                                    │
-│    - chunk_id: int                                                       │
-└──────────────────────────────────────────────────────────────────────────┘
-        │
-        ↓
-┌──────────────────────────────────────────────────────────────────────────┐
-│  TIER 2: Audio Processing                                                │
-│  Thread: SoundPreProcessor (daemon)                                      │
-├──────────────────────────────────────────────────────────────────────────┤
-│  SoundPreProcessor.process()                                             │
-│    ├─→ chunk_queue.get(timeout=0.1)  [raw audio dict]                   │
-│    ├─→ _normalize_rms(audio)  [RMS normalization for VAD]               │
-│    ├─→ VoiceActivityDetector.process_frame(normalized_audio)            │
-│    │     └─→ Detects speech vs silence (threshold: 0.5)                 │
-│    │         └─→ Segments speech at word boundaries                     │
-│    │                                                                      │
-│    ├─→ Context buffer management (circular buffer, 20 chunks = 640ms) │
-│    │     ├─→ All chunks stored: speech + silence                       │
-│    │     └─→ Left context: snapshot captured when speech starts        │
-│    │                                                                      │
-│    ├─→ Speech buffering                                                 │
-│    │     ├─→ Consecutive speech logic: 3 chunks to start segment       │
-│    │     └─→ Accumulates chunks until finalization                      │
-│    │                                                                      │
-│    ├─→ Segment finalization [on silence-energy threshold or max dur.]  │
-│    │     ├─→ Creates incremental AudioSegment with context              │
-│    │     │     └─→ type='incremental'                                    │
-│    │     │     └─→ chunk_ids=[id1, id2, ...]                            │
-│    │     │     └─→ data: np.ndarray (all buffered audio)                │
-│    │     │     └─→ left_context: pre-speech audio                       │
-│    │     │     └─→ right_context: always empty (hard-cut model)         │
-│    │     │                                                                │
-│    │     ├─→ Hard-cut splitting (max duration)                          │
-│    │     │     └─→ Emits full buffer, resets, stays in ACTIVE_SPEECH    │
-│    │     │                                                                │
-│    │     ├─→ Silence-energy threshold (ACCUMULATING_SILENCE → IDLE)    │
-│    │     │     └─→ Emits segment + boundary signal + windower.flush()   │
-│    │     │                                                                │
-│    │     └─→ GrowingWindowAssembler.process_segment(segment) [sync call]│
-│    │           └─→ Emits growing incremental window                     │
-│    │                                                                      │
-│    └─→ Observer: ApplicationState (component observer)                 │
-│        └─→ on_state_change(): pause → flush() pending segments         │
-└──────────────────────────────────────────────────────────────────────────┘
-        │
-        │  GrowingWindowAssembler (NO THREAD - synchronous calls from SoundPreProcessor)
-        │  ├─→ Appends segment to growing window buffer
-        │  ├─→ Enforces max_window_duration (drops oldest segments if needed)
-        │  ├─→ Creates incremental AudioSegment (entire window each time)
-        │  │     └─→ type='incremental'
-        │  │     └─→ chunk_ids=[id1, id2, id3, ...]  (merged IDs)
-        │  └─→ speech_queue.put(incremental_window)
-        │
-        ↓
-┌──────────────────────────────────────────────────────────────────────────┐
-│  Queue: speech_queue (maxsize=200)                                       │
-│  Data Type: AudioSegment (dataclass)                                     │
-│    - type: 'incremental' | 'flush'                                       │
-│    - data: npt.NDArray[np.float32] (speech chunks only)                  │
-│    - left_context: npt.NDArray[np.float32] (pre-speech audio)            │
-│    - right_context: npt.NDArray[np.float32] (always empty from SPP)      │
-│    - start_time: float                                                   │
-│    - end_time: float                                                     │
-│    - chunk_ids: list[int]                                                │
-└──────────────────────────────────────────────────────────────────────────┘
-        │
-        ├─ Preliminary AudioSegment (instant, low-quality)
-        │  Finalized AudioSegment (delayed, high-quality)
-        ↓
-┌──────────────────────────────────────────────────────────────────────────┐
-│  TIER 3: Speech Recognition                                              │
-│  Thread: Recognizer (daemon)                                             │
-├──────────────────────────────────────────────────────────────────────────┤
-│  Recognizer.process()                                                    │
-│    ├─→ speech_queue.get(timeout=0.1)                                    │
-│    ├─→ Context-aware recognition:                                       │
-│    │     ├─→ Concatenate: left_context + data + right_context           │
-│    │     ├─→ Recognize with timestamps (TimestampedResultsAsrAdapter)   │
-│    │     └─→ Filter tokens by timestamp (exclude context hallucinations)│
-│    │         └─→ Keep only tokens within data boundaries                │
-│    │         └─→ 0.37s tolerance for VAD warm-up delay                  │
-│    │                                                                      │
-│    ├─→ Parakeet ONNX Model (nemo-parakeet-tdt-0.6b-v3)                 │
-│    │     └─→ audio + context → text recognition with timestamps         │
-│    │                                                                      │
-│    └─→ Emits protocol messages                                           │
-│          └─→ RecognitionTextMessage(result, message_id)                 │
-│          └─→ RecognizerAck(message_id, ok/error)                        │
-└──────────────────────────────────────────────────────────────────────────┘
-        │
-        ├─ RecognitionTextMessage / RecognizerAck
-        ↓
-┌──────────────────────────────────────────────────────────────────────────┐
-│  Queue: recognizer_output_queue (maxsize=50)                             │
-│  Data Type: RecognitionTextMessage | RecognizerAck                       │
-└──────────────────────────────────────────────────────────────────────────┘
-        │
-        ↓
-┌──────────────────────────────────────────────────────────────────────────┐
-│  TIER 4: Text Processing + Display (MVC + Observer Pattern)             │
-│  Thread: TextMatcher (daemon)                                            │
-├──────────────────────────────────────────────────────────────────────────┤
-│  TextMatcher.process()                                                   │
-│    ├─→ text_queue.get(timeout=0.1)                                      │
-│    ├─→ Routes by message type:                                          │
-│    │                                                                      │
-│    ├─ TEXT PATH (recognition messages):                                 │
-│    │   └─→ process_item()                                               │
-│    │       └─→ publisher.publish_partial_update(result)  [publishes]    │
-│    │           └─→ RecognitionResultPublisher notifies subscribers      │
-│    │               └─→ TextFormatter.on_partial_update(result)          │
-│    │                   └─→ _calculate_partial_update() → DisplayInstructions │
-│    │                       └─→ display.apply_instructions(instructions) │
-│    │                           └─→ Thread-safe: schedules on main thread│
-│    │                                                                      │
-│    ├─ FINAL PATH (3s sliding windows):                                  │
-│    │   └─→ process_finalized()                                          │
-│    │       ├─→ Duplicate detection (time + normalized text)             │
-│    │       ├─→ resolve_overlap() - handles windowed text overlaps       │
-│    │       │     └─→ Uses TextNormalizer for fuzzy matching             │
-│    │       │     └─→ Finds longest common subsequence                   │
-│    │       └─→ publisher.publish_finalization(finalized_result)         │
-│    │           └─→ RecognitionResultPublisher notifies subscribers      │
-│    │               └─→ TextFormatter.on_finalization(result)            │
-│    │                   └─→ _calculate_finalization() → DisplayInstructions │
-│    │                       └─→ display.apply_instructions(instructions) │
-│    │                           └─→ Thread-safe: schedules on main thread│
-│    │                                                                      │
-│    └─ BOUNDARY PATH (SpeechEndSignal):                                  │
-│        └─→ process_speech_end()                                         │
-│            └─→ publisher.publish_finalization(pending_result)           │
+│  AudioBridge daemon thread (ClientApp-AudioBridge)                        │
+│    ← chunk_queue.get(timeout=0.05)                                        │
+│    → WsClientTransport.send_audio_chunk(chunk)                            │
+│      → WsAudioFrame encode → loop.call_soon_threadsafe → asyncio.Queue   │
 │                                                                           │
-│  TextMatcher.finalize_pending()                                          │
-│    └─→ Called by Pipeline.stop() to flush remaining partial text        │
-│        └─→ publisher.publish_finalization(previous_result)              │
+│  WsClientTransport asyncio loop (daemon thread)                          │
+│    _drain_loop: asyncio.Queue → websocket.send(bytes) → server            │
+│    _receive_loop: websocket text frames → RemoteRecognitionPublisher      │
 │                                                                           │
-│  RecognitionResultPublisher (observer pattern, no thread):               │
-│    ├─→ subscribe(subscriber) - register TextRecognitionSubscriber       │
-│    ├─→ unsubscribe(subscriber) - unregister subscriber                  │
-│    ├─→ publish_partial_update(result) - notify all subscribers          │
-│    │     └─→ Thread-safe: copy subscriber list under lock               │
-│    │         └─→ Call subscriber.on_partial_update(result)              │
-│    │             └─→ Error isolation: exceptions logged, don't affect others │
-│    ├─→ publish_finalization(result) - notify all subscribers            │
-│    │     └─→ Thread-safe: copy subscriber list under lock               │
-│    │         └─→ Call subscriber.on_finalization(result)                │
-│    │             └─→ Error isolation: exceptions logged, don't affect others │
-│    └─→ Subscribers: TextFormatter (GUI), Future: APISubscriber, etc.    │
+│  RemoteRecognitionPublisher (no thread)                                   │
+│    ← JSON WsRecognitionResult frame                                       │
+│    → RecognitionResultFanOut.publish_partial_update / publish_finalization│
 │                                                                           │
-│  TextFormatter (controller + subscriber, no thread):                     │
-│    ├─→ Implements TextRecognitionSubscriber protocol                    │
-│    ├─→ on_partial_update(result) → partial_update(result)               │
-│    │     └─→ _calculate_partial_update() → DisplayInstructions          │
-│    │         └─→ display.apply_instructions()                           │
-│    ├─→ on_finalization(result) → finalization(result)                   │
-│    │     └─→ _calculate_finalization() → DisplayInstructions            │
-│    │         └─→ display.apply_instructions() (if not duplicate)        │
-│    └─→ State: preliminary_results, finalized_chunk_ids, finalized_text  │
+│  RecognitionResultFanOut (no thread)                                      │
+│    → TextFormatter.on_partial_update / on_finalization                    │
+│    → TextInsertionService                                                 │
+│    → QuickEntrySubscriber                                                 │
 │                                                                           │
-│  TextDisplayWidget (view, technical layer):                             │
-│    ├─→ apply_instructions(instructions) - thread-safe entry point       │
-│    │     └─→ Checks thread: main? direct call : root.after()            │
-│    │         └─→ _apply_instructions_safe() - renders to widget         │
-│    └─→ Handles GUI rendering + thread-safety internally                 │
+│  TextFormatter (no thread, MVC controller)                                │
+│    → DisplayInstructions → TextDisplayWidget.apply_instructions()         │
+│                                                                           │
+│  TextDisplayWidget (no thread, schedules on main thread via root.after()) │
+│  Main thread: Tk mainloop()                                               │
 └──────────────────────────────────────────────────────────────────────────┘
-        │
-        ├─ Observer Pattern: TextMatcher → RecognitionResultPublisher → Subscribers
-        ├─ MVC Pattern: TextFormatter → TextDisplayWidget
-        ↓
-   Tkinter GUI Window (main thread)
+```
+
+### Process Startup Sequence
+
+```
+main.py
+  → ServerApp.start()
+      → WsServer: asyncio loop binds port P (OS-assigned)
+      → RecognizerService.start() (inference daemon thread)
+  → subprocess.Popen(["python", "src/client/client.py", "--server-url=ws://127.0.0.1:P"])
+  → daemon watcher thread: client_proc.wait() → server_app.stop()
+
+src/client/client.py
+  → LoadingWindow displayed
+  → websockets.connect(ws://127.0.0.1:P) [handshake]
+  → reads session_created JSON frame
+  → ClientApp.from_session_created(server_url, session_created_json, config)
+  → transport._loop = asyncio_loop  (set after WsClientTransport._run_loop starts)
+  → client_app.start() → app_state="running", AudioBridge starts, AudioSource starts
+  → root.mainloop()
 ```
 
 ---
 
 ## Threading Model
 
-### Thread Overview
+### Server Process Threads
 
 | Component | Thread Type | Purpose | Blocking Operations |
-|-----------|-------------|---------|---------------------|
-| **AudioSource** | Daemon (sounddevice callback) | Captures microphone input only | `chunk_queue.put_nowait()` (non-blocking, drops if full) |
-| **SoundPreProcessor** | Daemon | VAD processing, RMS normalization, speech buffering | `chunk_queue.get(timeout=0.1)`, `speech_queue.put()` |
-| **GrowingWindowAssembler** | **NO THREAD** | Assembles segments into growing windows (max `max_window_duration`, sliding drop) | Called synchronously by SoundPreProcessor |
-| **Recognizer** | Daemon | Runs STT model on audio segments | `speech_queue.get(timeout=0.1)`, model inference |
-| **TextMatcher** | Daemon | Routes preliminary/finalized, overlap resolution, publishes results | `text_queue.get(timeout=0.1)`, calls publisher methods |
-| **RecognitionResultPublisher** | **NO THREAD** | Observer pattern publisher (manages subscribers) | Called by TextMatcher, notifies subscribers with thread-safe copy |
-| **TextFormatter** | **NO THREAD** | Formatting logic (controller + subscriber) | Implements TextRecognitionSubscriber protocol, triggers display updates |
-| **TextDisplayWidget** | **NO THREAD** | GUI rendering (view) + thread-safety | Called by TextFormatter, schedules on main thread |
-| **ApplicationState** | **NO THREAD** | Shared state manager (dependency injection) | Thread-safe mutations via `threading.Lock` |
-| **PauseController** | **NO THREAD** | MVC controller (called by ControlPanel) | Updates ApplicationState only |
-| **ControlPanel** | **NO THREAD** | GUI widget (runs on main thread) | Observes ApplicationState, delegates to controller |
-| **Main Thread** | Main | Runs Tkinter event loop | `root.mainloop()` |
+|---|---|---|---|
+| **WsServer** | Daemon (asyncio event loop) | Accept WS connections; run session handler coroutines | `asyncio.sleep()`, WS I/O |
+| **WsAudioReceiver** | Async coroutine (WsServer loop) | Decode binary frames → `chunk_queue` per session | `websocket.__aiter__()` |
+| **WsResultSender._drain_loop** | Async task (WsServer loop, per session) | Drain bounded queue → `websocket.send()` | `asyncio.Queue.get()`, `websocket.send()` |
+| **RecognizerService** | Daemon (one, shared) | Sequential ASR inference; route results by session_index | `input_queue.get(timeout=0.1)`, `recognize_window()` |
+| **SoundPreProcessor** | Daemon (per session) | VAD, RMS normalization, speech buffering | `chunk_queue.get(timeout=0.1)`, `speech_queue.put()` |
+| **GrowingWindowAssembler** | **No thread** | Grow recognition windows (sync call from SPP) | Called synchronously by SoundPreProcessor |
+| **SpeechEndRouter** | Daemon (per session) | Assign message IDs; enforce in-flight ordering | `speech_queue.get(timeout=0.1)`, `recognizer_output_queue.get()` |
+| **IncrementalTextMatcher** | Daemon (per session) | Overlap resolution; publish via WsResultSender | `matcher_queue.get(timeout=0.1)` |
+| **SessionManager** | **No thread** | Creates/destroys ClientSession on connect/disconnect; observes ServerApplicationState | — |
+| **ServerApplicationState** | **No thread** | Thread-safe state; 3 states | `threading.Lock` |
 
-### Thread Communication
+### Client Process Threads
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  THREAD COMMUNICATION DIAGRAM                                            │
-└─────────────────────────────────────────────────────────────────────────┘
+| Component | Thread Type | Purpose | Blocking Operations |
+|---|---|---|---|
+| **Main thread** | Main | Tkinter event loop | `root.mainloop()` |
+| **AudioSource** | Daemon (sounddevice callback) | Capture 32ms mic frames; put to chunk_queue | `chunk_queue.put_nowait()` (non-blocking, drops if full) |
+| **AudioBridge** (`ClientApp-AudioBridge`) | Daemon | Drain AudioSource.chunk_queue → WsClientTransport | `chunk_queue.get(timeout=0.05)` |
+| **WsClientTransport** | Daemon (asyncio event loop) | Send binary audio frames; receive JSON result frames | WS I/O |
+| **WsClientTransport._drain_loop** | Async task (transport loop) | asyncio.Queue → `websocket.send(bytes)` | `asyncio.Queue.get()`, `websocket.send()` |
+| **WsClientTransport._receive_loop** | Async task (transport loop) | `websocket.__aiter__()` → `RemoteRecognitionPublisher.dispatch()` | WS receive |
+| **RemoteRecognitionPublisher** | **No thread** | Decode JSON frames → RecognitionResultFanOut | — |
+| **RecognitionResultFanOut** | **No thread** | Fan-out to subscribers; thread-safe copy-on-notify | — |
+| **TextFormatter** | **No thread** | Formatting logic (MVC controller + subscriber) | — |
+| **TextDisplayWidget** | **No thread** | GUI rendering; schedules on main thread via `root.after()` | — |
+| **ClientApplicationState** | **No thread** | Full 4-state machine; GUI + component observers | `threading.Lock` |
+| **PauseController** | **No thread** | Updates ClientApplicationState only | — |
 
-Main Thread        AudioSource Thread    SoundPreProcessor Thread    Recognizer Thread
-    │                     │                        │                         │
-    │ start()             │                        │                         │
-    ├────────────────────→│                        │                         │
-    │                     │ start()                │                         │
-    │                     ├───────────────────────→│                         │
-    │                     │                        │ start()                 │
-    │                     │                        ├────────────────────────→│
-    │                     │                        │                         │
-    │                     │ audio_callback()       │                         │
-    │                     │   └─→ chunk_queue      │                         │
-    │                     │       .put_nowait()    │                         │
-    │                     │       (raw dict)       │                         │
-    │                     │                        │                         │
-    │                     │      chunk_queue       │                         │
-    │                     │   ──────────────────→  │                         │
-    │                     │                        │ process()               │
-    │                     │                        │  ├─→ get raw chunk      │
-    │                     │                        │  ├─→ normalize_rms()    │
-    │                     │                        │  ├─→ VAD.process_frame()│
-    │                     │                        │  ├─→ buffering logic    │
-    │                     │                        │  ├─→ finalize_segment() │
-    │                     │                        │  │   └─→ speech_queue   │
-    │                     │                        │  │       .put(prelim)   │
-    │                     │                        │  └─→ windower.process() │
-    │                     │                        │      └─→ speech_queue   │
-    │                     │                        │          .put(finalized)│
-    │                     │                        │                         │
-    │                     │                        │      speech_queue       │
-    │                     │                        │   ──────────────────→   │
-    │                     │                        │                         │ process()
-    │                     │                        │                         │  ├─→ get segment
-    │                     │                        │                         │  ├─→ recognize
-    │                     │                        │                         │  └─→ text_queue.put()
-    │                     │                        │                         │
-    │                     │                        │                         ↓
-    │                   TextMatcher Thread                            GUI Main Thread
-    │                         │                                             │
-    │                         │ process()                                   │ mainloop()
-    │                         │  ├─→ get result                            │
-    │                         │  ├─→ route by type                          │
-    │                         │  ├─→ preliminary:                           │
-    │                         │  │   publisher.publish_partial_update()     │
-    │                         │  │     └─→ formatter.on_partial_update()    │
-    │                         │  │         └─→ display.apply_instructions()─→│ root.after()
-    │                         │  └─→ finalized:                             │
-    │                         │      ├─resolve_overlap                      │
-    │                         │      └─publisher.publish_finalization()     │
-    │                         │          └─→ formatter.on_finalization()    │
-    │                         │              └─→ display.apply_instructions()→│ root.after()
-    │                         │                                             │
-    │                         │      ApplicationState.set_state('paused')   │
-    │                         │   ─────────────────────────────────────────→│
-    │                         │                                             │
-    │                         │   ← Notify observers ──┤                   │
-    │                         │     ├─ AudioSource.on_state_change()        │
-    │                         │     │   └─ stream.close()                   │
-    │                         │     └─ SoundPreProcessor.on_state_change()  │
-    │                         │         └─ flush()                          │
-    │                         │                                             │
-    │ stop()                  │                                             │
-    ├─────────────────────────┤                                             │
-    │  ├─→ audio_source.stop()│                                             │
-    │  ├─→ sound_preprocessor.stop()                                        │
-    │  ├─→ recognizer.stop()  │                                             │
-    │  ├─→ text_matcher.finalize_pending()                                  │
-    │  └─→ text_matcher.stop()│                                             │
-    │                         │                                             │
-```
+---
+
+## Application State
+
+### ServerApplicationState
+
+**File:** `src/ServerApplicationState.py`
+
+**Responsibility:** Server lifecycle management — no GUI, no `paused` state.
+
+**State machine:** `starting → running → shutdown`
+
+**Observer types:** Component observers only (called directly; no `root.after()` scheduling).
+
+**Observed by:** `RecognizerService` (stops inference thread on shutdown), `SessionManager` (closes all sessions on shutdown), `SoundPreProcessor` and `SpeechEndRouter` per session (stop on shutdown).
+
+### ClientApplicationState
+
+**File:** `src/client/tk/ClientApplicationState.py`
+
+**Responsibility:** Full client lifecycle including pause/resume.
+
+**State machine:** `starting → running ⟷ paused → shutdown`
+
+**Observer types:** Component observers (AudioSource, AudioBridge) and GUI observers (ControlPanel; scheduled via `root.after()`).
+
+**Observed by:** `AudioSource` (closes stream on pause, reopens on resume), `WsClientTransport` (transitions to shutdown on connection loss), `ControlPanel` (updates button state).
 
 ---
 
 ## Data Flow with Types
 
-### Type Definitions (`src/types.py`)
+### Pipeline Types (`src/types.py`)
 
 ```python
 @dataclass
 class AudioSegment:
-    """Unified type for incremental/finalized audio segments + flush signals"""
-    type: Literal['incremental', 'finalized', 'flush']  # Discriminator
-    data: npt.NDArray[np.float32]              # Audio samples [-1.0, 1.0], all buffered audio
-    left_context: npt.NDArray[np.float32]      # Pre-speech context audio
-    right_context: npt.NDArray[np.float32]     # Always empty from SPP (hard-cut model)
-    start_time: float                           # Segment start (seconds, data only)
-    end_time: float                             # Segment end (seconds, data only)
-    chunk_ids: list[int]                        # Tracking IDs
-
-    # incremental: chunk_ids = [id1, id2, ...]  (hard-cut segments mid-utterance)
-    # finalized:   chunk_ids = [id1, id2, id3, ...]  (aggregated windows)
-    # flush:       chunk_ids = [last_id]  (end-of-segment signal with final chunk ID)
-
-    # Note: AudioSegment.__post_init__ validates len(chunk_ids) >= 1
+    type: Literal['incremental']
+    data: npt.NDArray[np.float32]       # Speech audio samples
+    left_context: npt.NDArray[np.float32]
+    right_context: npt.NDArray[np.float32]  # Always empty from SoundPreProcessor
+    start_time: float
+    end_time: float
+    chunk_ids: list[int]
+    message_id: int | None = None        # Set by SpeechEndRouter
+    utterance_id: int = 0               # Set by SpeechEndRouter
 
 @dataclass
 class RecognitionResult:
-    """Speech recognition output with timing and context-filtered text"""
-    text: str                    # Recognized text (tokens filtered by timestamp)
-    start_time: float            # Recognition start
-    end_time: float              # Recognition end
-    chunk_ids: list[int]         # Tracking IDs from AudioSegment
+    text: str
+    start_time: float
+    end_time: float
+    chunk_ids: list[int]
+    utterance_id: int = 0
+    confidence: float = 0.0
+    token_confidences: list[float]
+    audio_rms: float = 0.0
+    confidence_variance: float = 0.0
 ```
 
-### Data Transformation Flow
+Also: `SpeechEndSignal`, `RecognitionTextMessage(result, message_id)`, `RecognizerAck(message_id, ok, error)`, `RecognizerFreeSignal`.
+
+### Wire Protocol Types (`src/network/types.py`)
+
+See [Network Protocol (v1)](#network-protocol-v1) above. Key types: `WsAudioFrame`, `WsControlCommand`, `WsSessionCreated`, `WsRecognitionResult`, `WsSessionClosed`, `WsError`.
+
+### Server-Side Data Transformation
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  DATA TRANSFORMATION PIPELINE                                            │
-└─────────────────────────────────────────────────────────────────────────┘
+WsAudioReceiver (async)
+  ← binary WsAudioFrame
+  → dict {audio: ndarray, timestamp: float, chunk_id: int} → chunk_queue
 
-Raw Audio Frame - AudioSource
-  └─→ dict: {audio, timestamp, chunk_id}
-        │
-        ↓ chunk_queue
-        │
 SoundPreProcessor
-  ├─→ RMS Normalization + VAD Processing
-  ├─→ Context Buffer (20 chunks = 640ms)
-  └─→ Speech Buffering (3-chunk confirmation)
-        │
-        ↓ Segment Finalization
-        │
-AudioSegment (incremental)
-  └─→ type='incremental', data + left_context (right_context always empty)
-  └─→ chunk_ids: [42, 43, 44]
-        │
-        └─→ GrowingWindowAssembler.process_segment() (sync)
-              │
-              ↓ Growing Window (up to max_window_duration=7s, sliding)
-              │
-        AudioSegment (incremental window)
-          └─→ type='incremental', data (entire growing window)
-          └─→ chunk_ids: [42, ..., 94] (merged)
-                │
-                ↓ speech_queue
-                │
-        Recognizer
-          ├─→ Concatenate contexts
-          ├─→ Recognize with timestamps
-          └─→ Filter tokens by timestamp
-                │
-                ↓
-        RecognitionResult
-          └─→ text: "hello world"
-          └─→ chunk_ids: [42, 43, 44]
-                │
-                ↓ matcher_queue (via router)
-                │
-        TextMatcher
-          ├─→ Preliminary: publish_partial_update()
-          └─→ Final: resolve_overlap() → publish_finalization()
-                │
-                ↓ RecognitionResultPublisher
-                │
-        TextFormatter (subscriber)
-          └─→ Calculate DisplayInstructions
-                │
-                ↓
-        TextDisplayWidget
-          └─→ Thread-safe render to tkinter
+  → RMS normalization + VAD → context buffering → speech buffering
+  → GrowingWindowAssembler.process_segment() [sync]
+      → AudioSegment (type='incremental', growing window) → speech_queue
+  → SpeechEndSignal → speech_queue (utterance boundary)
+
+SpeechEndRouter
+  → AudioSegment: assigns message_id, puts on RecognizerService.input_queue
+  → SpeechEndSignal: held until matching RecognizerAck received
+
+RecognizerService
+  → recognize_window(segment) → optional RecognitionResult
+  → RecognitionTextMessage + RecognizerAck → session recognizer_output_queue
+
+SpeechEndRouter (from recognizer_output_queue)
+  → RecognitionResult → matcher_queue
+  → SpeechEndSignal released → matcher_queue
+  → RecognizerFreeSignal → control_queue (unblocks SoundPreProcessor)
+
+IncrementalTextMatcher
+  → overlap resolution, duplicate detection
+  → WsResultSender.publish_partial_update(result)
+  → WsResultSender.publish_finalization(result)
+
+WsResultSender
+  → encode as WsRecognitionResult JSON
+  → asyncio.Queue(20) → websocket.send() → client
+```
+
+### Client-Side Data Transformation
+
+```
+AudioSource callback
+  → dict {audio: ndarray, timestamp: float, chunk_id: int} → chunk_queue
+
+AudioBridge drain thread
+  → WsClientTransport.send_audio_chunk(chunk)
+      → WsAudioFrame encode → asyncio.Queue(20) → websocket.send(bytes)
+
+WsClientTransport receive loop
+  ← JSON text frame (WsRecognitionResult)
+  → RemoteRecognitionPublisher.dispatch(json_text)
+
+RemoteRecognitionPublisher
+  → RecognitionResult decode → RecognitionResultFanOut.publish_partial_update / publish_finalization
+
+RecognitionResultFanOut → TextFormatter → DisplayInstructions → TextDisplayWidget → tkinter
 ```
 
 ---
@@ -502,249 +415,368 @@ Uses **Strategy Pattern** for hardware-specific ONNX Runtime optimizations.
 
 ---
 
-### ApplicationState (State Manager)
+### ServerApp
 
-**File:** `src/ApplicationState.py`
+**File:** `src/server/ServerApp.py`
 
-**Responsibility:** Central state manager with observer pattern for pause/resume
-
-**State Machine:** `starting → running ⟷ paused → shutdown`
-
-**Observer Types:**
-- **Component observers**: Called directly (AudioSource, SoundPreProcessor)
-- **GUI observers**: Scheduled via `root.after()` for thread safety (ControlPanel)
-
-**Thread Safety:** Lock-protected state mutations, observers notified outside lock to prevent deadlocks
+**Responsibility:** Top-level server orchestrator. Creates `WsServer` and `RecognizerService`, manages server lifecycle, exposes `start()` / `stop()`.
 
 ---
 
-### PauseController (MVC Controller)
+### WsServer
 
-**File:** `src/controllers/PauseController.py`
+**File:** `src/server/WsServer.py`
 
-**Responsibility:** Minimal controller that ONLY updates ApplicationState (proper MVC separation)
-
-**Methods:** `pause()`, `resume()`, `toggle()` with guarded state transitions
+**Responsibility:** WebSocket server lifecycle. Runs `websockets.serve()` on a dedicated asyncio event loop daemon thread. On each new connection, delegates to `SessionManager.handle_connection()`.
 
 ---
 
-### ControlPanel (GUI Widget)
+### SessionManager
 
-**File:** `src/gui/ControlPanel.py`
+**File:** `src/server/SessionManager.py`
 
-**Responsibility:** Pause/Resume button widget observing ApplicationState
+**Responsibility:** Session allocation and lifecycle management.
 
-**Behavior:** Updates button text/state based on application state ("Loading..." → "Pause" → "Resume"), delegates clicks to PauseController
+**Behavior:**
+- Maintains a 1-based atomic `session_index` counter (protected by `threading.Lock`).
+- On connect: creates `ClientSession`, calls `session.start()`, sends `WsSessionCreated` JSON frame.
+- On disconnect or shutdown command: calls `session.close()`.
+- Observes `ServerApplicationState`: on `shutdown` closes all active sessions.
 
 ---
 
-### 1. AudioSource
+### ClientSession
 
-**Responsibility:** Capture 32ms audio frames (16kHz, 512 samples) from microphone
+**File:** `src/server/ClientSession.py`
 
-**Output:** Raw audio dicts `{audio, timestamp, chunk_id}` → `chunk_queue`
+**Responsibility:** Owns and orchestrates all per-client pipeline components and queues.
 
-**Design:** Non-blocking callback (<1ms) prevents buffer overflows
+**Queues (all `maxsize=100`):** `chunk_queue`, `speech_queue`, `recognizer_output_queue`, `matcher_queue`, `control_queue`.
 
-**Observer Behavior:** On pause: close stream (release microphone). On resume: create fresh stream
+**`start()` order:** register with `RecognizerService` → `WsResultSender.start()` → `SoundPreProcessor.start()` → `SpeechEndRouter.start()` → `IncrementalTextMatcher.start()`.
 
-### 2. SoundPreProcessor
+**`close()` order:** `SoundPreProcessor.stop()` → `SpeechEndRouter.stop()` + join → `IncrementalTextMatcher.stop()` + join → `WsResultSender.stop()` → unregister from `RecognizerService`.
 
-**Responsibility:** VAD processing, RMS normalization, context-aware speech buffering, windower orchestration
+---
 
-**Key Features:**
-- **RMS Normalization**: Temporal smoothing (AGC) before VAD
-- **Context Buffer**: 20-chunk circular buffer (640ms) captures left/right context for better STT
-- **Consecutive Speech Logic**: 3-chunk confirmation prevents false positives
-- **Intelligent Breakpoint Splitting**: Backward search for natural silence boundaries when max duration reached
-- **Observer Behavior**: On pause: flush pending segments to windower
+### RecognizerService
 
-**Input:** Raw audio dicts from `chunk_queue`
-**Output:** Preliminary AudioSegments with context → `speech_queue`
-**Side Effect:** Synchronously calls `windower.process_segment()` for finalized windows
+**File:** `src/server/RecognizerService.py`
 
-### 3. GrowingWindowAssembler (NO THREAD)
+**Responsibility:** Single shared ASR inference thread; session-prefixed result routing.
 
-**Responsibility:** Assemble speech segments into growing recognition windows
+**Thread loop:**
+1. `input_queue.get(timeout=0.1)` — blocks until `AudioSegment` arrives.
+2. `recognizer.recognize_window(segment)` — the long blocking inference call.
+3. `session_index = segment.message_id // 10_000_000`
+4. Routes `RecognitionTextMessage` (if result non-None) + `RecognizerAck` (always) to `session_output_queues[session_index].put_nowait()`. Drops and logs if session is no longer registered.
 
-**Strategy:**
-- Each new segment extends the current window (emit as `type='incremental'`)
-- Windows grow up to `max_window_duration` (e.g. 7 seconds)
-- When max duration exceeded, oldest segments are dropped (sliding window)
-- Flush emits remaining segments as final incremental window with right context
+Observes `ServerApplicationState`; stops inference thread on `shutdown`.
 
-**Called synchronously by:** SoundPreProcessor
-**Output:** Incremental AudioSegments → `speech_queue`
+---
 
-### 4. Recognizer
+### WsAudioReceiver
 
-**Responsibility:** Convert audio to text using hardware-accelerated STT model
+**File:** `src/server/WsAudioReceiver.py`
 
-**Model:** Parakeet ONNX (nemo-parakeet-tdt-0.6b-v3, FP16) with `TimestampedResultsAsrAdapter`
+**Responsibility:** Async coroutine; bridges WebSocket binary frames to the synchronous `chunk_queue`.
 
-**Hardware Acceleration:** DirectML GPU (auto-select) → CPU fallback (see Hardware Acceleration Architecture)
+**Behavior:**
+- Iterates the WebSocket for binary frames; decodes each as `WsAudioFrame` using `decode_audio_frame()`.
+- Puts `{audio, timestamp, chunk_id}` dict onto `ClientSession.chunk_queue` via `put_nowait()`.
+- If `chunk_queue` is full: sends `WsError(BACKPRESSURE_DROP)` and continues (non-fatal).
+- Text frames decoded as `WsControlCommand`; `"shutdown"` command triggers session close.
+- `ConnectionClosed`: exits cleanly.
 
-**Context-Aware Recognition:**
-- Concatenates left_context + data (right_context always empty from SPP) for better acoustic modeling
-- Filters tokens by timestamp to remove hallucinations from context regions
-- 0.37s tolerance for VAD warm-up delay
-- Benefits: Better short-word recognition (50-128ms), eliminates silence padding artifacts
+---
 
-**Input:** AudioSegments from `speech_queue`
-**Output:** `RecognitionTextMessage` + terminal `RecognizerAck` via recognizer output queue
+### WsResultSender
 
-### 5. TextMatcher
+**File:** `src/server/WsResultSender.py`
 
-**Responsibility:** Handle overlapping text from sliding windows, publish results via Observer pattern
+**Responsibility:** Sync-to-async bridge; implements `RecognitionResultPublisher` protocol.
 
-**Key Features:**
-- Overlap resolution using normalized text matching and longest common subsequence
-- Duplicate detection (0.6s time threshold, normalized text comparison)
-- Routes by message type: `RecognitionResult` overlap handling and `SpeechEndSignal` boundary finalization
+**Design:** Holds a bounded `asyncio.Queue(maxsize=20)`. A single async drain task (`_drain_loop`) calls `await websocket.send(encoded)`. Sync callers (`publish_partial_update`, `publish_finalization`) use `loop.call_soon_threadsafe(queue.put_nowait, encoded)`. If queue is full, the item is dropped and logged (backpressure; no priority discrimination).
 
-**Input:** RecognitionResults from `text_queue`
-**Output:** Publishes to `RecognitionResultPublisher` → notifies all subscribers
+---
 
-### 6. RecognitionResultPublisher (Observer Pattern)
+### ClientApp
+
+**File:** `src/client/tk/ClientApp.py`
+
+**Responsibility:** Wires all client-side components; factory via `from_session_created()`.
+
+**Construction order:** `ClientApplicationState` → `RecognitionResultFanOut` → `TextInsertionService` → `PauseController` → `ApplicationWindow` → subscribe `TextFormatter` to fan-out → `RemoteRecognitionPublisher` → `WsClientTransport` → `AudioSource`.
+
+**`start()`:** Transitions state to `running`, starts `AudioBridge` daemon thread, starts `AudioSource`.
+
+**AudioBridge (`ClientApp-AudioBridge`):** Daemon thread that drains `AudioSource.chunk_queue` and calls `transport.send_audio_chunk(chunk)`. Fully decouples the sync sounddevice callback from the async transport internals.
+
+---
+
+### WsClientTransport
+
+**File:** `src/client/tk/WsClientTransport.py`
+
+**Responsibility:** Async WebSocket transport on a daemon asyncio event loop thread.
+
+**Outbound:** Sync `send_audio_chunk(chunk)` encodes a `WsAudioFrame` and calls `loop.call_soon_threadsafe(queue.put_nowait, encoded)`. Async `_drain_loop` task drains to `websocket.send(bytes)`. Drops and logs if queue (maxsize=20) is full.
+
+**Inbound:** Async `_receive_loop` iterates websocket text frames and calls `publisher.dispatch(text)`. On `ConnectionClosed`: transitions `ClientApplicationState` to `shutdown`, which stops `AudioSource` and exits the Tk main loop.
+
+---
+
+### RemoteRecognitionPublisher
+
+**File:** `src/client/tk/RemoteRecognitionPublisher.py`
+
+**Responsibility:** Decodes incoming JSON text frames from the server and dispatches to the local publisher.
+
+**Behavior:** `dispatch(json_text)` parses the frame type; routes `recognition_result` frames (partial + final) to `RecognitionResultFanOut`. Unknown types are logged and skipped without raising.
+
+---
+
+### RecognitionResultFanOut
+
+**File:** `src/client/tk/RecognitionResultFanOut.py`
+
+**Responsibility:** Concrete client-side implementation of the `RecognitionResultPublisher` protocol. Manages subscriber list and fan-out.
+
+**Thread safety:** Copy-on-notify pattern (lock-protected list, callbacks outside lock). Subscriber exceptions are logged and isolated — one failing subscriber does not affect others.
+
+**Subscribers:** `TextFormatter` (GUI display), `TextInsertionService` (keyboard insertion), `QuickEntrySubscriber` (quick-entry popup).
+
+---
+
+### RecognitionResultPublisher (Protocol)
 
 **File:** `src/RecognitionResultPublisher.py`
 
-**Responsibility:** Manage subscribers and publish text recognition events
+**Responsibility:** Structural protocol defining the publisher interface. Any object with `publish_partial_update()` and `publish_finalization()` satisfies it.
 
-**Protocol:** Subscribers implement `TextRecognitionSubscriber` (`on_partial_update()`, `on_finalization()`)
+```python
+@runtime_checkable
+class RecognitionResultPublisher(Protocol):
+    def publish_partial_update(self, result: RecognitionResult) -> None: ...
+    def publish_finalization(self, result: RecognitionResult) -> None: ...
+```
 
-**Thread Safety:** Copy-on-notify pattern (lock-protected list, callbacks outside lock), error isolation per subscriber
+**Implementations:**
+- `WsResultSender` (server): encodes results as JSON and sends over WebSocket.
+- `RecognitionResultFanOut` (client): fans out to local subscribers.
 
-**Subscribers:** TextFormatter (GUI), Future: APISubscriber, VoiceInputWriter, CommandAgent
+---
 
-### 7. TextFormatter (MVC Controller + Subscriber)
+### AudioSource
 
-**File:** `src/gui/TextFormatter.py`
+**File:** `src/client/tk/sound/AudioSource.py`
 
-**Responsibility:** Text formatting logic (NO GUI knowledge), implements `TextRecognitionSubscriber`
+**Responsibility:** Capture 32ms audio frames (16 kHz, 512 samples) from microphone. **Client-side only.**
 
-**Logic:**
-- Calculates DisplayInstructions from RecognitionResults
-- Space insertion, paragraph breaks (2.0s threshold), chunk-ID filtering
-- Duplicate detection and prevention
+**Output:** Raw audio dicts `{audio, timestamp, chunk_id}` → `chunk_queue`.
 
-**Output:** Calls `display.apply_instructions()` to trigger GUI updates
+**Observer behavior:** On pause: close stream (release microphone). On resume: create fresh stream.
 
-### 8. TextDisplayWidget (MVC View)
+---
 
-**File:** `src/gui/TextDisplayWidget.py`
+### SoundPreProcessor
 
-**Responsibility:** Render DisplayInstructions to tkinter widget with thread-safety
+**File:** `src/sound/SoundPreProcessor.py`
 
-**Thread-Safety:** Detects calling thread, schedules on main thread via `root.after()` if needed
+**Responsibility:** VAD processing, RMS normalization, context-aware speech buffering, windower orchestration. **Server-side only** — one instance per `ClientSession`.
 
-**Styles:** Final text (black, normal), Partial text (gray, italic)
+**Input:** Audio dicts from `chunk_queue` (fed by `WsAudioReceiver`).
+**Output:** `AudioSegment` + `SpeechEndSignal` → `speech_queue`.
+
+**Key Features:**
+- RMS normalization with temporal AGC before VAD.
+- 20-chunk circular context buffer (640ms) for left context.
+- 3-chunk consecutive speech confirmation prevents false positives.
+- Intelligent breakpoint splitting on max duration reached.
+- Observer behavior: on pause → flush pending segments.
+
+---
+
+### GrowingWindowAssembler
+
+**File:** `src/sound/GrowingWindowAssembler.py`
+
+**Responsibility:** Assemble speech segments into growing recognition windows. **Server-side only** — one instance per `ClientSession`. **No thread** — called synchronously by `SoundPreProcessor`.
+
+**Strategy:** Each segment extends the current window (emits as `type='incremental'`). Windows grow up to `max_window_duration`; oldest segments dropped when exceeded. Flush emits remaining segments with right context.
+
+---
+
+### Recognizer
+
+**File:** `src/asr/Recognizer.py`
+
+**Responsibility:** Convert audio to text using hardware-accelerated STT model. In server mode, `RecognizerService` calls **only** `recognize_window()` — the Recognizer's own thread, input queue, and `app_state` observer are **not used**.
+
+**Model:** Parakeet ONNX (`nemo-parakeet-tdt-0.6b-v3`, FP16) with `TimestampedResultsAsrAdapter`.
+
+**Hardware Acceleration:** DirectML GPU (auto-select) → CPU fallback.
+
+**Context-Aware Recognition:**
+- Concatenates `left_context + data` for better acoustic modeling.
+- Filters tokens by timestamp to exclude context hallucinations.
+- 0.37s tolerance for VAD warm-up delay.
+
+---
+
+### IncrementalTextMatcher
+
+**File:** `src/postprocessing/IncrementalTextMatcher.py`
+
+**Responsibility:** Handle overlapping text from sliding windows; publish results via `RecognitionResultPublisher`. **Server-side only** — one per `ClientSession`. Output goes to `WsResultSender`.
+
+**Key Features:**
+- Overlap resolution using normalized text matching and longest common subsequence.
+- Duplicate detection (0.6s time threshold, normalized text comparison).
+- Routes by message type: `RecognitionResult` for overlap handling; `SpeechEndSignal` for boundary finalization.
+
+---
+
+### ApplicationState / PauseController / ControlPanel
+
+**Files:**
+- `src/ApplicationState.py` — base state class (used by `ClientApplicationState`)
+- `src/client/tk/ClientApplicationState.py` — re-exports `ApplicationState`; full 4-state machine
+- `src/client/tk/controllers/PauseController.py` — MVC controller; only updates `ClientApplicationState`
+- `src/client/tk/gui/ControlPanel.py` — GUI widget; observes `ClientApplicationState`; delegates to `PauseController.toggle()`
+
+**PauseController methods:** `pause()`, `resume()`, `toggle()` with guarded state transitions.
+
+**ControlPanel behavior:** Updates button text/state: `"Loading..." → "Pause" → "Resume"`. Delegates clicks to `PauseController`.
+
+**Pause is client-only:** The server never learns about pause. `AudioSource` stops sending audio; `SoundPreProcessor` goes idle naturally.
+
+---
+
+### TextFormatter
+
+**File:** `src/client/tk/gui/TextFormatter.py`
+
+**Responsibility:** Text formatting logic (MVC controller + subscriber, NO GUI knowledge). **Client-side only.** Implements `TextRecognitionSubscriber` protocol; subscribed to `RecognitionResultFanOut`.
+
+**Logic:** Calculates `DisplayInstructions` from `RecognitionResult`; space insertion, paragraph breaks (2.0s threshold), chunk-ID filtering, duplicate detection.
+
+**Output:** Calls `display.apply_instructions()` to trigger GUI updates.
+
+---
+
+### TextDisplayWidget
+
+**File:** `src/client/tk/gui/TextDisplayWidget.py`
+
+**Responsibility:** Render `DisplayInstructions` to tkinter widget with thread-safety. **Client-side only.**
+
+**Thread-Safety:** Detects calling thread; schedules on main thread via `root.after()` if not already on it.
+
+**Styles:** Final text (black, normal), partial text (gray, italic).
 
 ---
 
 ## Design Principles
 
-### Speech Recognition Pipeline Flow
-
-1. **AudioSource** → captures 32ms frames (non-blocking) → raw audio dict → `chunk_queue`
-2. **SoundPreProcessor** → reads `chunk_queue` → RMS normalization + VAD + buffering → preliminary `AudioSegment` → `speech_queue`
-3. **SoundPreProcessor** → calls **GrowingWindowAssembler** synchronously → emits growing incremental `AudioSegment` → `speech_queue`
-4. **Recognizer** → reads `speech_queue` → processes both preliminary and finalized AudioSegments → `RecognitionResult` → `text_queue`
-5. **TextMatcher** → filters/processes text → publishes via **RecognitionResultPublisher** → notifies subscribers (TextFormatter, etc.)
-
-**Key Architecture:**
-- Two-queue design: `chunk_queue` (raw audio) → `speech_queue` (AudioSegments)
-- AudioSource callback is non-blocking (<1ms) to prevent buffer overflows
-- SoundPreProcessor runs in dedicated thread, handling all audio processing
-- GrowingWindowAssembler is called synchronously by SoundPreProcessor (not a separate thread)
-
 ### 1. Single Responsibility Principle (SRP)
 
 Each component has one clear responsibility:
-- **AudioSource:** Audio capture only (minimal callback)
-- **SoundPreProcessor:** VAD, RMS normalization, speech buffering
-- **GrowingWindowAssembler:** Growing window assembly
-- **Recognizer:** Speech recognition
-- **TextMatcher:** Text processing and overlap resolution (publishes results)
-- **RecognitionResultPublisher:** Subscriber management and event notification (Observer pattern)
-- **TextFormatter:** Formatting logic (MVC controller + subscriber, NO GUI knowledge)
-- **TextDisplayWidget:** GUI rendering + thread-safety (MVC view)
+- **AudioSource**: Mic capture only (non-blocking callback, client-side)
+- **SoundPreProcessor**: VAD, normalization, speech buffering (server-side, per session)
+- **GrowingWindowAssembler**: Growing window assembly (server-side, sync, per session)
+- **RecognizerService**: Shared ASR inference + session routing (server-side, global)
+- **IncrementalTextMatcher**: Text overlap resolution and result publishing (server-side, per session)
+- **RecognitionResultPublisher**: Protocol interface for result delivery
+- **WsResultSender**: Sync-to-async bridge to client WebSocket (server-side)
+- **RecognitionResultFanOut**: Client-side subscriber management and fan-out
+- **TextFormatter**: Formatting logic (client-side MVC controller, no GUI knowledge)
+- **TextDisplayWidget**: GUI rendering + thread-safety (client-side MVC view)
 
 ### 2. Open/Closed Principle (OCP)
 
-Extension without modification via Observer pattern (add new subscribers without changing publisher) and interface-based design
+Extension without modification: add new `RecognitionResultPublisher` implementations (e.g., a logging adapter) or new `TextRecognitionSubscriber` instances without changing existing code.
 
 ### 3. Dependency Inversion Principle (DIP)
 
-Components depend on abstractions (protocols, interfaces) not concrete implementations (e.g., TextRecognitionSubscriber protocol, windower interface)
+Components depend on abstractions: `RecognitionResultPublisher` Protocol (not concrete class), `TextRecognitionSubscriber` Protocol, windower interface. `IncrementalTextMatcher` accepts any object satisfying the protocol.
 
 ### 4. Type Safety
 
-Strongly-typed dataclasses with discriminated unions (`type: 'preliminary' | 'finalized'`) enable compile-time checking
+Strongly-typed dataclasses with discriminated unions enable static checking. Wire types in `src/network/types.py` are separate from internal pipeline types in `src/types.py`.
 
 ### 5. Hardware Abstraction
 
-Strategy Pattern isolates hardware optimizations (IntegratedGPUStrategy, DiscreteGPUStrategy, CPUStrategy) from main pipeline
+Strategy Pattern isolates ONNX Runtime hardware optimizations (`IntegratedGPUStrategy`, `DiscreteGPUStrategy`, `CPUStrategy`) from the recognition pipeline.
 
 ### 6. Observer Pattern for State Management
 
-ApplicationState notifies component observers (AudioSource, SoundPreProcessor) and GUI observers (ControlPanel) independently. PauseController only updates state, components react autonomously. Thread-safe: mutations locked, notifications outside lock.
+`ServerApplicationState` notifies component observers only (no GUI). `ClientApplicationState` notifies component observers (AudioSource) and GUI observers (ControlPanel, scheduled via `root.after()`). `PauseController` only updates state; components react autonomously. Thread-safe: mutations locked, notifications outside lock.
 
-### 7. Observer Pattern for Text Recognition Distribution
+### 7. Observer Pattern → Protocol for Result Distribution
 
-RecognitionResultPublisher decouples TextMatcher from subscribers (TextFormatter, future: APISubscriber). Uses Python Protocol for structural subtyping. Copy-on-notify prevents deadlocks, error isolation per subscriber.
+`RecognitionResultPublisher` is a structural `Protocol` (not a concrete class). `WsResultSender` implements it server-side (sends over WebSocket). `RecognitionResultFanOut` implements it client-side (fans out to local subscribers: TextFormatter, TextInsertionService, QuickEntryService).
 
 ### 8. MVC Pattern for Pause/Resume
 
-**Model**: ApplicationState | **View**: ControlPanel | **Controller**: PauseController (state-only, no component manipulation)
+**Model**: `ClientApplicationState` | **View**: `ControlPanel` | **Controller**: `PauseController` (state-only, no component manipulation)
 
-Flow: `User → View → Controller → Model → Observers → Components`
+Flow: `User → ControlPanel → PauseController → ClientApplicationState → Observers → AudioSource`
 
 ### 9. MVC Pattern for Text Display
 
-**Model**: RecognitionResult | **Controller**: TextFormatter (no GUI knowledge) | **View**: TextDisplayWidget (thread-safe rendering)
+**Model**: `RecognitionResult` | **Controller**: `TextFormatter` (no GUI knowledge) | **View**: `TextDisplayWidget` (thread-safe rendering)
 
-Flow: `TextMatcher → TextFormatter → TextDisplayWidget → tkinter`
+Flow: `IncrementalTextMatcher → WsResultSender → WsClientTransport → RemoteRecognitionPublisher → RecognitionResultFanOut → TextFormatter → TextDisplayWidget → tkinter`
+
+### 10. Process Isolation and Network Protocol
+
+The server owns all ASR inference (GPU stays in the server process). The client owns all GUI and keyboard simulation. The boundary is a local WebSocket with a versioned binary + JSON protocol (`src/network/`). Isolation means future non-Tk clients (CLI, web) can connect without any server changes.
 
 ---
 
 ## Conclusion
 
-This architecture provides:
-
 ### Key Innovations
 
 **Context Buffer Strategy:**
-- 20-chunk circular buffer (640ms) captures pre/post-speech audio
-- Left context snapshot immune to wraparound
-- Left context snapshot enables better STT for short words (<100ms) without hallucinations
+- 20-chunk circular buffer (640ms) captures pre-speech audio.
+- Left context snapshot immune to buffer wraparound.
+- Enables better STT for short words (<100ms) without hallucinations.
 
 **Hard-Cut Splitting:**
-- Max duration triggers a hard cut: full buffer emitted, reset, stays in ACTIVE_SPEECH
-- No silence search, no right_context; right_context is always empty from SPP
+- Max duration triggers a hard cut: full buffer emitted, reset, stays in `ACTIVE_SPEECH`.
+- No silence search; `right_context` is always empty from `SoundPreProcessor`.
 
 **Timestamped Token Filtering:**
-- Context concatenation: left_context + data
-- Token-level timestamp alignment from TimestampedResultsAsrAdapter
-- 0.37s tolerance for VAD warm-up delay
-- Removes hallucinations ("yeah", "mm-hmm") from silence padding
+- Context concatenation: `left_context + data`.
+- Token-level timestamp alignment from `TimestampedResultsAsrAdapter`.
+- 0.37s tolerance for VAD warm-up delay.
+- Removes context hallucinations from silence padding.
 
 **Consecutive Speech Logic:**
-- 3-chunk confirmation prevents false positives
-- Reduces transient noise triggering
-- Preserves responsiveness while improving accuracy
+- 3-chunk confirmation prevents false positives.
+- Reduces transient noise triggering while preserving responsiveness.
 
 **Observer-Based State Management:**
-- ApplicationState as central subject with dual observer types
-- Component observers called directly for background operations
-- GUI observers scheduled via `root.after()` for thread safety
-- Lock-protected state mutations with deadlock prevention
-- Enables pause/resume without tight coupling between controller and components
+- `ServerApplicationState` (component-only) and `ClientApplicationState` (component + GUI).
+- Lock-protected mutations; notifications outside lock to prevent deadlocks.
+- Enables pause/resume without tight coupling between controller and components.
 
-**Observer-Based Text Recognition Distribution:**
-- RecognitionResultPublisher decouples TextMatcher from consumers
-- Protocol-based subscriber interface (TextRecognitionSubscriber)
-- Thread-safe copy-on-notify pattern prevents deadlocks
-- Error isolation: subscriber exceptions don't affect others
-- Enables multiple output targets (GUI, API, voice input) from single pipeline
-- Open for extension: add new subscribers without modifying existing code
+**Protocol-Based Result Distribution:**
+- `RecognitionResultPublisher` is a structural Protocol — enables `WsResultSender` (server) and `RecognitionResultFanOut` (client) to satisfy the same interface.
+- `RecognitionResultFanOut` uses copy-on-notify; subscriber exceptions are isolated.
+
+**Session-Prefixed Message ID Routing:**
+- `session_index * 10_000_000 + local_id` partitions the ID space.
+- `RecognizerService` routes results by pure arithmetic (`message_id // 10_000_000`) — no routing table lock on the hot path.
+- Capacity: ~57 hours of speech before rollover per session.
+
+**Sync-to-Async Bridges:**
+- Both `WsResultSender` (server → client) and `WsClientTransport` (client → server) use the same pattern: sync callers cross the thread boundary via `loop.call_soon_threadsafe(queue.put_nowait, item)`; an async drain task delivers the items without ever blocking the sync caller.
+- Bounded queues (maxsize=20) provide natural backpressure with drop-and-log semantics.
+
+**Two-Process Model:**
+- Server handles GPU inference; client handles GUI and mic capture.
+- Subprocess watcher in `main.py` ensures co-lifecycle: client exit stops server; server exit stops client via `ConnectionClosed`.
+- `--server-only` mode enables headless/MSIX deployment with external WebSocket clients.
