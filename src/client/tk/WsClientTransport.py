@@ -159,7 +159,11 @@ class WsClientTransport:
         Algorithm:
             1. async-iterate websocket frames.
             2. Call publisher.dispatch(text) for each text frame.
-            3. On ConnectionClosed: log and transition app_state to "shutdown".
+            3. After the loop exits normally (clean server close 1000/1001): transition
+               app_state to "shutdown".
+            4. On ConnectionClosed: log and transition app_state to "shutdown".
+            5. On CancelledError: re-raise (deliberate stop, no shutdown transition).
+            6. On any other exception: log and transition app_state to "shutdown".
         """
         from websockets.exceptions import ConnectionClosed
 
@@ -172,6 +176,10 @@ class WsClientTransport:
                         "WsClientTransport[%s]: unexpected binary frame in receive loop",
                         self._session_id,
                     )
+            try:
+                self._app_state.set_state("shutdown")
+            except ValueError:
+                pass
         except ConnectionClosed:
             logger.warning(
                 "WsClientTransport[%s]: connection closed by server", self._session_id

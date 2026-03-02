@@ -120,7 +120,14 @@ class SessionManager:
             server_time=time.time(),
             server_config=_SERVER_CONFIG,
         )
-        await websocket.send(encode_server_message(created_msg))
+        try:
+            await websocket.send(encode_server_message(created_msg))
+        except Exception:
+            logger.warning(
+                "SessionManager: send failed for session %s — destroying to prevent leak", session_id
+            )
+            await self.destroy_session(session_id)
+            raise
         logger.info(
             "SessionManager: session created id=%s index=%s", session_id, session_index
         )

@@ -323,6 +323,59 @@ class TestDisconnect:
         time.sleep(0.5)
         assert app_state.get_state() == "shutdown"
 
+    def test_clean_server_close_transitions_app_state_to_shutdown(self) -> None:
+        app_state = _make_app_state()
+        subscriber = MagicMock()
+        real_publisher = RecognitionResultFanOut()
+        real_publisher.subscribe(subscriber)
+        remote_publisher = RemoteRecognitionPublisher(real_publisher)
+        ready = threading.Event()
+        loop_holder: list[asyncio.AbstractEventLoop] = []
+
+        def run_loop() -> None:
+            loop = asyncio.new_event_loop()
+            loop_holder.append(loop)
+            asyncio.set_event_loop(loop)
+            ready.set()
+            loop.run_forever()
+
+        t = threading.Thread(target=run_loop, daemon=True)
+        t.start()
+        ready.wait(timeout=2.0)
+        loop = loop_holder[0]
+
+        class _CleanClosingWs:
+            """WebSocket that serves one message then ends iteration cleanly (no exception)."""
+            sent: list = []
+            closed = False
+            _served = False
+
+            def __aiter__(self): return self
+
+            async def __anext__(self):
+                if not self._served:
+                    self._served = True
+                    return _make_result_json(status="partial", text="hi")
+                raise StopAsyncIteration
+
+            async def send(self, msg) -> None:
+                self.sent.append(msg)
+
+            async def close(self) -> None:
+                self.closed = True
+
+        clean_ws = _CleanClosingWs()
+        transport = WsClientTransport(
+            server_url=_SERVER_URL,
+            session_id=_SESSION_ID,
+            app_state=app_state,
+            publisher=remote_publisher,
+            loop=loop,
+        )
+        asyncio.run_coroutine_threadsafe(transport.start(clean_ws), loop).result(timeout=2.0)
+        time.sleep(0.5)
+        assert app_state.get_state() == "shutdown"
+
 
 # ---------------------------------------------------------------------------
 # Tests: backpressure

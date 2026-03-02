@@ -42,27 +42,6 @@ def _spawn_client(server_url: str) -> "subprocess.Popen":
     return subprocess.Popen(cmd)
 
 
-def _make_watcher(server_app, proc) -> "threading.Thread":
-    """Create and start a daemon thread that stops the server when the client exits.
-
-    Args:
-        server_app: ServerApp instance to stop on client exit.
-        proc: subprocess.Popen handle to watch.
-
-    Returns:
-        Started daemon thread.
-    """
-    import threading
-
-    def _watch() -> None:
-        proc.wait()
-        server_app.stop()
-        proc.terminate()
-
-    thread = threading.Thread(target=_watch, daemon=True, name="ClientWatcher")
-    thread.start()
-    return thread
-
 
 def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -> None:
     """Core entry-point logic, extracted for testability.
@@ -74,8 +53,8 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
         4. Load ONNX model and create Recognizer.
         5. Create and start ServerApp.
         6. In --server-only mode: block on WsServer.join().
-           In default mode: spawn client.py subprocess, start watcher thread,
-           block on subprocess exit.
+           In default mode: spawn client.py subprocess, block on subprocess exit,
+           then stop ServerApp.
 
     Args:
         argv: Command-line arguments (typically sys.argv).
@@ -157,8 +136,8 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
     else:
         server_url = f"ws://127.0.0.1:{server_app.port}"
         proc = _spawn_client(server_url)
-        _make_watcher(server_app, proc)
         proc.wait()
+        server_app.stop()
 
 
 if __name__ == "__main__":

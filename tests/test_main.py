@@ -8,8 +8,7 @@ Tests cover:
 - --server-only with missing models: prints to stderr, exits with code 1, no GUI
 - --server-only with models present: ServerApp started, no subprocess spawned
 - Default mode with models present: ServerApp started, Popen called with --server-url,
-  daemon watcher thread started
-- Watcher function: subprocess exit triggers server_app.stop(), then terminate()
+  server_app.stop() called after subprocess exits
 """
 
 import sys
@@ -153,7 +152,7 @@ class TestServerOnlyModelsPresent:
 
 
 class TestDefaultModeModelsPresent:
-    """Default mode: ServerApp started, client.py subprocess spawned, watcher thread started."""
+    """Default mode: ServerApp started, client.py subprocess spawned, server stopped after subprocess exits."""
 
     def test_server_app_started(self) -> None:
         server_app_mock = _make_server_app_mock(port=9001)
@@ -162,7 +161,6 @@ class TestDefaultModeModelsPresent:
         with ExitStack() as stack:
             _model_patches(stack, server_app_mock)
             stack.enter_context(patch("subprocess.Popen", return_value=proc_mock))
-            stack.enter_context(patch("threading.Thread", return_value=MagicMock()))
             _main(["main.py"], _FAKE_MODELS_DIR, _FAKE_LOGS_DIR, _FAKE_CONFIG_PATH)
 
         server_app_mock.start.assert_called_once()
@@ -175,7 +173,6 @@ class TestDefaultModeModelsPresent:
         with ExitStack() as stack:
             _model_patches(stack, server_app_mock)
             stack.enter_context(patch("subprocess.Popen", new=mock_popen))
-            stack.enter_context(patch("threading.Thread", return_value=MagicMock()))
             _main(["main.py"], _FAKE_MODELS_DIR, _FAKE_LOGS_DIR, _FAKE_CONFIG_PATH)
 
         mock_popen.assert_called_once()
@@ -191,29 +188,24 @@ class TestDefaultModeModelsPresent:
         with ExitStack() as stack:
             _model_patches(stack, server_app_mock)
             stack.enter_context(patch("subprocess.Popen", new=mock_popen))
-            stack.enter_context(patch("threading.Thread", return_value=MagicMock()))
             _main(["main.py"], _FAKE_MODELS_DIR, _FAKE_LOGS_DIR, _FAKE_CONFIG_PATH)
 
         popen_args = mock_popen.call_args[0][0]
         assert any("client.py" in str(arg) for arg in popen_args)
 
-    def test_watcher_thread_is_daemon(self) -> None:
+    def test_server_app_stop_called_after_subprocess_exits(self) -> None:
         server_app_mock = _make_server_app_mock(port=9003)
-        proc_mock = _make_proc_mock()
-        captured_threads: list[dict] = []
-
-        def capture_thread(**kwargs):
-            t = MagicMock()
-            captured_threads.append(kwargs)
-            return t
+        proc_mock = _make_proc_mock(exit_code=0)
+        call_order: list[str] = []
+        proc_mock.wait.side_effect = lambda: call_order.append("wait")
+        server_app_mock.stop.side_effect = lambda: call_order.append("stop")
 
         with ExitStack() as stack:
             _model_patches(stack, server_app_mock)
             stack.enter_context(patch("subprocess.Popen", return_value=proc_mock))
-            stack.enter_context(patch("threading.Thread", side_effect=capture_thread))
             _main(["main.py"], _FAKE_MODELS_DIR, _FAKE_LOGS_DIR, _FAKE_CONFIG_PATH)
 
-        assert any(kw.get("daemon") is True for kw in captured_threads)
+        assert call_order == ["wait", "stop"]
 
     def test_ws_server_join_not_called_in_default_mode(self) -> None:
         server_app_mock = _make_server_app_mock(port=9004)
@@ -222,50 +214,6 @@ class TestDefaultModeModelsPresent:
         with ExitStack() as stack:
             _model_patches(stack, server_app_mock)
             stack.enter_context(patch("subprocess.Popen", return_value=proc_mock))
-            stack.enter_context(patch("threading.Thread", return_value=MagicMock()))
             _main(["main.py"], _FAKE_MODELS_DIR, _FAKE_LOGS_DIR, _FAKE_CONFIG_PATH)
 
         server_app_mock._ws_server.join.assert_not_called()
-
-
-class TestWatcherFunction:
-    """The watcher closure: subprocess exit triggers server_app.stop() and proc.terminate()."""
-
-    def _capture_watcher_target(self, server_app_mock: MagicMock, proc_mock: MagicMock):
-        """Run _main() in default mode and return the watcher thread target function."""
-        captured: list = []
-
-        def capture_thread(target=None, daemon=None, name=None, **kwargs):
-            if name and "watcher" in name.lower():
-                captured.append(target)
-            return MagicMock()
-
-        with ExitStack() as stack:
-            _model_patches(stack, server_app_mock)
-            stack.enter_context(patch("subprocess.Popen", return_value=proc_mock))
-            stack.enter_context(patch("threading.Thread", side_effect=capture_thread))
-            _main(["main.py"], _FAKE_MODELS_DIR, _FAKE_LOGS_DIR, _FAKE_CONFIG_PATH)
-
-        assert len(captured) == 1, f"Expected 1 watcher thread, got {len(captured)}"
-        return captured[0]
-
-    def test_watcher_calls_server_app_stop_when_subprocess_exits(self) -> None:
-        server_app_mock = _make_server_app_mock()
-        proc_mock = _make_proc_mock(exit_code=0)
-
-        watcher = self._capture_watcher_target(server_app_mock, proc_mock)
-        server_app_mock.stop.reset_mock()
-
-        watcher()
-
-        server_app_mock.stop.assert_called_once()
-
-    def test_watcher_terminates_subprocess_after_server_stop(self) -> None:
-        server_app_mock = _make_server_app_mock()
-        proc_mock = _make_proc_mock(exit_code=1)
-
-        watcher = self._capture_watcher_target(server_app_mock, proc_mock)
-
-        watcher()
-
-        proc_mock.terminate.assert_called()

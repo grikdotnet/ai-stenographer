@@ -168,6 +168,7 @@ class Recognizer:
             start_time=window_data.start_time,
             end_time=window_data.end_time,
             chunk_ids=window_data.chunk_ids,
+            utterance_id=window_data.utterance_id,
             confidence=avg_confidence,
             token_confidences=filtered_confidences,
             audio_rms=audio_rms,
