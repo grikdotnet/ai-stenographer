@@ -31,6 +31,7 @@ def setup_logging(logs_dir: Path, verbose: bool = False, is_frozen: bool = False
 
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
+    logging.getLogger("websockets").setLevel(logging.WARNING)
     root_logger.handlers.clear()
 
     formatter = logging.Formatter("[%(asctime)s] [%(levelname)s] %(message)s")
