@@ -31,10 +31,10 @@ _REPO_ROOT = _SCRIPT_PATH.parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from src.PathResolver import PathResolver
-from src.LoggingSetup import setup_logging
+from src.client.ClientPathResolver import ClientPathResolver
+from src.client.setup_logging import setup_logging
 
-_path_resolver = PathResolver(_SCRIPT_PATH)
+_path_resolver = ClientPathResolver(_SCRIPT_PATH)
 _PATHS = _path_resolver.paths
 _LOGS_DIR = _PATHS.logs_dir
 _path_resolver.ensure_local_dir_structure()
@@ -142,7 +142,7 @@ if __name__ == "__main__":
 
         from src.client.tk.ClientApp import ClientApp
 
-        config_path = str(_path_resolver.get_config_path("stt_config.json"))
+        config_path = str(_path_resolver.get_config_path("client_config.json"))
         with open(config_path) as f:
             config = _json_module.load(f)
 

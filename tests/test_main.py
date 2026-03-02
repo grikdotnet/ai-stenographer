@@ -9,6 +9,8 @@ Tests cover:
 - --server-only with models present: ServerApp started, no subprocess spawned
 - Default mode with models present: ServerApp started, Popen called with --server-url,
   server_app.stop() called after subprocess exits
+- Default mode with missing models: spawns download-models.py subprocess; exits 0
+  on cancel; continues startup after successful download
 """
 
 import sys
@@ -67,6 +69,72 @@ def _model_patches(stack: ExitStack, server_app_mock: MagicMock) -> None:
     stack.enter_context(patch("src.asr.Recognizer.Recognizer", return_value=MagicMock()))
     stack.enter_context(patch("src.ServerApplicationState.ServerApplicationState", return_value=MagicMock()))
     stack.enter_context(patch("src.server.ServerApp.ServerApp", return_value=server_app_mock))
+
+
+def _make_download_proc_mock(exit_code: int) -> MagicMock:
+    proc = MagicMock()
+    proc.returncode = exit_code
+    proc.wait.return_value = exit_code
+    return proc
+
+
+class TestDefaultModeMissingModels:
+    """Default mode: spawns download-models.py when models are missing."""
+
+    def test_spawns_download_subprocess_when_models_missing(self) -> None:
+        download_proc = _make_download_proc_mock(exit_code=1)
+        mock_popen = MagicMock(return_value=download_proc)
+
+        with (
+            patch("main.setup_logging"),
+            patch("main.ModelManager.get_missing_models", return_value=["parakeet"]),
+            patch("main._spawn_client_for_download", return_value=download_proc) as mock_spawn,
+            pytest.raises(SystemExit),
+        ):
+            _main(["main.py"], _FAKE_MODELS_DIR, _FAKE_LOGS_DIR, _FAKE_CONFIG_PATH)
+
+        mock_spawn.assert_called_once()
+
+    def test_exits_0_when_download_cancelled(self) -> None:
+        download_proc = _make_download_proc_mock(exit_code=1)
+
+        with (
+            patch("main.setup_logging"),
+            patch("main.ModelManager.get_missing_models", return_value=["parakeet"]),
+            patch("main._spawn_client_for_download", return_value=download_proc),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            _main(["main.py"], _FAKE_MODELS_DIR, _FAKE_LOGS_DIR, _FAKE_CONFIG_PATH)
+
+        assert exc_info.value.code == 0
+
+    def test_continues_startup_after_successful_download(self) -> None:
+        download_proc = _make_download_proc_mock(exit_code=0)
+        server_app_mock = _make_server_app_mock(port=9005)
+        client_proc_mock = _make_proc_mock(exit_code=0)
+
+        get_missing_models_results = [["parakeet"], []]
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("main.setup_logging"))
+            stack.enter_context(patch(
+                "main.ModelManager.get_missing_models",
+                side_effect=get_missing_models_results,
+            ))
+            stack.enter_context(patch("main._spawn_client_for_download", return_value=download_proc))
+            stack.enter_context(patch("builtins.open", mock_open(read_data=_FAKE_CONFIG)))
+            stack.enter_context(patch("onnxruntime.SessionOptions", return_value=MagicMock()))
+            stack.enter_context(patch("onnxruntime.GraphOptimizationLevel"))
+            stack.enter_context(patch("onnx_asr.load_model", return_value=MagicMock()))
+            stack.enter_context(patch("src.asr.ExecutionProviderManager.ExecutionProviderManager"))
+            stack.enter_context(patch("src.asr.SessionOptionsFactory.SessionOptionsFactory"))
+            stack.enter_context(patch("src.asr.Recognizer.Recognizer", return_value=MagicMock()))
+            stack.enter_context(patch("src.ServerApplicationState.ServerApplicationState", return_value=MagicMock()))
+            stack.enter_context(patch("src.server.ServerApp.ServerApp", return_value=server_app_mock))
+            stack.enter_context(patch("subprocess.Popen", return_value=client_proc_mock))
+            _main(["main.py"], _FAKE_MODELS_DIR, _FAKE_LOGS_DIR, _FAKE_CONFIG_PATH)
+
+        server_app_mock.start.assert_called_once()
 
 
 class TestServerOnlyMissingModels:

@@ -23,7 +23,7 @@ class AudioSource:
 
     Args:
         chunk_queue: Queue to send raw audio chunks (dict with audio, timestamp)
-        config: Configuration dictionary loaded from stt_config.json
+        config: Configuration dictionary loaded from client_config.json
         verbose: Enable verbose logging
     """
 

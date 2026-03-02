@@ -49,6 +49,15 @@ from src.LicenseCollector import LicenseCollector
 # Python version to download
 PYTHON_VERSION = "3.12.10"
 PYTHON_ARCH = "amd64"  # 64-bit Windows
+CRITICAL_MODULES = [
+    "numpy",
+    "onnxruntime",
+    "sounddevice",
+    "onnx_asr",
+    "tkinter",
+    "pynput",
+    "websockets",
+]
 
 
 def download_embedded_python(version: str, cache_dir: Path) -> Path:
@@ -493,8 +502,7 @@ def main():
         print("Application may not work correctly")
 
     # Step 15: Test critical imports
-    critical_modules = ["numpy", "onnxruntime", "sounddevice", "onnx_asr", "tkinter", "pynput"]
-    import_results = test_imports(python_exe, critical_modules)
+    import_results = test_imports(python_exe, CRITICAL_MODULES)
     failed_imports = [m for m, success in import_results.items() if not success]
 
     if failed_imports:
@@ -1705,8 +1713,8 @@ ADVANCED OPTIONS
 Run from command line for verbose output:
   _internal\\runtime\\python.exe _internal\\app\\main.pyc -v
 
-Custom windowing (reduce duplication):
-  _internal\\runtime\\python.exe _internal\\app\\main.pyc --window=2.0 --step=1.5
+Run server only (no local Tk client):
+  _internal\\runtime\\python.exe _internal\\app\\main.pyc --server-only
 
 PRIVACY & DATA
 --------------
@@ -1719,7 +1727,7 @@ TECHNICAL DETAILS
 -----------------
 - AI Model: NVIDIA Parakeet TDT 0.6B (ONNX)
 - VAD: Silero Voice Activity Detector
-- Python: 3.13.0 (embedded)
+- Python: """ + PYTHON_VERSION + """ (embedded)
 - License: See LICENSE.txt
 
 SUPPORT
@@ -1733,7 +1741,7 @@ VERSION
 -------
 Build Date: """ + Path(__file__).stat().st_mtime.__str__()[:10] + """
 Platform: Windows x64
-Python: 3.13.0
+Python: """ + PYTHON_VERSION + """
 
 ===============================================
 """

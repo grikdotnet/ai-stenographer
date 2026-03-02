@@ -28,7 +28,7 @@ class FileAudioSource:
 
     Args:
         chunk_queue: Queue to send audio chunks (dict with audio, timestamp)
-        config: Configuration dictionary loaded from stt_config.json
+        config: Configuration dictionary loaded from client_config.json
         file_path: Path to WAV file to load
         verbose: Enable verbose logging
     """

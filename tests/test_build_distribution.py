@@ -1202,3 +1202,45 @@ class TestCleanupTclUnnecessaryFiles:
         assert result is True
         # Essential files still present
         assert (tcl_dir / "init.tcl").exists()
+
+
+class TestBuildScriptConstants:
+    """Test build script constants used by build validation."""
+
+    def test_critical_modules_include_websockets(self):
+        """Critical import checks should include websockets dependency."""
+        import build_distribution
+
+        assert "websockets" in build_distribution.CRITICAL_MODULES
+
+
+class TestCreateReadme:
+    """Test README generation for distribution."""
+
+    def test_create_readme_uses_python_version_constant(self, tmp_path, monkeypatch):
+        """README should reflect configured embedded Python version."""
+        import build_distribution
+
+        build_dir = tmp_path / "AI-Stenographer"
+        build_dir.mkdir(parents=True)
+        monkeypatch.setattr(build_distribution, "PYTHON_VERSION", "9.9.9")
+
+        result = build_distribution.create_readme(build_dir)
+
+        assert result is True
+        readme = (build_dir / "README.txt").read_text(encoding="utf-8")
+        assert "Python: 9.9.9" in readme
+
+    def test_create_readme_does_not_include_legacy_window_flags(self, tmp_path):
+        """README should not reference removed --window/--step flags."""
+        from build_distribution import create_readme
+
+        build_dir = tmp_path / "AI-Stenographer"
+        build_dir.mkdir(parents=True)
+
+        result = create_readme(build_dir)
+
+        assert result is True
+        readme = (build_dir / "README.txt").read_text(encoding="utf-8")
+        assert "--window" not in readme
+        assert "--step" not in readme

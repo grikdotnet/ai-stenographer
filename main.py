@@ -42,6 +42,17 @@ def _spawn_client(server_url: str) -> "subprocess.Popen":
     return subprocess.Popen(cmd)
 
 
+def _spawn_client_for_download() -> "subprocess.Popen":
+    """Spawn download_models.py to show model download GUI.
+
+    Returns:
+        Running subprocess handle.
+    """
+    import subprocess
+    script = Path(__file__).parent / "download_models.py"
+    return subprocess.Popen([sys.executable, str(script)])
+
+
 
 def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -> None:
     """Core entry-point logic, extracted for testability.
@@ -49,7 +60,8 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
     Algorithm:
         1. Parse flags from argv.
         2. Setup logging.
-        3. Check for missing models; exit 1 with stderr message if any.
+        3. Check for missing models. In --server-only mode: exit 1 with stderr message.
+           In default mode: spawn download_models.py; exit 0 if cancelled; re-check models.
         4. Load ONNX model and create Recognizer.
         5. Create and start ServerApp.
         6. In --server-only mode: block on WsServer.join().
@@ -60,7 +72,7 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
         argv: Command-line arguments (typically sys.argv).
         models_dir: Path to models directory.
         logs_dir: Path to logs directory.
-        config_path: Path to stt_config.json.
+        config_path: Path to server_config.json.
     """
     import json
     import queue as _queue
@@ -80,12 +92,20 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
 
     missing_models = ModelManager.get_missing_models(models_dir)
     if missing_models:
-        print(
-            f"Missing models: {', '.join(missing_models)}. "
-            "Provision them before starting.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        if server_only:
+            print(
+                f"Missing models: {', '.join(missing_models)}. "
+                "Provision them before starting.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        proc = _spawn_client_for_download()
+        proc.wait()
+        if proc.returncode != 0:
+            sys.exit(0)
+        missing_models = ModelManager.get_missing_models(models_dir)
+        if missing_models:
+            sys.exit(1)
 
     with open(config_path) as f:
         config = json.load(f)
@@ -147,7 +167,7 @@ if __name__ == "__main__":
             argv=sys.argv,
             models_dir=MODELS_DIR,
             logs_dir=LOGS_DIR,
-            config_path=str(path_resolver.get_config_path("stt_config.json")),
+            config_path=str(path_resolver.get_config_path("server_config.json")),
         )
     except KeyboardInterrupt:
         logging.info("Interrupted by user.")

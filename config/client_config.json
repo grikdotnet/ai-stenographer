@@ -1,0 +1,10 @@
+{
+  "audio": {
+    "sample_rate": 16000,
+    "chunk_duration": 0.032
+  },
+  "quick_entry": {
+    "hotkey": "ctrl+space",
+    "enabled": true
+  }
+}
