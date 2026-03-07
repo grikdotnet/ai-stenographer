@@ -24,6 +24,7 @@ from src.client.tk.gui.ApplicationWindow import ApplicationWindow
 from src.client.tk.gui.TextInsertionService import TextInsertionService
 from src.client.tk.controllers.PauseController import PauseController
 from src.client.tk.sound.AudioSource import AudioSource
+from src.client.tk.sound.FileAudioSource import FileAudioSource
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ class ClientApp:
         session_id: str,
         config: dict,
         verbose: bool = False,
+        input_file: str | None = None,
     ) -> None:
         self._server_url = server_url
         self._session_id = session_id
@@ -61,6 +63,7 @@ class ClientApp:
         self._bridge_thread: threading.Thread | None = None
         self._bridge_running = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._stopped: bool = False
 
         self.app_state = ClientApplicationState(config=config)
 
@@ -94,12 +97,20 @@ class ClientApp:
             loop=None,
         )
 
-        self._audio_source = AudioSource(
-            chunk_queue=queue.Queue(maxsize=200),
-            config=config,
-            app_state=self.app_state,
-            verbose=verbose,
-        )
+        if input_file is not None:
+            self._audio_source = FileAudioSource(
+                chunk_queue=queue.Queue(maxsize=200),
+                config=config,
+                file_path=input_file,
+                verbose=verbose,
+            )
+        else:
+            self._audio_source = AudioSource(
+                chunk_queue=queue.Queue(maxsize=200),
+                config=config,
+                app_state=self.app_state,
+                verbose=verbose,
+            )
 
     @classmethod
     def from_session_created(
@@ -108,6 +119,7 @@ class ClientApp:
         session_created_json: str,
         config: dict,
         verbose: bool = False,
+        input_file: str | None = None,
     ) -> "ClientApp":
         """Construct from a ``session_created`` JSON frame received from the server.
 
@@ -116,6 +128,7 @@ class ClientApp:
             session_created_json: Raw JSON string of the ``session_created`` frame.
             config: Application config dict.
             verbose: Enable verbose logging.
+            input_file: Path to a WAV file to use instead of the microphone, or None.
 
         Returns:
             Configured ClientApp instance ready for start().
@@ -134,6 +147,7 @@ class ClientApp:
             session_id=session_id,
             config=config,
             verbose=verbose,
+            input_file=input_file,
         )
 
     @property
@@ -170,11 +184,15 @@ class ClientApp:
         """Stop AudioSource, audio bridge thread, and WebSocket transport.
 
         Algorithm:
-            1. Stop AudioSource.
-            2. Stop audio bridge drain thread.
-            3. Await WsClientTransport.stop() on the asyncio loop if available.
-            4. Transition app_state to shutdown if not already.
+            1. Guard against double-stop (idempotent).
+            2. Stop AudioSource.
+            3. Stop audio bridge drain thread.
+            4. Await WsClientTransport.stop() on the asyncio loop if available.
+            5. Transition app_state to shutdown if not already.
         """
+        if self._stopped:
+            return
+        self._stopped = True
         self._audio_source.stop()
         self._stop_audio_bridge()
 

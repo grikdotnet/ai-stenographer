@@ -27,11 +27,12 @@ LOGS_DIR = PATHS.logs_dir
 path_resolver.ensure_local_dir_structure()
 
 
-def _spawn_client(server_url: str) -> "subprocess.Popen":
+def _spawn_client(server_url: str, input_file: str | None = None) -> "subprocess.Popen":
     """Spawn client.py as a subprocess with the given server WebSocket URL.
 
     Args:
         server_url: WebSocket URL passed as --server-url= argument.
+        input_file: Optional path to a WAV file forwarded as --input-file= to the client.
 
     Returns:
         Running subprocess handle.
@@ -39,6 +40,8 @@ def _spawn_client(server_url: str) -> "subprocess.Popen":
     import subprocess
     client_script = Path(__file__).parent / "src" / "client" / "client.py"
     cmd = [sys.executable, str(client_script), f"--server-url={server_url}"]
+    if input_file is not None:
+        cmd.append(f"--input-file={input_file}")
     return subprocess.Popen(cmd)
 
 
@@ -86,6 +89,10 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
 
     verbose = "-v" in argv
     server_only = "--server-only" in argv
+    input_file: str | None = next(
+        (arg.split("=", 1)[1] for arg in argv if arg.startswith("--input-file=")),
+        None,
+    )
 
     is_frozen = getattr(sys, 'frozen', False)
     setup_logging(logs_dir, verbose=verbose, is_frozen=is_frozen)
@@ -155,7 +162,7 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
         server_app._ws_server.join()
     else:
         server_url = f"ws://127.0.0.1:{server_app.port}"
-        proc = _spawn_client(server_url)
+        proc = _spawn_client(server_url, input_file=input_file)
         proc.wait()
         server_app.stop()
 

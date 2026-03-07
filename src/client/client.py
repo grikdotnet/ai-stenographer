@@ -40,27 +40,30 @@ _LOGS_DIR = _PATHS.logs_dir
 _path_resolver.ensure_local_dir_structure()
 
 
-def _parse_args() -> tuple[str, bool]:
+def _parse_args() -> tuple[str, bool, str | None]:
     """Parse CLI arguments.
 
     Returns:
-        Tuple of (server_url, verbose).
+        Tuple of (server_url, verbose, input_file).
 
     Raises:
         SystemExit: If --server-url is missing.
     """
     server_url: str | None = None
+    input_file: str | None = None
     verbose = "-v" in sys.argv
 
     for arg in sys.argv[1:]:
         if arg.startswith("--server-url="):
             server_url = arg.split("=", 1)[1]
+        elif arg.startswith("--input-file="):
+            input_file = arg.split("=", 1)[1]
 
     if server_url is None:
         print("ERROR: --server-url=ws://host:port is required.", file=sys.stderr)
         sys.exit(1)
 
-    return server_url, verbose
+    return server_url, verbose, input_file
 
 
 async def _connect_and_receive_session(server_url: str) -> tuple:
@@ -112,7 +115,7 @@ if __name__ == "__main__":
     loop: asyncio.AbstractEventLoop | None = None
 
     try:
-        server_url, verbose = _parse_args()
+        server_url, verbose, input_file = _parse_args()
         is_frozen = getattr(sys, 'frozen', False)
         setup_logging(_LOGS_DIR, verbose=verbose, is_frozen=is_frozen)
 
@@ -151,6 +154,7 @@ if __name__ == "__main__":
             session_created_json=session_created_json,
             config=config,
             verbose=verbose,
+            input_file=input_file,
         )
 
         client_app.set_loop(loop)

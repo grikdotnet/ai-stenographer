@@ -9,6 +9,8 @@ import asyncio
 import logging
 from typing import Any, Protocol
 
+import websockets.exceptions
+
 from src.network.codec import encode_server_message
 from src.network.types import WsRecognitionResult
 from src.types import RecognitionResult
@@ -136,6 +138,10 @@ class WsResultSender:
             encoded = await self._send_queue.get()
             try:
                 await self._websocket.send(encoded)
+            except websockets.exceptions.ConnectionClosed:
+                logger.info(
+                    "WsResultSender[%s]: connection closed, dropping message", self._session_id
+                )
             except Exception:
                 logger.exception(
                     "WsResultSender[%s]: error sending message", self._session_id
