@@ -3,7 +3,7 @@ Tests for DownloadProgressReporter - progress tracking for model downloads.
 """
 import pytest
 from unittest.mock import MagicMock
-from src.asr.DownloadProgressReporter import (
+from src.client.tk.asr.DownloadProgressReporter import (
     ProgressAggregator,
     DownloadProgressReporter,
     create_bound_progress_reporter

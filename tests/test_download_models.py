@@ -16,10 +16,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from download_models import _main  # noqa: E402 — path setup must come first
+from src.client.tk.download_models import _main  # noqa: E402 — path setup must come first
 
 
 _FAKE_MODELS_DIR = Path("/fake/models")
+_MODULE = "src.client.tk.download_models"
 
 
 class TestNothingMissing:
@@ -27,8 +28,8 @@ class TestNothingMissing:
 
     def test_exits_0(self) -> None:
         with (
-            patch("download_models.ModelManager.get_missing_models", return_value=[]),
-            patch("download_models.show_download_dialog") as mock_dialog,
+            patch(f"{_MODULE}.ModelManager.get_missing_models", return_value=[]),
+            patch(f"{_MODULE}.show_download_dialog") as mock_dialog,
             pytest.raises(SystemExit) as exc_info,
         ):
             _main(_FAKE_MODELS_DIR)
@@ -37,8 +38,8 @@ class TestNothingMissing:
 
     def test_dialog_not_shown(self) -> None:
         with (
-            patch("download_models.ModelManager.get_missing_models", return_value=[]),
-            patch("download_models.show_download_dialog") as mock_dialog,
+            patch(f"{_MODULE}.ModelManager.get_missing_models", return_value=[]),
+            patch(f"{_MODULE}.show_download_dialog") as mock_dialog,
             pytest.raises(SystemExit),
         ):
             _main(_FAKE_MODELS_DIR)
@@ -51,8 +52,8 @@ class TestDownloadSuccess:
 
     def test_exits_0_on_success(self) -> None:
         with (
-            patch("download_models.ModelManager.get_missing_models", return_value=["parakeet"]),
-            patch("download_models.show_download_dialog", return_value=True),
+            patch(f"{_MODULE}.ModelManager.get_missing_models", return_value=["parakeet"]),
+            patch(f"{_MODULE}.show_download_dialog", return_value=True),
             pytest.raises(SystemExit) as exc_info,
         ):
             _main(_FAKE_MODELS_DIR)
@@ -61,8 +62,8 @@ class TestDownloadSuccess:
 
     def test_dialog_called_with_missing_models_and_dir(self) -> None:
         with (
-            patch("download_models.ModelManager.get_missing_models", return_value=["parakeet"]),
-            patch("download_models.show_download_dialog", return_value=True) as mock_dialog,
+            patch(f"{_MODULE}.ModelManager.get_missing_models", return_value=["parakeet"]),
+            patch(f"{_MODULE}.show_download_dialog", return_value=True) as mock_dialog,
             pytest.raises(SystemExit),
         ):
             _main(_FAKE_MODELS_DIR)
@@ -75,8 +76,8 @@ class TestDownloadCancelledOrFailed:
 
     def test_exits_1_on_cancel(self) -> None:
         with (
-            patch("download_models.ModelManager.get_missing_models", return_value=["parakeet"]),
-            patch("download_models.show_download_dialog", return_value=False),
+            patch(f"{_MODULE}.ModelManager.get_missing_models", return_value=["parakeet"]),
+            patch(f"{_MODULE}.show_download_dialog", return_value=False),
             pytest.raises(SystemExit) as exc_info,
         ):
             _main(_FAKE_MODELS_DIR)

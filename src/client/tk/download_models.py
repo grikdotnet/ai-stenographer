@@ -9,21 +9,15 @@ Not intended for direct user invocation in normal use.
 import sys
 from pathlib import Path
 
-if hasattr(sys.modules['__main__'], '__file__'):
-    _SCRIPT_PATH = Path(sys.modules['__main__'].__file__).resolve()
-else:
-    _SCRIPT_PATH = Path(__file__).resolve()
-
-_REPO_ROOT = _SCRIPT_PATH.parent
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from src.PathResolver import PathResolver
-from src.asr.ModelManager import ModelManager
+from src.client.ClientPathResolver import ClientPathResolver
+from src.client.tk.asr.ModelManager import ModelManager
 from src.client.tk.gui.ModelDownloadDialog import show_download_dialog
 
-_path_resolver = PathResolver(_SCRIPT_PATH)
-_PATHS = _path_resolver.paths
+_PATHS = ClientPathResolver(Path(__file__).resolve()).paths
 
 
 def _main(models_dir: Path) -> None:

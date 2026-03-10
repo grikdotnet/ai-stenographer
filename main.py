@@ -52,7 +52,7 @@ def _spawn_client_for_download() -> "subprocess.Popen":
         Running subprocess handle.
     """
     import subprocess
-    script = Path(__file__).parent / "download_models.py"
+    script = Path(__file__).parent / "src" / "client" / "tk" / "download_models.py"
     return subprocess.Popen([sys.executable, str(script)])
 
 

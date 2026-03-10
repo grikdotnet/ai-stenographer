@@ -22,6 +22,7 @@ class ClientResolvedPaths:
     config_dir: Path
     assets_dir: Path
     logs_dir: Path
+    models_dir: Path
     environment: ClientDistributionMode
 
 
@@ -114,19 +115,20 @@ class ClientPathResolver:
         """Resolves all paths based on detected distribution mode.
 
         Algorithm:
-            1. development: script is at <repo>/src/client/client.py → go up 3 levels
-               for root_dir; config/logs relative to root.
+            1. development: root_dir derived from ClientPathResolver.__file__ (src/client/)
+               → always repo root regardless of caller script depth; config/logs relative to root.
             2. portable: script is at <dist>/_internal/app/src/client/client.py →
                app_dir = script^3; root_dir = app_dir^2; config under app_dir, logs under root.
             3. msix: same depth as portable, but writable paths come from AppData.
         """
         if self._mode == "development":
-            root_dir = self._script_path.parent.parent.parent
+            root_dir = Path(__file__).resolve().parent.parent.parent
             return ClientResolvedPaths(
                 root_dir=root_dir,
                 config_dir=root_dir / "config",
                 assets_dir=root_dir,
                 logs_dir=root_dir / "logs",
+                models_dir=root_dir / "models",
                 environment="development",
             )
 
@@ -140,6 +142,7 @@ class ClientPathResolver:
                 config_dir=app_dir / "config",
                 assets_dir=app_dir / "assets",
                 logs_dir=root_dir / "logs",
+                models_dir=root_dir / "models",
                 environment="portable",
             )
 
@@ -150,6 +153,7 @@ class ClientPathResolver:
             config_dir=appdata / "config",
             assets_dir=app_dir,
             logs_dir=appdata / "logs",
+            models_dir=appdata / "models",
             environment="msix",
         )
 
