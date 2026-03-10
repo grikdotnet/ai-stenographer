@@ -13,7 +13,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from src.client.ClientPathResolver import ClientPathResolver
+from src.client.tk.ClientPathResolver import ClientPathResolver
 from src.client.tk.asr.ModelManager import ModelManager
 from src.client.tk.gui.ModelDownloadDialog import show_download_dialog
 

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from src.client.ClientPathResolver import ClientPathResolver, ClientResolvedPaths
+from src.client.tk.ClientPathResolver import ClientPathResolver, ClientResolvedPaths
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
@@ -62,7 +62,7 @@ class TestClientPathResolver:
 
     def test_portable_resolves_app_dir(self, tmp_path: Path) -> None:
         """Script at tmp/_internal/app/src/client/client.py → portable mode."""
-        script = tmp_path / "_internal" / "app" / "src" / "client" / "client.py"
+        script = tmp_path / "_internal" / "app" / "src" / "client" / "tk" / "client.py"
         script.parent.mkdir(parents=True)
         script.touch()
 
@@ -78,11 +78,11 @@ class TestClientPathResolver:
     def test_msix_resolves_appdata(self, tmp_path: Path) -> None:
         """Script under WindowsApps path → msix mode; config_dir under appdata."""
         fake_appdata = tmp_path / "appdata"
-        script = tmp_path / "WindowsApps" / "AI.Stenographer_1.0" / "_internal" / "app" / "src" / "client" / "client.py"
+        script = tmp_path / "WindowsApps" / "AI.Stenographer_1.0" / "_internal" / "app" / "src" / "client" / "tk" / "client.py"
         script.parent.mkdir(parents=True)
         script.touch()
 
-        with patch("src.client.ClientPathResolver.ClientPathResolver._get_msix_appdata", return_value=fake_appdata):
+        with patch("src.client.tk.ClientPathResolver.ClientPathResolver._get_msix_appdata", return_value=fake_appdata):
             resolver = ClientPathResolver(script)
 
         assert resolver.paths.config_dir == fake_appdata / "config"
@@ -98,7 +98,7 @@ class TestClientPathResolver:
         script.touch()
 
         with patch.dict(os.environ, {"MSIX_PACKAGE_IDENTITY": "AI.Stenographer_1.0"}), \
-             patch("src.client.ClientPathResolver.ClientPathResolver._get_msix_appdata", return_value=fake_appdata):
+             patch("src.client.tk.ClientPathResolver.ClientPathResolver._get_msix_appdata", return_value=fake_appdata):
             resolver = ClientPathResolver(script)
 
         assert resolver.paths.environment == "msix"

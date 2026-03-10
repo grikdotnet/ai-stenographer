@@ -27,12 +27,12 @@ else:
     _SCRIPT_PATH = Path(__file__).resolve()
 
 # Add repo root to path so ``src`` imports work when spawned as subprocess
-_REPO_ROOT = _SCRIPT_PATH.parent.parent.parent
+_REPO_ROOT = _SCRIPT_PATH.parent.parent.parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from src.client.ClientPathResolver import ClientPathResolver
-from src.client.setup_logging import setup_logging
+from src.client.tk.ClientPathResolver import ClientPathResolver
+from src.client.tk.setup_logging import setup_logging
 
 _path_resolver = ClientPathResolver(_SCRIPT_PATH)
 _PATHS = _path_resolver.paths

@@ -32,7 +32,7 @@ class ClientPathResolver:
     Environments:
     - msix: MSIX package (sandboxed, uses AppData for writable storage)
     - portable: _internal/app distribution structure (ZIP)
-    - development: Running from source (script lives at <repo>/src/client/)
+    - development: Running from source (script lives at <repo>/src/client/tk/)
     """
 
     def __init__(self, script_path: Path) -> None:
@@ -115,14 +115,14 @@ class ClientPathResolver:
         """Resolves all paths based on detected distribution mode.
 
         Algorithm:
-            1. development: root_dir derived from ClientPathResolver.__file__ (src/client/)
+            1. development: root_dir derived from ClientPathResolver.__file__ (src/client/tk/)
                → always repo root regardless of caller script depth; config/logs relative to root.
-            2. portable: script is at <dist>/_internal/app/src/client/client.py →
-               app_dir = script^3; root_dir = app_dir^2; config under app_dir, logs under root.
+            2. portable: script is at <dist>/_internal/app/src/client/tk/client.py →
+               app_dir = script^4; root_dir = app_dir^2; config under app_dir, logs under root.
             3. msix: same depth as portable, but writable paths come from AppData.
         """
         if self._mode == "development":
-            root_dir = Path(__file__).resolve().parent.parent.parent
+            root_dir = Path(__file__).resolve().parent.parent.parent.parent
             return ClientResolvedPaths(
                 root_dir=root_dir,
                 config_dir=root_dir / "config",
@@ -132,8 +132,8 @@ class ClientPathResolver:
                 environment="development",
             )
 
-        # portable and msix: script lives at _internal/app/src/client/client.py
-        app_dir = self._script_path.parent.parent.parent  # → _internal/app/
+        # portable and msix: script lives at _internal/app/src/client/tk/client.py
+        app_dir = self._script_path.parent.parent.parent.parent  # → _internal/app/
 
         if self._mode == "portable":
             root_dir = app_dir.parent.parent  # → dist root
@@ -159,7 +159,7 @@ class ClientPathResolver:
 
     def _copy_bundled_configs(self) -> None:
         """Copies bundled config files to AppData if not already present (MSIX only)."""
-        bundled_config_dir = self._script_path.parent.parent.parent / "config"
+        bundled_config_dir = self._script_path.parent.parent.parent.parent / "config"
         if not bundled_config_dir.exists():
             return
         for bundled in bundled_config_dir.iterdir():

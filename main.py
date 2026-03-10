@@ -38,7 +38,7 @@ def _spawn_client(server_url: str, input_file: str | None = None) -> "subprocess
         Running subprocess handle.
     """
     import subprocess
-    client_script = Path(__file__).parent / "src" / "client" / "client.py"
+    client_script = Path(__file__).parent / "src" / "client" / "tk" / "client.py"
     cmd = [sys.executable, str(client_script), f"--server-url={server_url}"]
     if input_file is not None:
         cmd.append(f"--input-file={input_file}")

@@ -12,7 +12,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 from logging.handlers import RotatingFileHandler
 from src.LoggingSetup import setup_logging as server_setup_logging
-from src.client.setup_logging import setup_logging as client_setup_logging
+from src.client.tk.setup_logging import setup_logging as client_setup_logging
 
 
 def setup_logging(logs_dir: Path, verbose: bool = False, is_frozen: bool = False):
