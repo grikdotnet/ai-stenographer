@@ -26,9 +26,6 @@ from src.network.types import (
 )
 
 _HEADER_PREFIX_LEN = 4  # bytes for the uint32 header_len field
-_EXPECTED_SAMPLE_RATE = 16000
-_EXPECTED_DTYPE = "float32"
-_EXPECTED_CHANNELS = 1
 
 
 # ---------------------------------------------------------------------------
@@ -49,10 +46,6 @@ def encode_audio_frame(frame: WsAudioFrame) -> bytes:
         "session_id": frame.session_id,
         "chunk_id": frame.chunk_id,
         "timestamp": frame.timestamp,
-        "sample_rate": frame.sample_rate,
-        "num_samples": frame.num_samples,
-        "dtype": frame.dtype,
-        "channels": frame.channels,
     }
     header_bytes = json.dumps(header).encode("utf-8")
     payload = frame.audio.astype(np.float32).tobytes()
@@ -65,9 +58,8 @@ def decode_audio_frame(raw: bytes, expected_session_id: str) -> WsAudioFrame:
     Algorithm:
         1. Read 4-byte header_len prefix.
         2. Parse JSON header from [4 .. 4+header_len].
-        3. Validate type, session_id, sample_rate, dtype, channels.
+        3. Validate type and session_id.
         4. Reconstruct float32 numpy array from remaining payload bytes.
-        5. Verify payload length matches num_samples.
 
     Args:
         raw: Raw binary frame bytes.
@@ -101,35 +93,12 @@ def decode_audio_frame(raw: bytes, expected_session_id: str) -> WsAudioFrame:
             f"session_id mismatch: expected {expected_session_id!r}, got {header.get('session_id')!r}"
         )
 
-    if header.get("sample_rate") != _EXPECTED_SAMPLE_RATE:
-        raise ValueError(f"Invalid sample_rate {header.get('sample_rate')}: must be {_EXPECTED_SAMPLE_RATE}")
-
-    if header.get("dtype") != _EXPECTED_DTYPE:
-        raise ValueError(f"Invalid dtype {header.get('dtype')!r}: must be '{_EXPECTED_DTYPE}'")
-
-    if header.get("channels") != _EXPECTED_CHANNELS:
-        raise ValueError(f"Invalid channels {header.get('channels')}: must be {_EXPECTED_CHANNELS}")
-
-    num_samples: int = header["num_samples"]
-    payload = raw[header_end:]
-    expected_payload_len = num_samples * 4
-
-    if len(payload) != expected_payload_len:
-        raise ValueError(
-            f"payload length {len(payload)} does not match num_samples={num_samples} "
-            f"(expected {expected_payload_len} bytes)"
-        )
-
-    audio = np.frombuffer(payload, dtype=np.float32).copy()
+    audio = np.frombuffer(raw[header_end:], dtype=np.float32).copy()
 
     return WsAudioFrame(
         session_id=header["session_id"],
         chunk_id=header["chunk_id"],
         timestamp=header["timestamp"],
-        sample_rate=header["sample_rate"],
-        num_samples=num_samples,
-        dtype=header["dtype"],
-        channels=header["channels"],
         audio=audio,
     )
 
@@ -156,7 +125,6 @@ def encode_server_message(msg: ServerMessage) -> str:
             "session_id": msg.session_id,
             "protocol_version": msg.protocol_version,
             "server_time": msg.server_time,
-            "server_config": msg.server_config,
         }
     elif isinstance(msg, WsRecognitionResult):
         obj = {

@@ -35,17 +35,12 @@ def _frame(
     session_id: str = "sess-1",
     chunk_id: int = 1,
     num_samples: int = 512,
-    sample_rate: int = 16000,
 ) -> WsAudioFrame:
     audio = np.zeros(num_samples, dtype=np.float32)
     return WsAudioFrame(
         session_id=session_id,
         chunk_id=chunk_id,
         timestamp=1_000.0,
-        sample_rate=sample_rate,
-        num_samples=num_samples,
-        dtype="float32",
-        channels=1,
         audio=audio,
     )
 
@@ -66,10 +61,6 @@ class TestAudioFrameRoundtrip:
             session_id="abc",
             chunk_id=7,
             timestamp=42.5,
-            sample_rate=16000,
-            num_samples=512,
-            dtype="float32",
-            channels=1,
             audio=audio,
         )
         raw = encode_audio_frame(frame)
@@ -81,10 +72,6 @@ class TestAudioFrameRoundtrip:
         decoded = decode_audio_frame(_raw_binary(frame), expected_session_id="s99")
         assert decoded.session_id == "s99"
         assert decoded.chunk_id == 42
-        assert decoded.sample_rate == 16000
-        assert decoded.num_samples == 512
-        assert decoded.dtype == "float32"
-        assert decoded.channels == 1
 
     def test_header_length_prefix_is_correct(self) -> None:
         frame = _frame()
@@ -93,7 +80,7 @@ class TestAudioFrameRoundtrip:
         header_bytes = raw[4 : 4 + header_len]
         header = json.loads(header_bytes.decode("utf-8"))
         assert header["type"] == "audio_chunk"
-        assert len(raw) == 4 + header_len + frame.num_samples * 4
+        assert len(raw) == 4 + header_len + len(frame.audio) * 4
 
     def test_payload_length_matches_num_samples(self) -> None:
         frame = _frame(num_samples=256)
@@ -131,42 +118,6 @@ class TestAudioFrameValidation:
         with pytest.raises(ValueError, match="session_id"):
             decode_audio_frame(raw, expected_session_id="session-B")
 
-    def test_rejects_wrong_sample_rate(self) -> None:
-        frame = _frame(sample_rate=8000)
-        raw = encode_audio_frame(frame)
-        with pytest.raises(ValueError, match="sample_rate"):
-            decode_audio_frame(raw, expected_session_id=frame.session_id)
-
-    def test_rejects_num_samples_payload_mismatch(self) -> None:
-        frame = _frame(num_samples=512)
-        raw = encode_audio_frame(frame)
-        # Corrupt by truncating payload by 4 bytes (one float32 missing)
-        truncated = raw[:-4]
-        with pytest.raises(ValueError, match="payload"):
-            decode_audio_frame(truncated, expected_session_id=frame.session_id)
-
-    def test_rejects_wrong_dtype(self) -> None:
-        frame = _frame()
-        raw = encode_audio_frame(frame)
-        header_len = struct.unpack_from("<I", raw, 0)[0]
-        header = json.loads(raw[4 : 4 + header_len])
-        header["dtype"] = "int16"
-        bad_header = json.dumps(header).encode()
-        rebuilt = struct.pack("<I", len(bad_header)) + bad_header + raw[4 + header_len :]
-        with pytest.raises(ValueError, match="dtype"):
-            decode_audio_frame(rebuilt, expected_session_id=frame.session_id)
-
-    def test_rejects_wrong_channels(self) -> None:
-        frame = _frame()
-        raw = encode_audio_frame(frame)
-        header_len = struct.unpack_from("<I", raw, 0)[0]
-        header = json.loads(raw[4 : 4 + header_len])
-        header["channels"] = 2
-        bad_header = json.dumps(header).encode()
-        rebuilt = struct.pack("<I", len(bad_header)) + bad_header + raw[4 + header_len :]
-        with pytest.raises(ValueError, match="channels"):
-            decode_audio_frame(rebuilt, expected_session_id=frame.session_id)
-
 
 # ---------------------------------------------------------------------------
 # encode_server_message — JSON encoding for all server message types
@@ -178,19 +129,12 @@ class TestEncodeServerMessage:
             session_id="s1",
             protocol_version="v1",
             server_time=1_000.0,
-            server_config={
-                "sample_rate": 16000,
-                "chunk_duration_sec": 0.032,
-                "audio_dtype": "float32",
-                "channels": 1,
-            },
         )
         raw = encode_server_message(msg)
         obj = json.loads(raw)
         assert obj["type"] == "session_created"
         assert obj["session_id"] == "s1"
         assert obj["protocol_version"] == "v1"
-        assert obj["server_config"]["sample_rate"] == 16000
 
     def test_encodes_recognition_result_partial(self) -> None:
         msg = WsRecognitionResult(

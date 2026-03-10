@@ -22,13 +22,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_SERVER_CONFIG = {
-    "sample_rate": 16000,
-    "chunk_duration_sec": 0.032,
-    "audio_dtype": "float32",
-    "channels": 1,
-}
-
 
 class SessionManager:
     """Creates and destroys ClientSession objects; tracks active sessions.
@@ -118,7 +111,6 @@ class SessionManager:
             session_id=session_id,
             protocol_version="v1",
             server_time=time.time(),
-            server_config=_SERVER_CONFIG,
         )
         try:
             await websocket.send(encode_server_message(created_msg))

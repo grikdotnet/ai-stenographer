@@ -63,7 +63,7 @@ All wire types are defined in `src/network/types.py`; encode/decode is in `src/n
 
 | Type | Wire format | Description |
 |---|---|---|
-| `WsSessionCreated` | JSON text | Sent immediately on connect; contains `session_id`, `protocol_version`, `server_config` |
+| `WsSessionCreated` | JSON text | Sent immediately on connect; contains `session_id`, `protocol_version`, `server_time` |
 | `WsRecognitionResult` | JSON text | `status`: `"partial"` or `"final"`; contains text, timing, chunk_ids, utterance_id, confidence fields |
 | `WsSessionClosed` | JSON text | Reason: `"shutdown"`, `"timeout"`, or `"error"` |
 | `WsError` | JSON text | Non-fatal errors continue the session; `fatal: true` closes the connection |
@@ -76,7 +76,7 @@ All wire types are defined in `src/network/types.py`; encode/decode is in `src/n
 
 ```
 client connects
-  → server sends session_created (session_id, protocol_version, server_config)
+  → server sends session_created (session_id, protocol_version, server_time)
   → client stamps session_id on all outbound WsAudioFrame headers
   → server streams recognition_result frames (partial + final)
   → client sends control_command shutdown (or closes WebSocket)

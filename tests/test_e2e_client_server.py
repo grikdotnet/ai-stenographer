@@ -212,10 +212,6 @@ async def _send_chunks(ws, session_id: str, audio_chunks: list) -> None:
             session_id=session_id,
             chunk_id=next(counter),
             timestamp=i * (_CHUNK_SIZE / _SAMPLE_RATE),
-            sample_rate=_SAMPLE_RATE,
-            num_samples=_CHUNK_SIZE,
-            dtype="float32",
-            channels=1,
             audio=chunk,
         )
         await ws.send(encode_audio_frame(frame))

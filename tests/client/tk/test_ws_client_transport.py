@@ -167,7 +167,7 @@ class TestAudioSend:
             time.sleep(0.2)
             frame_bytes = asyncio.run_coroutine_threadsafe(ws.sent.get(), loop).result(timeout=2.0)
             decoded = decode_audio_frame(frame_bytes, expected_session_id=_SESSION_ID)
-            assert decoded.num_samples == 256
+            assert len(decoded.audio) == 256
             np.testing.assert_array_almost_equal(decoded.audio, audio)
         finally:
             _stop_transport(transport, loop)

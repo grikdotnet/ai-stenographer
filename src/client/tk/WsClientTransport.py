@@ -19,7 +19,6 @@ from src.network.types import WsAudioFrame
 logger = logging.getLogger(__name__)
 
 _SEND_QUEUE_MAXSIZE = 20
-_SAMPLE_RATE = 16000
 
 
 class _SupportsAsyncSend(Any.__class__):
@@ -113,10 +112,6 @@ class WsClientTransport:
             session_id=self._session_id,
             chunk_id=next(self._chunk_counter),
             timestamp=chunk["timestamp"],
-            sample_rate=_SAMPLE_RATE,
-            num_samples=len(audio),
-            dtype="float32",
-            channels=1,
             audio=audio,
         )
         encoded = encode_audio_frame(frame)

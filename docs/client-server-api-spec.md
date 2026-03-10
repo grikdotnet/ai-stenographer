@@ -42,7 +42,7 @@ Binary envelope:
 - bytes `[4..(4 + header_len - 1)]`: UTF-8 JSON header
 - bytes `[4 + header_len..end]`: raw PCM bytes payload
 
-Note: The JSON header is intentionally human-readable for debuggability. The per-frame overhead is ~150 bytes at 31 frames/sec (~4.7 KB/sec), negligible for local WebSocket. Binary optimization is deferred to v2.
+Note: The JSON header is intentionally human-readable for debuggability. The per-frame overhead is ~80 bytes at 31 frames/sec (~2.5 KB/sec), negligible for local WebSocket. Binary optimization is deferred to v2.
 
 Header JSON schema:
 
@@ -51,11 +51,7 @@ Header JSON schema:
   "type": "audio_chunk",
   "session_id": "uuid-string",
   "chunk_id": 42,
-  "timestamp": 1735689600.123,
-  "sample_rate": 16000,
-  "num_samples": 512,
-  "dtype": "float32",
-  "channels": 1
+  "timestamp": 1735689600.123
 }
 ```
 
@@ -63,10 +59,6 @@ Validation rules:
 
 - `type` must be `audio_chunk`
 - `session_id` must match active session (included in every frame as a defensive guard against client misconfiguration)
-- `sample_rate` must be `16000`
-- `dtype` must be `float32`
-- `channels` must be `1`
-- payload length must be exactly `num_samples * 4` bytes
 
 Failure behavior:
 
@@ -107,13 +99,7 @@ Schema:
   "type": "session_created",
   "session_id": "uuid-string",
   "protocol_version": "v1",
-  "server_time": 1735689600.101,
-  "server_config": {
-    "sample_rate": 16000,
-    "chunk_duration_sec": 0.032,
-    "audio_dtype": "float32",
-    "channels": 1
-  }
+  "server_time": 1735689600.101
 }
 ```
 
@@ -190,7 +176,7 @@ Schema:
   "type": "error",
   "session_id": "uuid-string",
   "error_code": "INVALID_AUDIO_FRAME",
-  "message": "payload length does not match num_samples",
+  "message": "audio payload bytes is not a multiple of 4",
   "fatal": false
 }
 ```

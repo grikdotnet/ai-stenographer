@@ -14,17 +14,12 @@ import numpy.typing as npt
 @dataclass
 class WsAudioFrame:
     """Binary audio_chunk frame sent from client to server.
-
     Carries one chunk of mono float32 PCM audio at 16 kHz.
     """
 
     session_id: str
     chunk_id: int
     timestamp: float
-    sample_rate: int
-    num_samples: int
-    dtype: str
-    channels: int
     audio: npt.NDArray[np.float32]
 
 
@@ -57,13 +52,11 @@ class WsSessionCreated:
         session_id: UUID assigned to this session.
         protocol_version: Wire protocol version string (``"v1"``).
         server_time: Server wall-clock time at session creation.
-        server_config: Audio format parameters the client must honour.
     """
 
     session_id: str
     protocol_version: str
     server_time: float
-    server_config: dict
 
 
 @dataclass

@@ -36,10 +36,6 @@ def _make_audio_frame(
         session_id=session_id,
         chunk_id=chunk_id,
         timestamp=1000.0,
-        sample_rate=16000,
-        num_samples=num_samples,
-        dtype="float32",
-        channels=1,
         audio=audio,
     )
     return encode_audio_frame(frame)
