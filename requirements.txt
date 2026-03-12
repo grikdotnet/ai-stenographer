@@ -5,3 +5,4 @@ onnx-asr==0.10.0
 requests
 pynput>=1.7.6
 tqdm
+websockets>=12.0

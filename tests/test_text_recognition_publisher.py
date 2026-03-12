@@ -1,7 +1,6 @@
-"""Tests for RecognitionResultPublisher (Observer pattern implementation).
+"""Tests for RecognitionResultFanOut (concrete Observer pattern implementation).
 
-These tests define the expected behavior of the publisher component
-before implementation (TDD RED phase).
+Tests the concrete fan-out publisher that lives on the client side.
 """
 
 import pytest
@@ -9,7 +8,7 @@ import logging
 import threading
 import time
 from unittest.mock import Mock, call
-from src.RecognitionResultPublisher import RecognitionResultPublisher
+from src.client.tk.RecognitionResultFanOut import RecognitionResultFanOut
 from src.types import RecognitionResult
 
 
@@ -17,8 +16,8 @@ from src.types import RecognitionResult
 
 @pytest.fixture
 def publisher():
-    """Create a publisher instance."""
-    return RecognitionResultPublisher(verbose=False)
+    """Create a fan-out publisher instance."""
+    return RecognitionResultFanOut(verbose=False)
 
 
 @pytest.fixture
@@ -285,7 +284,7 @@ def test_verbose_logging(caplog, sample_preliminary_result):
     # Set log level to capture INFO messages
     caplog.set_level(logging.INFO)
 
-    publisher = RecognitionResultPublisher(verbose=True)
+    publisher = RecognitionResultFanOut(verbose=True)
     sub = Mock()
 
     # Subscribe
@@ -299,7 +298,7 @@ def test_verbose_logging(caplog, sample_preliminary_result):
 
 def test_non_verbose_no_logging(caplog, sample_preliminary_result):
     """Verify non-verbose mode doesn't log subscription events."""
-    publisher = RecognitionResultPublisher(verbose=False)
+    publisher = RecognitionResultFanOut(verbose=False)
     sub = Mock()
 
     # Clear any existing logs

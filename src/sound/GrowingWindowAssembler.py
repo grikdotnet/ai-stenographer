@@ -99,34 +99,30 @@ class GrowingWindowAssembler:
         4. Handle right_context (optional at utterance boundary)
         5. Create AudioSegment and enqueue
         """
-        if not self.segments:
+        segments = list(self.segments)
+        if not segments:
             return
 
-        # Concatenate all audio data
-        audio_parts = [seg.data for seg in self.segments]
+        audio_parts = [seg.data for seg in segments]
         window_audio = np.concatenate(audio_parts)
 
-        # Calculate actual window timing from segments
-        actual_start = self.segments[0].start_time
-        actual_end = self.segments[-1].end_time
+        actual_start = segments[0].start_time
+        actual_end = segments[-1].end_time
 
-        # Collect unique chunk_ids from all segments in window
         chunk_ids = []
-        for seg in self.segments:
+        for seg in segments:
             chunk_ids.extend(seg.chunk_ids)
         unique_chunk_ids = sorted(set(chunk_ids))
 
-        # Windows include left_context until original first segment drops
         left_ctx = np.array([], dtype=np.float32)
-        if not self.first_segment_dropped and self.segments:
-            left_ctx = self.segments[0].left_context
+        if not self.first_segment_dropped:
+            left_ctx = segments[0].left_context
 
-        # Only flush windows get right_context
         right_ctx = np.array([], dtype=np.float32)
         if include_right_context:
-            right_ctx = self.segments[-1].right_context
+            right_ctx = segments[-1].right_context
 
-        utterance_ids = {seg.utterance_id for seg in self.segments}
+        utterance_ids = {seg.utterance_id for seg in segments}
         utterance_id = next(iter(utterance_ids))
 
         window = AudioSegment(

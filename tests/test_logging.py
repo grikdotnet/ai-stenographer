@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from logging.handlers import RotatingFileHandler
+from src.LoggingSetup import setup_logging as server_setup_logging
+from src.client.tk.setup_logging import setup_logging as client_setup_logging
 
 
 def setup_logging(logs_dir: Path, verbose: bool = False, is_frozen: bool = False):
@@ -210,3 +212,29 @@ class TestLoggingConfiguration:
         for log in log_files:
             # Allow some overhead (rotation happens AFTER maxBytes is exceeded)
             assert log.stat().st_size < 2048  # 2KB max (generous allowance)
+
+    def test_server_setup_logging_keeps_root_debug_and_suppresses_websockets(self, tmp_path):
+        """Verbose server logging should keep app debug while muting websockets frame dumps."""
+        logs_dir = tmp_path / "logs"
+        previous_websockets_level = logging.getLogger("websockets").level
+
+        server_setup_logging(logs_dir=logs_dir, verbose=True, is_frozen=True)
+
+        assert logging.getLogger().level == logging.DEBUG
+        assert logging.getLogger("websockets").level == logging.WARNING
+
+        logging.getLogger().handlers.clear()
+        logging.getLogger("websockets").setLevel(previous_websockets_level)
+
+    def test_client_setup_logging_keeps_root_debug_and_suppresses_websockets(self, tmp_path):
+        """Verbose client logging should keep app debug while muting websockets frame dumps."""
+        logs_dir = tmp_path / "logs"
+        previous_websockets_level = logging.getLogger("websockets").level
+
+        client_setup_logging(logs_dir=logs_dir, verbose=True, is_frozen=True)
+
+        assert logging.getLogger().level == logging.DEBUG
+        assert logging.getLogger("websockets").level == logging.WARNING
+
+        logging.getLogger().handlers.clear()
+        logging.getLogger("websockets").setLevel(previous_websockets_level)

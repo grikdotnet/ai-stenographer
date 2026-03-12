@@ -3,7 +3,7 @@ import pytest
 import queue
 import numpy as np
 from unittest.mock import Mock
-from src.sound.AudioSource import AudioSource
+from src.client.tk.sound.AudioSource import AudioSource
 from src.sound.SoundPreProcessor import SoundPreProcessor
 from src.asr.VoiceActivityDetector import VoiceActivityDetector
 from src.sound.GrowingWindowAssembler import GrowingWindowAssembler

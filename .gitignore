@@ -8,6 +8,8 @@ venv/
 ENV/
 *.bak
 
+llama
+
 .*
 !.gitignore
 *.swp

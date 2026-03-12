@@ -49,6 +49,29 @@ class TestRecognizer:
         assert result.end_time == 1.2
         assert result.chunk_ids == [123]
 
+    def test_utterance_id_propagated_to_recognition_result(self, mock_model):
+        """utterance_id from AudioSegment must appear unchanged in RecognitionResult."""
+        mock_model.recognize.return_value = TimestampedResult(
+            text="hello", tokens=None, timestamps=None
+        )
+        recognizer = Recognizer(input_queue=queue.Queue(), output_queue=queue.Queue(), model=mock_model, sample_rate=16000, app_state=Mock())
+
+        segment = AudioSegment(
+            type='incremental',
+            data=np.full(3200, 0.1, dtype=np.float32),
+            left_context=np.array([], dtype=np.float32),
+            right_context=np.array([], dtype=np.float32),
+            start_time=0.0,
+            end_time=0.2,
+            chunk_ids=[0],
+            utterance_id=42,
+        )
+
+        result = recognizer.recognize_window(segment)
+
+        assert result is not None
+        assert result.utterance_id == 42
+
     def test_recognizes_finalized_segments(self, mock_model):
         """Recognizer should process larger segments."""
         mock_model.recognize.return_value = TimestampedResult(
