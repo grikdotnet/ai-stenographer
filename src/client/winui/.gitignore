@@ -1,0 +1,23 @@
+# Build output
+bin/
+obj/
+*.binlog
+
+# NuGet packages
+packages/
+*.nupkg
+*.snupkg
+
+# User-specific files
+*.user
+*.suo
+.vs/
+
+# Test results
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+
+# Publish output
+publish/

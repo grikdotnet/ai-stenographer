@@ -1,0 +1,19 @@
+<Window
+    x:Class="SttClient.Views.QuickEntryWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    Title="Quick Entry">
+
+    <Window.SystemBackdrop>
+        <DesktopAcrylicBackdrop />
+    </Window.SystemBackdrop>
+
+    <Grid Padding="16">
+        <TextBlock x:Name="LiveTextBlock"
+                   Text="{x:Bind ViewModel.LiveText, Mode=OneWay}"
+                   TextWrapping="Wrap"
+                   FontSize="16"
+                   Opacity="0.9"
+                   VerticalAlignment="Center"/>
+    </Grid>
+</Window>

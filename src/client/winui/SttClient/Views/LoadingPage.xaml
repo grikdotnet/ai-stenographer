@@ -1,0 +1,41 @@
+<Page
+    x:Class="SttClient.Views.LoadingPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid HorizontalAlignment="Center" VerticalAlignment="Center" RowSpacing="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- Connecting state: spinner + label -->
+        <ProgressRing Grid.Row="0"
+                      x:Name="ConnectingSpinner"
+                      IsActive="True"
+                      Width="48" Height="48"/>
+
+        <TextBlock Grid.Row="1"
+                   x:Name="ConnectingLabel"
+                   Text="Connecting…"
+                   HorizontalAlignment="Center"/>
+
+        <!-- Error state: message + exit button -->
+        <TextBlock Grid.Row="2"
+                   x:Name="ErrorMessageText"
+                   TextWrapping="Wrap"
+                   MaxWidth="400"
+                   HorizontalAlignment="Center"
+                   Foreground="{ThemeResource SystemFillColorCriticalBrush}"
+                   Visibility="Collapsed"/>
+
+        <Button Grid.Row="3"
+                x:Name="ExitButton"
+                Content="Exit"
+                HorizontalAlignment="Center"
+                Click="ExitButton_Click"
+                Visibility="Collapsed"/>
+    </Grid>
+</Page>
