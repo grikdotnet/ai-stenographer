@@ -29,7 +29,7 @@ from src.asr.Recognizer import Recognizer
 from src.client.tk.ClientApplicationState import ClientApplicationState
 from src.client.tk.RemoteRecognitionPublisher import RemoteRecognitionPublisher
 from src.client.tk.WsClientTransport import WsClientTransport
-from src.client.network.codec import encode_audio_frame
+from src.client.tk.network.codec import encode_audio_frame
 from src.network.types import WsAudioFrame
 from src.server.ServerApp import ServerApp
 from src.ServerApplicationState import ServerApplicationState

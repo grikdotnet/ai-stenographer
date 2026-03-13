@@ -13,7 +13,7 @@ from typing import Any
 
 from src.client.tk.ClientApplicationState import ClientApplicationState
 from src.client.tk.RemoteRecognitionPublisher import RemoteRecognitionPublisher
-from src.client.network.codec import encode_audio_frame
+from src.client.tk.network.codec import encode_audio_frame
 from src.network.types import WsAudioFrame
 
 logger = logging.getLogger(__name__)

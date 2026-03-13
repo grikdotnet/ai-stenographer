@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import numpy as np
 import pytest
 
-from src.client.network.codec import encode_audio_frame
+from src.client.tk.network.codec import encode_audio_frame
 from src.network.types import WsAudioFrame
 from src.server.WsAudioReceiver import receive_audio
 
