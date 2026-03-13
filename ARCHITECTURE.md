@@ -4,7 +4,7 @@
 
 The Speech-to-Text system is a **two-process client-server application**. The server process handles all audio processing, VAD, and ASR inference. The client process handles microphone capture, the Tk GUI, and text insertion. The two processes communicate over a local WebSocket connection (protocol v1).
 
-Launching `python main.py` starts the server in-process and spawns `src/client/client.py` as a subprocess. A daemon watcher thread in `main.py` monitors the subprocess: when it exits (user closes the window or crash), the watcher calls `server_app.stop()`. Running `python main.py --server-only` starts the server headlessly without spawning a client.
+Launching `python main.py` starts the server in-process and spawns `src/client/tk/client.py` as a subprocess. A daemon watcher thread in `main.py` monitors the subprocess: when it exits (user closes the window or crash), the watcher calls `server_app.stop()`. Running `python main.py --server-only` starts the server headlessly without spawning a client.
 
 Application state is split: `ServerApplicationState` manages server lifecycle (`starting → running → shutdown`, component observers only, no pause, no GUI scheduling). `ClientApplicationState` manages the full client lifecycle (`starting → running ⟷ paused → shutdown`) including GUI observers and tkinter scheduling.
 
@@ -26,16 +26,9 @@ In the multi-session server each `SpeechEndRouter` instance receives a `first_me
 4. **Default mode**: spawns `src/client/client.py` as a subprocess with `--server-url=ws://127.0.0.1:<port>`. Starts a daemon watcher thread calling `client_proc.wait()`, then `server_app.stop()` + `client_proc.terminate()`.
 5. **`--server-only` mode**: blocks on `WsServer.join()`.
 
-### `src/client/client.py`
+### `src/client/tk/client.py`
 
-Subprocess entry script. Not intended for direct user invocation.
-
-1. Parses `--server-url=ws://host:port` (required).
-2. Displays `LoadingWindow` while connecting to the WebSocket server.
-3. Reads the `session_created` JSON frame; calls `ClientApp.from_session_created()`.
-4. Sets `transport._loop` to the asyncio loop started by `WsClientTransport`.
-5. Calls `client_app.start()` and runs `root.mainloop()`.
-6. On `ConnectionClosed`: `WsClientTransport` transitions `ClientApplicationState` to `shutdown`; the observer chain stops `AudioSource` and exits the Tk loop. Exits with code 1.
+Subprocess entry script. Not intended for direct user invocation. Parses `--server-url`, shows `LoadingWindow`, reads the `session_created` frame, calls `ClientApp.from_session_created()`. See [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md) for the full startup sequence.
 
 ### CLI Flags
 
@@ -85,6 +78,16 @@ client connects
 
 ---
 
+## Client Application
+
+The Tk client runs as a subprocess of `main.py`. It has no ASR inference — it captures microphone audio, encodes it as `WsAudioFrame` binary frames, streams them to the server, and receives `WsRecognitionResult` JSON frames in return.
+
+The client subprocess is spawned with `--server-url=ws://127.0.0.1:<port>`. A daemon watcher thread in `main.py` monitors it: when the client exits (window closed), the watcher calls `server_app.stop()`. When the server shuts down, `WsClientTransport` receives `ConnectionClosed` and transitions the client to `shutdown`.
+
+Full client architecture: [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md)
+
+---
+
 ## Module Organization
 
 ### Root (`src/`)
@@ -111,19 +114,9 @@ client connects
 - **`types.py`**: `WsAudioFrame`, `WsControlCommand`, `WsSessionCreated`, `WsRecognitionResult`, `WsSessionClosed`, `WsError`; union aliases `ServerMessage`, `ClientTextMessage`.
 - **`codec.py`**: `encode_audio_frame()`, `decode_audio_frame()`, `encode_server_message()`, `decode_client_message()`.
 
-### Client (`src/client/`)
+### Client (`src/client/tk/`)
 
-- **`client.py`**: Subprocess entry script; parses `--server-url`; shows `LoadingWindow`; calls `ClientApp.from_session_created()`.
-- **`tk/ClientApp.py`**: Wires `AudioSource` + `AudioBridge` thread + `WsClientTransport` + Tk GUI; `from_session_created()` factory.
-- **`tk/ClientApplicationState.py`**: Re-exports `ApplicationState`; full 4-state machine with GUI observer support; used by `AudioSource`, `PauseController`, `ControlPanel`, `WsClientTransport`.
-- **`tk/WsClientTransport.py`**: Asyncio event loop on daemon thread; sync `send_audio_chunk()` → bounded `asyncio.Queue` → WebSocket; async receive loop → `RemoteRecognitionPublisher`.
-- **`tk/RemoteRecognitionPublisher.py`**: Decodes incoming WS JSON text frames → dispatches to `RecognitionResultFanOut`.
-- **`tk/RecognitionResultFanOut.py`**: Concrete client-side fan-out publisher; implements `RecognitionResultPublisher` protocol; manages subscribers (`TextFormatter`, `TextInsertionService`, `QuickEntryService`); thread-safe copy-on-notify.
-- **`tk/asr/`**: Client copies of `ModelManager` and `DownloadProgressReporter` (used by `client.py` for model download dialogs).
-- **`tk/controllers/`**: `PauseController`, `InsertionController` (moved from `src/controllers/`).
-- **`tk/gui/`**: All Tk GUI widgets: `ApplicationWindow`, `ControlPanel`, `HeaderPanel`, `InsertionModePanel`, `TextDisplayWidget`, `TextFormatter`, `TextInserter`, `TextInsertionService`, `KeyboardSimulator`, `LoadingWindow`, `ModelDownloadDialog` (moved from `src/gui/`).
-- **`tk/quickentry/`**: `QuickEntryService`, `QuickEntryController`, `QuickEntrySubscriber`, `QuickEntryPopup`, `GlobalHotkeyListener`, `FocusTracker`, `windows_effects` (moved from `src/quickentry/`).
-- **`tk/sound/`**: `AudioSource`, `FileAudioSource` (moved from `src/sound/`; client-side only).
+The Tk GUI client subprocess. Handles mic capture, WebSocket audio streaming, recognition result rendering, text insertion, and quick-entry popup. Full module organization: [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md).
 
 ### Shared Processing (server-side at runtime)
 
@@ -182,38 +175,7 @@ client connects
 
 ### Client-Side Pipeline
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│  CLIENT PROCESS (src/client/client.py subprocess)                        │
-│                                                                           │
-│  AudioSource (sounddevice callback, daemon)                               │
-│    → chunk_queue.put_nowait({audio, timestamp, chunk_id})                 │
-│                                                                           │
-│  AudioBridge daemon thread (ClientApp-AudioBridge)                        │
-│    ← chunk_queue.get(timeout=0.05)                                        │
-│    → WsClientTransport.send_audio_chunk(chunk)                            │
-│      → WsAudioFrame encode → loop.call_soon_threadsafe → asyncio.Queue   │
-│                                                                           │
-│  WsClientTransport asyncio loop (daemon thread)                          │
-│    _drain_loop: asyncio.Queue → websocket.send(bytes) → server            │
-│    _receive_loop: websocket text frames → RemoteRecognitionPublisher      │
-│                                                                           │
-│  RemoteRecognitionPublisher (no thread)                                   │
-│    ← JSON WsRecognitionResult frame                                       │
-│    → RecognitionResultFanOut.publish_partial_update / publish_finalization│
-│                                                                           │
-│  RecognitionResultFanOut (no thread)                                      │
-│    → TextFormatter.on_partial_update / on_finalization                    │
-│    → TextInsertionService                                                 │
-│    → QuickEntrySubscriber                                                 │
-│                                                                           │
-│  TextFormatter (no thread, MVC controller)                                │
-│    → DisplayInstructions → TextDisplayWidget.apply_instructions()         │
-│                                                                           │
-│  TextDisplayWidget (no thread, schedules on main thread via root.after()) │
-│  Main thread: Tk mainloop()                                               │
-└──────────────────────────────────────────────────────────────────────────┘
-```
+See [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md) for the client-side pipeline diagram.
 
 ### Process Startup Sequence
 
@@ -222,17 +184,11 @@ main.py
   → ServerApp.start()
       → WsServer: asyncio loop binds port P (OS-assigned)
       → RecognizerService.start() (inference daemon thread)
-  → subprocess.Popen(["python", "src/client/client.py", "--server-url=ws://127.0.0.1:P"])
+  → subprocess.Popen(["python", "src/client/tk/client.py", "--server-url=ws://127.0.0.1:P"])
   → daemon watcher thread: client_proc.wait() → server_app.stop()
 
-src/client/client.py
-  → LoadingWindow displayed
-  → websockets.connect(ws://127.0.0.1:P) [handshake]
-  → reads session_created JSON frame
-  → ClientApp.from_session_created(server_url, session_created_json, config)
-  → transport._loop = asyncio_loop  (set after WsClientTransport._run_loop starts)
-  → client_app.start() → app_state="running", AudioBridge starts, AudioSource starts
-  → root.mainloop()
+src/client/tk/client.py (subprocess)
+  → (see src/client/tk/ARCHITECTURE.md for client startup sequence)
 ```
 
 ---
@@ -256,20 +212,7 @@ src/client/client.py
 
 ### Client Process Threads
 
-| Component | Thread Type | Purpose | Blocking Operations |
-|---|---|---|---|
-| **Main thread** | Main | Tkinter event loop | `root.mainloop()` |
-| **AudioSource** | Daemon (sounddevice callback) | Capture 32ms mic frames; put to chunk_queue | `chunk_queue.put_nowait()` (non-blocking, drops if full) |
-| **AudioBridge** (`ClientApp-AudioBridge`) | Daemon | Drain AudioSource.chunk_queue → WsClientTransport | `chunk_queue.get(timeout=0.05)` |
-| **WsClientTransport** | Daemon (asyncio event loop) | Send binary audio frames; receive JSON result frames | WS I/O |
-| **WsClientTransport._drain_loop** | Async task (transport loop) | asyncio.Queue → `websocket.send(bytes)` | `asyncio.Queue.get()`, `websocket.send()` |
-| **WsClientTransport._receive_loop** | Async task (transport loop) | `websocket.__aiter__()` → `RemoteRecognitionPublisher.dispatch()` | WS receive |
-| **RemoteRecognitionPublisher** | **No thread** | Decode JSON frames → RecognitionResultFanOut | — |
-| **RecognitionResultFanOut** | **No thread** | Fan-out to subscribers; thread-safe copy-on-notify | — |
-| **TextFormatter** | **No thread** | Formatting logic (MVC controller + subscriber) | — |
-| **TextDisplayWidget** | **No thread** | GUI rendering; schedules on main thread via `root.after()` | — |
-| **ClientApplicationState** | **No thread** | Full 4-state machine; GUI + component observers | `threading.Lock` |
-| **PauseController** | **No thread** | Updates ClientApplicationState only | — |
+See [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md) for the client threading model.
 
 ---
 
@@ -289,15 +232,7 @@ src/client/client.py
 
 ### ClientApplicationState
 
-**File:** `src/client/tk/ClientApplicationState.py`
-
-**Responsibility:** Full client lifecycle including pause/resume.
-
-**State machine:** `starting → running ⟷ paused → shutdown`
-
-**Observer types:** Component observers (AudioSource, AudioBridge) and GUI observers (ControlPanel; scheduled via `root.after()`).
-
-**Observed by:** `AudioSource` (closes stream on pause, reopens on resume), `WsClientTransport` (transitions to shutdown on connection loss), `ControlPanel` (updates button state).
+See [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md) for the `ClientApplicationState` documentation.
 
 ---
 
@@ -375,23 +310,7 @@ WsResultSender
 
 ### Client-Side Data Transformation
 
-```
-AudioSource callback
-  → dict {audio: ndarray, timestamp: float, chunk_id: int} → chunk_queue
-
-AudioBridge drain thread
-  → WsClientTransport.send_audio_chunk(chunk)
-      → WsAudioFrame encode → asyncio.Queue(20) → websocket.send(bytes)
-
-WsClientTransport receive loop
-  ← JSON text frame (WsRecognitionResult)
-  → RemoteRecognitionPublisher.dispatch(json_text)
-
-RemoteRecognitionPublisher
-  → RecognitionResult decode → RecognitionResultFanOut.publish_partial_update / publish_finalization
-
-RecognitionResultFanOut → TextFormatter → DisplayInstructions → TextDisplayWidget → tkinter
-```
+See [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md) for the client-side data flow.
 
 ---
 
@@ -500,54 +419,6 @@ Observes `ServerApplicationState`; stops inference thread on `shutdown`.
 
 ---
 
-### ClientApp
-
-**File:** `src/client/tk/ClientApp.py`
-
-**Responsibility:** Wires all client-side components; factory via `from_session_created()`.
-
-**Construction order:** `ClientApplicationState` → `RecognitionResultFanOut` → `TextInsertionService` → `PauseController` → `ApplicationWindow` → subscribe `TextFormatter` to fan-out → `RemoteRecognitionPublisher` → `WsClientTransport` → `AudioSource`.
-
-**`start()`:** Transitions state to `running`, starts `AudioBridge` daemon thread, starts `AudioSource`.
-
-**AudioBridge (`ClientApp-AudioBridge`):** Daemon thread that drains `AudioSource.chunk_queue` and calls `transport.send_audio_chunk(chunk)`. Fully decouples the sync sounddevice callback from the async transport internals.
-
----
-
-### WsClientTransport
-
-**File:** `src/client/tk/WsClientTransport.py`
-
-**Responsibility:** Async WebSocket transport on a daemon asyncio event loop thread.
-
-**Outbound:** Sync `send_audio_chunk(chunk)` encodes a `WsAudioFrame` and calls `loop.call_soon_threadsafe(queue.put_nowait, encoded)`. Async `_drain_loop` task drains to `websocket.send(bytes)`. Drops and logs if queue (maxsize=20) is full.
-
-**Inbound:** Async `_receive_loop` iterates websocket text frames and calls `publisher.dispatch(text)`. On `ConnectionClosed`: transitions `ClientApplicationState` to `shutdown`, which stops `AudioSource` and exits the Tk main loop.
-
----
-
-### RemoteRecognitionPublisher
-
-**File:** `src/client/tk/RemoteRecognitionPublisher.py`
-
-**Responsibility:** Decodes incoming JSON text frames from the server and dispatches to the local publisher.
-
-**Behavior:** `dispatch(json_text)` parses the frame type; routes `recognition_result` frames (partial + final) to `RecognitionResultFanOut`. Unknown types are logged and skipped without raising.
-
----
-
-### RecognitionResultFanOut
-
-**File:** `src/client/tk/RecognitionResultFanOut.py`
-
-**Responsibility:** Concrete client-side implementation of the `RecognitionResultPublisher` protocol. Manages subscriber list and fan-out.
-
-**Thread safety:** Copy-on-notify pattern (lock-protected list, callbacks outside lock). Subscriber exceptions are logged and isolated — one failing subscriber does not affect others.
-
-**Subscribers:** `TextFormatter` (GUI display), `TextInsertionService` (keyboard insertion), `QuickEntrySubscriber` (quick-entry popup).
-
----
-
 ### RecognitionResultPublisher (Protocol)
 
 **File:** `src/RecognitionResultPublisher.py`
@@ -563,19 +434,7 @@ class RecognitionResultPublisher(Protocol):
 
 **Implementations:**
 - `WsResultSender` (server): encodes results as JSON and sends over WebSocket.
-- `RecognitionResultFanOut` (client): fans out to local subscribers.
-
----
-
-### AudioSource
-
-**File:** `src/client/tk/sound/AudioSource.py`
-
-**Responsibility:** Capture 32ms audio frames (16 kHz, 512 samples) from microphone. **Client-side only.**
-
-**Output:** Raw audio dicts `{audio, timestamp, chunk_id}` → `chunk_queue`.
-
-**Observer behavior:** On pause: close stream (release microphone). On resume: create fresh stream.
+- `RecognitionResultFanOut` (client): fans out to local subscribers — see [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md).
 
 ---
 
@@ -637,61 +496,18 @@ class RecognitionResultPublisher(Protocol):
 
 ---
 
-### ApplicationState / PauseController / ControlPanel
-
-**Files:**
-- `src/ApplicationState.py` — base state class (used by `ClientApplicationState`)
-- `src/client/tk/ClientApplicationState.py` — re-exports `ApplicationState`; full 4-state machine
-- `src/client/tk/controllers/PauseController.py` — MVC controller; only updates `ClientApplicationState`
-- `src/client/tk/gui/ControlPanel.py` — GUI widget; observes `ClientApplicationState`; delegates to `PauseController.toggle()`
-
-**PauseController methods:** `pause()`, `resume()`, `toggle()` with guarded state transitions.
-
-**ControlPanel behavior:** Updates button text/state: `"Loading..." → "Pause" → "Resume"`. Delegates clicks to `PauseController`.
-
-**Pause is client-only:** The server never learns about pause. `AudioSource` stops sending audio; `SoundPreProcessor` goes idle naturally.
-
----
-
-### TextFormatter
-
-**File:** `src/client/tk/gui/TextFormatter.py`
-
-**Responsibility:** Text formatting logic (MVC controller + subscriber, NO GUI knowledge). **Client-side only.** Implements `TextRecognitionSubscriber` protocol; subscribed to `RecognitionResultFanOut`.
-
-**Logic:** Calculates `DisplayInstructions` from `RecognitionResult`; space insertion, paragraph breaks (2.0s threshold), chunk-ID filtering, duplicate detection.
-
-**Output:** Calls `display.apply_instructions()` to trigger GUI updates.
-
----
-
-### TextDisplayWidget
-
-**File:** `src/client/tk/gui/TextDisplayWidget.py`
-
-**Responsibility:** Render `DisplayInstructions` to tkinter widget with thread-safety. **Client-side only.**
-
-**Thread-Safety:** Detects calling thread; schedules on main thread via `root.after()` if not already on it.
-
-**Styles:** Final text (black, normal), partial text (gray, italic).
-
----
-
 ## Design Principles
 
 ### 1. Single Responsibility Principle (SRP)
 
 Each component has one clear responsibility:
-- **AudioSource**: Mic capture only (non-blocking callback, client-side)
 - **SoundPreProcessor**: VAD, normalization, speech buffering (server-side, per session)
 - **GrowingWindowAssembler**: Growing window assembly (server-side, sync, per session)
 - **RecognizerService**: Shared ASR inference + session routing (server-side, global)
 - **IncrementalTextMatcher**: Text overlap resolution and result publishing (server-side, per session)
 - **RecognitionResultPublisher**: Protocol interface for result delivery
 - **WsResultSender**: Sync-to-async bridge to client WebSocket (server-side)
-- **RecognitionResultFanOut**: Client-side subscriber management and fan-out
-- **TextFormatter**: Formatting logic (client-side MVC controller, no GUI knowledge)
-- **TextDisplayWidget**: GUI rendering + thread-safety (client-side MVC view)
+- Client-side components: see [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md)
 
 ### 2. Open/Closed Principle (OCP)
 
@@ -711,25 +527,13 @@ Strategy Pattern isolates ONNX Runtime hardware optimizations (`IntegratedGPUStr
 
 ### 6. Observer Pattern for State Management
 
-`ServerApplicationState` notifies component observers only (no GUI). `ClientApplicationState` notifies component observers (AudioSource) and GUI observers (ControlPanel, scheduled via `root.after()`). `PauseController` only updates state; components react autonomously. Thread-safe: mutations locked, notifications outside lock.
+`ServerApplicationState` notifies component observers only (no GUI). Thread-safe: mutations locked, notifications outside lock. Client-side observer behavior (GUI scheduling, pause/resume) is documented in [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md).
 
 ### 7. Observer Pattern → Protocol for Result Distribution
 
-`RecognitionResultPublisher` is a structural `Protocol` (not a concrete class). `WsResultSender` implements it server-side (sends over WebSocket). `RecognitionResultFanOut` implements it client-side (fans out to local subscribers: TextFormatter, TextInsertionService, QuickEntryService).
+`RecognitionResultPublisher` is a structural `Protocol` (not a concrete class). `WsResultSender` implements it server-side (sends over WebSocket). Client-side implementation (`RecognitionResultFanOut`) is documented in [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md).
 
-### 8. MVC Pattern for Pause/Resume
-
-**Model**: `ClientApplicationState` | **View**: `ControlPanel` | **Controller**: `PauseController` (state-only, no component manipulation)
-
-Flow: `User → ControlPanel → PauseController → ClientApplicationState → Observers → AudioSource`
-
-### 9. MVC Pattern for Text Display
-
-**Model**: `RecognitionResult` | **Controller**: `TextFormatter` (no GUI knowledge) | **View**: `TextDisplayWidget` (thread-safe rendering)
-
-Flow: `IncrementalTextMatcher → WsResultSender → WsClientTransport → RemoteRecognitionPublisher → RecognitionResultFanOut → TextFormatter → TextDisplayWidget → tkinter`
-
-### 10. Process Isolation and Network Protocol
+### 8. Process Isolation and Network Protocol
 
 The server owns all ASR inference (GPU stays in the server process). The client owns all GUI and keyboard simulation. The boundary is a local WebSocket with a versioned binary + JSON protocol (`src/network/`). Isolation means future non-Tk clients (CLI, web) can connect without any server changes.
 
@@ -759,13 +563,11 @@ The server owns all ASR inference (GPU stays in the server process). The client 
 - Reduces transient noise triggering while preserving responsiveness.
 
 **Observer-Based State Management:**
-- `ServerApplicationState` (component-only) and `ClientApplicationState` (component + GUI).
 - Lock-protected mutations; notifications outside lock to prevent deadlocks.
-- Enables pause/resume without tight coupling between controller and components.
+- `ServerApplicationState`: component observers only. Client-side observer behavior (GUI scheduling, pause/resume) is in [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md).
 
 **Protocol-Based Result Distribution:**
 - `RecognitionResultPublisher` is a structural Protocol — enables `WsResultSender` (server) and `RecognitionResultFanOut` (client) to satisfy the same interface.
-- `RecognitionResultFanOut` uses copy-on-notify; subscriber exceptions are isolated.
 
 **Session-Prefixed Message ID Routing:**
 - `session_index * 10_000_000 + local_id` partitions the ID space.
@@ -773,8 +575,8 @@ The server owns all ASR inference (GPU stays in the server process). The client 
 - Capacity: ~57 hours of speech before rollover per session.
 
 **Sync-to-Async Bridges:**
-- Both `WsResultSender` (server → client) and `WsClientTransport` (client → server) use the same pattern: sync callers cross the thread boundary via `loop.call_soon_threadsafe(queue.put_nowait, item)`; an async drain task delivers the items without ever blocking the sync caller.
-- Bounded queues (maxsize=20) provide natural backpressure with drop-and-log semantics.
+- `WsResultSender` (server → client): sync callers cross the thread boundary via `loop.call_soon_threadsafe(queue.put_nowait, item)`; an async drain task delivers items without ever blocking the sync caller. Bounded queue (maxsize=20) with drop-and-log backpressure.
+- `WsClientTransport` (client → server): same pattern — see [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md).
 
 **Two-Process Model:**
 - Server handles GPU inference; client handles GUI and mic capture.
