@@ -1,0 +1,6 @@
+<Project>
+  <!-- Restore default output path for Release so MSIX packaging works normally. -->
+  <PropertyGroup Condition="'$(Configuration)' != 'Debug'">
+    <OutputPath>bin\$(Configuration)\</OutputPath>
+  </PropertyGroup>
+</Project>

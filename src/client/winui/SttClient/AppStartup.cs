@@ -53,35 +53,36 @@ internal sealed class AppStartup
 
         _dispatcherQueue = DispatcherQueue.GetForCurrentThread();
         var dispatcherAdapter = new DispatcherQueueAdapter(_dispatcherQueue);
+        var loggerFactory = _loggerFactory!;
 
-        var stateManager = new AppStateManager(_loggerFactory!.CreateLogger<AppStateManager>());
-        var fanOut = new RecognitionResultFanOut(_loggerFactory.CreateLogger<RecognitionResultFanOut>());
-        var publisher = new RemoteRecognitionPublisher(fanOut, stateManager, _loggerFactory.CreateLogger<RemoteRecognitionPublisher>());
+        var stateManager = new AppStateManager(loggerFactory.CreateLogger<AppStateManager>());
+        var fanOut = new RecognitionResultFanOut(loggerFactory.CreateLogger<RecognitionResultFanOut>());
+        var publisher = new RemoteRecognitionPublisher(fanOut, stateManager, loggerFactory.CreateLogger<RemoteRecognitionPublisher>());
 
-        var viewModel = new MainWindowViewModel(dispatcherAdapter, _loggerFactory.CreateLogger<MainWindowViewModel>());
+        var viewModel = new MainWindowViewModel(dispatcherAdapter, loggerFactory.CreateLogger<MainWindowViewModel>());
         stateManager.AddObserver(viewModel.OnStateChanged);
 
-        var formatter = new TextFormatter(viewModel.Apply, _loggerFactory.CreateLogger<TextFormatter>());
+        var formatter = new TextFormatter(viewModel.Apply, loggerFactory.CreateLogger<TextFormatter>());
         fanOut.AddSubscriber(formatter);
 
-        var keyboardSimulator = new KeyboardSimulator(_loggerFactory.CreateLogger<KeyboardSimulator>());
-        var textInserter = new TextInserter(keyboardSimulator, _loggerFactory.CreateLogger<TextInserter>());
-        var insertionController = new InsertionController(textInserter, _loggerFactory.CreateLogger<InsertionController>());
+        var keyboardSimulator = new KeyboardSimulator(loggerFactory.CreateLogger<KeyboardSimulator>());
+        var textInserter = new TextInserter(keyboardSimulator, loggerFactory.CreateLogger<TextInserter>());
+        var insertionController = new InsertionController(textInserter, loggerFactory.CreateLogger<InsertionController>());
         fanOut.AddSubscriber(textInserter);
 
-        var quickEntryViewModel = new QuickEntryViewModel(dispatcherAdapter, _loggerFactory.CreateLogger<QuickEntryViewModel>());
-        var quickEntrySubscriber = new QuickEntrySubscriber(quickEntryViewModel.SetLiveText, _loggerFactory.CreateLogger<QuickEntrySubscriber>());
+        var quickEntryViewModel = new QuickEntryViewModel(dispatcherAdapter, loggerFactory.CreateLogger<QuickEntryViewModel>());
+        var quickEntrySubscriber = new QuickEntrySubscriber(quickEntryViewModel.SetLiveText, loggerFactory.CreateLogger<QuickEntrySubscriber>());
         fanOut.AddSubscriber(quickEntrySubscriber);
 
         var focusTracker = new FocusTracker(
             GetForegroundWindow,
             SetForegroundWindow,
             AttachThreadInput,
-            _loggerFactory.CreateLogger<FocusTracker>());
+            loggerFactory.CreateLogger<FocusTracker>());
 
         var hotkeyListener = new GlobalHotkeyListener(
             () => _pendingQuickEntryController?.OnHotkey(),
-            _loggerFactory.CreateLogger<GlobalHotkeyListener>());
+            loggerFactory.CreateLogger<GlobalHotkeyListener>());
 
         _pendingViewModel = viewModel;
         _pendingInsertionController = insertionController;
@@ -135,7 +136,7 @@ internal sealed class AppStartup
                         publisher: publisher,
                         encoder: encoder,
                         audioSource: audioSource,
-                        loggerFactory: _loggerFactory);
+                        loggerFactory: _loggerFactory!);
                     logger.LogInformation("STA thread: ClientOrchestrator done, signalling ready");
                     audioReady.SetResult();
                 }

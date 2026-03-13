@@ -21,12 +21,24 @@ public sealed class GlobalHotkeyListener : IDisposable
     private const uint VkSpace = 0x20;
     private const uint WmHotkey = 0x0312;
     private const uint WmQuit = 0x0012;
+    private const string WindowClassName = "SttHotkeyMsg";
+    // 1410 = ERROR_CLASS_ALREADY_EXISTS — safe to ignore on restart
+    private const int ErrorClassAlreadyExists = 1410;
 
     private readonly Action _callback;
     private readonly ILogger<GlobalHotkeyListener> _logger;
 
     private long _hwnd;
     private Thread? _thread;
+
+    [DllImport("kernel32.dll")]
+    private static extern nint GetModuleHandleW(string? lpModuleName);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern ushort RegisterClassExW(ref WNDCLASSEX lpwcx);
+
+    [DllImport("user32.dll")]
+    private static extern nint DefWindowProcW(nint hWnd, uint uMsg, nint wParam, nint lParam);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern nint CreateWindowExW(
@@ -36,6 +48,26 @@ public sealed class GlobalHotkeyListener : IDisposable
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool DestroyWindow(nint hWnd);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct WNDCLASSEX
+    {
+        public uint cbSize;
+        public uint style;
+        public nint lpfnWndProc;
+        public int cbClsExtra;
+        public int cbWndExtra;
+        public nint hInstance;
+        public nint hIcon;
+        public nint hCursor;
+        public nint hbrBackground;
+        public string? lpszMenuName;
+        public string lpszClassName;
+        public nint hIconSm;
+    }
+
+    private delegate nint WndProcDelegate(nint hWnd, uint uMsg, nint wParam, nint lParam);
+    private static readonly WndProcDelegate _defWndProc = DefWindowProcW;
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool RegisterHotKey(nint hWnd, int id, uint fsModifiers, uint vk);
@@ -111,8 +143,26 @@ public sealed class GlobalHotkeyListener : IDisposable
 
     private void RunMessageLoop()
     {
-        // Message-only window: receives WM_HOTKEY without appearing on screen or taskbar.
-        _hwnd = (long)CreateWindowExW(0, "STATIC", string.Empty, 0, 0, 0, 0, 0, HwndMessage, 0, 0, 0);
+        var hInstance = GetModuleHandleW(null);
+        var wc = new WNDCLASSEX
+        {
+            cbSize = (uint)Marshal.SizeOf<WNDCLASSEX>(),
+            lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_defWndProc),
+            hInstance = hInstance,
+            lpszClassName = WindowClassName
+        };
+        var atom = RegisterClassExW(ref wc);
+        if (atom == 0)
+        {
+            var err = Marshal.GetLastWin32Error();
+            if (err != ErrorClassAlreadyExists)
+            {
+                _logger.LogError("GlobalHotkeyListener: RegisterClassEx failed (error {Error})", err);
+                return;
+            }
+        }
+
+        _hwnd = (long)CreateWindowExW(0, WindowClassName, string.Empty, 0, 0, 0, 0, 0, HwndMessage, 0, hInstance, 0);
 
         if (_hwnd == 0)
         {

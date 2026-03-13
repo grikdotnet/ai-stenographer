@@ -259,15 +259,21 @@ dotnet restore SttClient.sln
 dotnet build SttClient.sln
 ```
 
+Debug output lands in `src/client/winui/build/` (configured via `Directory.Build.props`):
+- App: `build/SttClient/`
+- Core library: `build/SttClient.Core/`
+
+Clean with: `rm -rf build/`
+
 ### Build (Release)
 
 ```bash
 dotnet build SttClient.sln -c Release
 ```
 
-The output lands in:
+Release output uses MSBuild defaults (required for MSIX Store packaging):
 - App: `SttClient/bin/x64/Release/net10.0-windows10.0.19041.0/`
-- Core library: `SttClient.Core/bin/Debug/net10.0-windows/`
+- Core library: `SttClient.Core/bin/Release/net10.0-windows/`
 
 ### Build single project
 
@@ -287,8 +293,6 @@ All tests live in `SttClient.Tests/`. The test project references `SttClient.Cor
 ```bash
 dotnet test SttClient.Tests/SttClient.Tests.csproj
 ```
-
-Expected output: 107 tests, all passing, in ~2 seconds.
 
 ### Run a specific test class
 

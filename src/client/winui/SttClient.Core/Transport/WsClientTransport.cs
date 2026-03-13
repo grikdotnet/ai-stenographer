@@ -104,13 +104,17 @@ public sealed class WsClientTransport : IAsyncDisposable
 
         await _cts.CancelAsync();
 
-        try
+        var wsState = _webSocket.State;
+        if (wsState == WebSocketState.Open || wsState == WebSocketState.CloseReceived)
         {
-            await _webSocket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Client shutdown", CancellationToken.None);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "WebSocket close output failed during StopAsync");
+            try
+            {
+                await _webSocket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "Client shutdown", CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "WebSocket close output failed during StopAsync");
+            }
         }
 
         if (_drainTask is not null)

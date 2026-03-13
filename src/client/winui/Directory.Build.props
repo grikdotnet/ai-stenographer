@@ -1,0 +1,11 @@
+<Project>
+  <PropertyGroup>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+    <AppendPlatformToOutputPath>false</AppendPlatformToOutputPath>
+    <TrackFileWritesShareableOutsideOfProjectDirectory>true</TrackFileWritesShareableOutsideOfProjectDirectory>
+    <!-- Set unconditionally so it fires before $(Configuration) is resolved by the SDK.
+         DefaultOutputPaths.targets only sets OutputPath when empty (Condition="'$(OutputPath)' == ''"),
+         so this value wins. Release builds will override this in Directory.Build.targets. -->
+    <OutputPath>$(MSBuildThisFileDirectory)build\$(MSBuildProjectName)\</OutputPath>
+  </PropertyGroup>
+</Project>

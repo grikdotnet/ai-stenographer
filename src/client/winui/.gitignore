@@ -1,7 +1,10 @@
 # Build output
 bin/
 obj/
+build/
 *.binlog
+*.dll
+*.exe
 
 # NuGet packages
 packages/
