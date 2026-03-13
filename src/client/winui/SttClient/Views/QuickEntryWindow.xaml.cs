@@ -1,6 +1,8 @@
+using System.Runtime.InteropServices;
 using Microsoft.UI.Xaml;
 using SttClient.QuickEntry;
 using SttClient.ViewModels;
+using Windows.Graphics;
 
 namespace SttClient.Views;
 
@@ -18,6 +20,14 @@ public sealed partial class QuickEntryWindow : Window, IQuickEntryPopup
     private Action? _onSubmit;
     private Action? _onCancel;
 
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(nint hWnd, nint hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
+
+    private const nint HwndTopmost = -1;
+    private const uint SwpNomove = 0x0002;
+    private const uint SwpNosize = 0x0001;
+    private const uint SwpNoactivate = 0x0010;
+
     /// <summary>Gets the ViewModel bound to this window.</summary>
     public QuickEntryViewModel ViewModel { get; }
 
@@ -29,6 +39,8 @@ public sealed partial class QuickEntryWindow : Window, IQuickEntryPopup
     {
         ViewModel = viewModel;
         InitializeComponent();
+        ExtendsContentIntoTitleBar = true;
+        SetTitleBar(null);
 
         Content.KeyDown += OnKeyDown;
     }
@@ -38,7 +50,10 @@ public sealed partial class QuickEntryWindow : Window, IQuickEntryPopup
     {
         _onSubmit = onSubmit;
         _onCancel = onCancel;
+        AppWindow.Resize(new SizeInt32(400, 80));
         Activate();
+        var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
+        SetWindowPos(hwnd, HwndTopmost, 0, 0, 0, 0, SwpNomove | SwpNosize | SwpNoactivate);
     }
 
     /// <inheritdoc/>

@@ -245,7 +245,8 @@ public sealed class WsClientTransport : IAsyncDisposable
             {
                 type = "control_command",
                 command = "shutdown",
-                session_id = SessionId
+                session_id = SessionId,
+                timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0
             });
             await SendTextAsync(json);
         }

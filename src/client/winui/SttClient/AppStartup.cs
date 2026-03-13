@@ -83,7 +83,7 @@ internal sealed class AppStartup
             loggerFactory.CreateLogger<FocusTracker>());
 
         _hotkeyListener = new GlobalHotkeyListener(
-            () => _pendingQuickEntryController?.OnHotkey(),
+            () => _dispatcherQueue?.TryEnqueue(() => _pendingQuickEntryController?.OnHotkey()),
             loggerFactory.CreateLogger<GlobalHotkeyListener>());
 
         _pendingViewModel = viewModel;
