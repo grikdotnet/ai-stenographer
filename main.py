@@ -157,18 +157,21 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
     )
     server_app.start()
 
-    if server_only:
-        logging.info("Running in --server-only mode. Press Ctrl+C to stop.")
-        server_app._ws_server.join()
-    else:
-        server_url = f"ws://127.0.0.1:{server_app.port}"
-        proc = _spawn_client(server_url, input_file=input_file)
-        proc.wait()
+    try:
+        if server_only:
+            logging.info("Running in --server-only mode. Press Ctrl+C to stop.")
+            server_app._ws_server.join()
+        else:
+            server_url = f"ws://127.0.0.1:{server_app.port}"
+            proc = _spawn_client(server_url, input_file=input_file)
+            proc.wait()
+    except KeyboardInterrupt:
+        logging.info("Interrupted by user.")
+    finally:
         server_app.stop()
 
 
 if __name__ == "__main__":
-    server_app = None
     try:
         _main(
             argv=sys.argv,
@@ -176,9 +179,6 @@ if __name__ == "__main__":
             logs_dir=LOGS_DIR,
             config_path=str(path_resolver.get_config_path("server_config.json")),
         )
-    except KeyboardInterrupt:
-        logging.info("Interrupted by user.")
-        sys.exit(0)
     except SystemExit:
         raise
     except Exception as e:
