@@ -10,7 +10,7 @@ import struct
 
 import numpy as np
 
-from src.client.network.codec import encode_audio_frame
+from src.client.tk.network.codec import encode_audio_frame
 from src.network.codec import decode_audio_frame
 from src.network.types import WsAudioFrame
 
