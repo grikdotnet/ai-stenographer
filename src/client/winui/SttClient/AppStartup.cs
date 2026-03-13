@@ -28,6 +28,7 @@ internal sealed class AppStartup
     private LoadingWindow? _loadingWindow;
     private ClientOrchestrator? _orchestrator;
     private ILoggerFactory? _loggerFactory;
+    private GlobalHotkeyListener? _hotkeyListener;
     private DispatcherQueue? _dispatcherQueue;
     private MainWindowViewModel? _pendingViewModel;
     private InsertionController? _pendingInsertionController;
@@ -37,6 +38,7 @@ internal sealed class AppStartup
     private FocusTracker? _pendingFocusTracker;
     private KeyboardSimulator? _pendingKeyboardSimulator;
     private readonly ManualResetEventSlim _staShutdown = new(false);
+    private bool _startupSucceeded;
 
     /// <summary>Builds all components and initiates the server connection.</summary>
     public void Run()
@@ -80,7 +82,7 @@ internal sealed class AppStartup
             AttachThreadInput,
             loggerFactory.CreateLogger<FocusTracker>());
 
-        var hotkeyListener = new GlobalHotkeyListener(
+        _hotkeyListener = new GlobalHotkeyListener(
             () => _pendingQuickEntryController?.OnHotkey(),
             loggerFactory.CreateLogger<GlobalHotkeyListener>());
 
@@ -93,18 +95,25 @@ internal sealed class AppStartup
 
         stateManager.AddObserver((_, newState) =>
         {
-            if (newState == AppState.Shutdown)
-                _staShutdown.Set();
+            if (newState != AppState.Shutdown) return;
+            _staShutdown.Set();
+            _hotkeyListener?.Dispose();
+            _dispatcherQueue?.TryEnqueue(() =>
+            {
+                _loggerFactory?.Dispose();
+                Application.Current.Exit();
+            });
         });
 
         logger.LogInformation("Run: constructing LoadingPage");
         var loadingPage = new LoadingPage();
         logger.LogInformation("Run: constructing LoadingWindow");
         _loadingWindow = new LoadingWindow(loadingPage);
+        _loadingWindow.Closed += (_, _) => { if (!_startupSucceeded) Application.Current.Exit(); };
         logger.LogInformation("Run: activating LoadingWindow");
         _loadingWindow.Activate();
         logger.LogInformation("Run: LoadingWindow activated, starting hotkey listener");
-        hotkeyListener.Start();
+        _hotkeyListener.Start();
         logger.LogInformation("Run: starting StartupAsync");
         _ = StartupAsync(loadingPage, logger, serverUrl!, stateManager, publisher);
     }
@@ -177,6 +186,7 @@ internal sealed class AppStartup
 
             await _orchestrator!.ConnectAsync();
 
+            _startupSucceeded = true;
             _dispatcherQueue!.TryEnqueue(() =>
             {
                 _mainWindow!.Activate();
@@ -248,6 +258,7 @@ internal sealed class AppStartup
     {
         var errorPage = new LoadingPage();
         var win = new LoadingWindow(errorPage);
+        win.Closed += (_, _) => Application.Current.Exit();
         win.Activate();
         errorPage.ShowError(message);
     }

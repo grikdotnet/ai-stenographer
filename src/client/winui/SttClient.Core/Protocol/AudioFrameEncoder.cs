@@ -45,10 +45,6 @@ public sealed class AudioFrameEncoder
         headerBytes.CopyTo(rented, 4);
         MemoryMarshal.Cast<float, byte>(frame.Audio).CopyTo(rented.AsSpan(4 + headerLen));
 
-        _logger.LogDebug(
-            "Encoded frame chunk_id={ChunkId} header={HeaderLen}B audio={AudioLen}B total={TotalLen}B",
-            frame.ChunkId, headerLen, audioByteLen, totalLen);
-
         return new PooledFrame(rented, totalLen);
     }
 

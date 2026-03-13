@@ -46,8 +46,11 @@ public sealed partial class MainWindow : Window
         _insertionController.Toggle();
     }
 
-    private void OnClosed(object sender, WindowEventArgs args)
+    private async void OnClosed(object sender, WindowEventArgs args)
     {
-        _ = _orchestrator.StopAsync();
+        args.Handled = true;
+        await _orchestrator.StopAsync();
+        Closed -= OnClosed;
+        Close();
     }
 }
