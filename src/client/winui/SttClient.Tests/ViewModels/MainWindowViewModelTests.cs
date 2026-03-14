@@ -135,4 +135,45 @@ public class MainWindowViewModelTests
 
         Assert.Contains(nameof(vm.IsPaused), changed);
     }
+
+    // --- IsRunningOrPaused ---
+
+    [Fact]
+    public void IsRunningOrPaused_IsFalse_Initially()
+    {
+        var vm = MakeViewModel();
+
+        Assert.False(vm.IsRunningOrPaused);
+    }
+
+    [Fact]
+    public void IsRunningOrPaused_BecomesTrue_WhenRunning()
+    {
+        var vm = MakeViewModel();
+
+        vm.OnStateChanged(AppState.Starting, AppState.Running);
+
+        Assert.True(vm.IsRunningOrPaused);
+    }
+
+    [Fact]
+    public void IsRunningOrPaused_BecomesTrue_WhenPaused()
+    {
+        var vm = MakeViewModel();
+
+        vm.OnStateChanged(AppState.Running, AppState.Paused);
+
+        Assert.True(vm.IsRunningOrPaused);
+    }
+
+    [Fact]
+    public void IsRunningOrPaused_BecomesFalse_WhenShutdown()
+    {
+        var vm = MakeViewModel();
+        vm.OnStateChanged(AppState.Running, AppState.Paused);
+
+        vm.OnStateChanged(AppState.Paused, AppState.Shutdown);
+
+        Assert.False(vm.IsRunningOrPaused);
+    }
 }

@@ -23,6 +23,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private string _finalizedText = string.Empty;
     private string _partialText = string.Empty;
     private bool _isPaused;
+    private bool _isRunningOrPaused;
 
     /// <inheritdoc/>
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -57,6 +58,13 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     {
         get => _isPaused;
         private set => SetProperty(ref _isPaused, value);
+    }
+
+    /// <summary>Gets whether the session is in a state where pause/resume is meaningful (Running or Paused).</summary>
+    public bool IsRunningOrPaused
+    {
+        get => _isRunningOrPaused;
+        private set => SetProperty(ref _isRunningOrPaused, value);
     }
 
     /// <summary>
@@ -96,6 +104,7 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         _dispatcher.TryEnqueue(() =>
         {
             IsPaused = newState == AppState.Paused;
+            IsRunningOrPaused = newState == AppState.Running || newState == AppState.Paused;
         });
     }
 

@@ -245,7 +245,7 @@ WasapiAudioSource  ──ChunkReady──►  ClientOrchestrator.OnChunkReady()
 
 ## Build Instructions
 
-All commands are run from `src/client/winui/`.
+All commands are run from `[project dir]\src\client\winui\`.
 
 ### Restore dependencies
 
@@ -256,14 +256,15 @@ dotnet restore SttClient.sln
 ### Build (Debug)
 
 ```bash
-dotnet build SttClient.sln
+cd [project dir]\src\client\winui
+rm -Recurse -Force build\*, logs\* ; dotnet build SttClient.sln
 ```
 
-Debug output lands in `src/client/winui/build/` (configured via `Directory.Build.props`):
-- App: `build/SttClient/`
-- Core library: `build/SttClient.Core/`
+Debug output lands in `src\client\winui\build\` (configured via `Directory.Build.props`):
+- App: `build\SttClient\`
+- Core library: `build\SttClient.Core\`
 
-Clean with: `rm -rf build/`
+Clean with: `rm -Recurse -Force build\*, logs\*`
 
 ### Build (Release)
 
@@ -320,14 +321,7 @@ The app requires a running STT server. The server URL is passed as a command-lin
 ### From the build output directory
 
 ```
-SttClient.exe --server-url=ws://127.0.0.1:8765
-```
-
-### From Visual Studio
-
-Set the project startup argument in project properties → Debug → Application Arguments:
-```
---server-url=ws://127.0.0.1:8765
+SttClient.exe --server-url=ws://127.0.0.1:[port]
 ```
 
 ### Starting the STT server (Python backend)
@@ -339,7 +333,7 @@ source venv/Scripts/activate
 python main.py
 ```
 
-This starts the server on `ws://127.0.0.1:8765` by default. The server spawns the WinUI client automatically if configured to do so.
+This starts the server on `ws://127.0.0.1` on a random port and by default spawns the TK client.
 
 ### Logs
 

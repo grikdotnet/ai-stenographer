@@ -5,5 +5,6 @@
     Title="STT Client — Connecting"
     xmlns:local="using:SttClient.Views">
 
+    <Window.SystemBackdrop><MicaBackdrop /></Window.SystemBackdrop>
     <Frame x:Name="RootFrame"/>
 </Window>

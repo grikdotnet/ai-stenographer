@@ -9,21 +9,27 @@
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <!-- Connecting state: spinner + label -->
-        <ProgressRing Grid.Row="0"
-                      x:Name="ConnectingSpinner"
-                      IsActive="True"
-                      Width="48" Height="48"/>
-
-        <TextBlock Grid.Row="1"
-                   x:Name="ConnectingLabel"
-                   Text="Connecting…"
+        <TextBlock Grid.Row="0"
+                   Text="Speech-to-Text"
+                   FontSize="20"
+                   FontWeight="SemiBold"
                    HorizontalAlignment="Center"/>
 
-        <!-- Error state: message + exit button -->
+        <ProgressRing Grid.Row="1"
+                      x:Name="ConnectingSpinner"
+                      IsActive="True"
+                      Width="64" Height="64"/>
+
         <TextBlock Grid.Row="2"
+                   x:Name="ConnectingLabel"
+                   Text="Connecting to server…"
+                   HorizontalAlignment="Center"
+                   Opacity="0.6"/>
+
+        <TextBlock Grid.Row="3"
                    x:Name="ErrorMessageText"
                    TextWrapping="Wrap"
                    MaxWidth="400"
@@ -31,7 +37,7 @@
                    Foreground="{ThemeResource SystemFillColorCriticalBrush}"
                    Visibility="Collapsed"/>
 
-        <Button Grid.Row="3"
+        <Button Grid.Row="4"
                 x:Name="ExitButton"
                 Content="Exit"
                 HorizontalAlignment="Center"
