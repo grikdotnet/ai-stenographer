@@ -173,9 +173,10 @@ internal sealed class AppStartup
                 logger.LogInformation("UI thread: constructing QuickEntryWindow");
                 var quickEntryWindow = new QuickEntryWindow(_pendingQuickEntryViewModel!);
                 logger.LogInformation("UI thread: constructing QuickEntryController");
+                var dispatchingRegistrar = new DispatchingPopupHotkeyRegistrar(_hotkeyListener!, _dispatcherQueue!);
                 _pendingQuickEntryController = new QuickEntryController(
                     _pendingQuickEntrySubscriber!, _pendingFocusTracker!, _pendingKeyboardSimulator!,
-                    quickEntryWindow, _loggerFactory!.CreateLogger<QuickEntryController>());
+                    quickEntryWindow, dispatchingRegistrar, _loggerFactory!.CreateLogger<QuickEntryController>());
                 logger.LogInformation("UI thread: constructing MainWindow");
                 _mainWindow = new MainWindow(_pendingViewModel!, _orchestrator!, _pendingInsertionController!);
                 logger.LogInformation("UI thread: windows constructed");
@@ -280,4 +281,32 @@ internal sealed class DispatcherQueueAdapter : IDispatcherQueueAdapter
 
     /// <inheritdoc/>
     public bool TryEnqueue(Action action) => _queue.TryEnqueue(() => action());
+}
+
+/// <summary>
+/// Wraps an <see cref="IPopupHotkeyRegistrar"/> so that the submit/cancel callbacks
+/// are marshalled to the UI thread before execution. Required because
+/// <see cref="GlobalHotkeyListener"/> fires callbacks from its background message-loop
+/// thread, but WinUI calls (e.g. AppWindow.Hide) must run on the UI thread.
+/// </summary>
+internal sealed class DispatchingPopupHotkeyRegistrar : IPopupHotkeyRegistrar
+{
+    private readonly IPopupHotkeyRegistrar _inner;
+    private readonly DispatcherQueue _queue;
+
+    /// <summary>Initializes the decorator.</summary>
+    public DispatchingPopupHotkeyRegistrar(IPopupHotkeyRegistrar inner, DispatcherQueue queue)
+    {
+        _inner = inner;
+        _queue = queue;
+    }
+
+    /// <inheritdoc/>
+    public void RegisterPopupHotkeys(Action onSubmit, Action onCancel) =>
+        _inner.RegisterPopupHotkeys(
+            onSubmit: () => _queue.TryEnqueue(() => onSubmit()),
+            onCancel: () => _queue.TryEnqueue(() => onCancel()));
+
+    /// <inheritdoc/>
+    public void UnregisterPopupHotkeys() => _inner.UnregisterPopupHotkeys();
 }

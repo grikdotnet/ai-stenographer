@@ -21,7 +21,10 @@ public sealed class KeyboardSimulator : IKeyboardSimulator
         public INPUTUNION Data;
     }
 
-    [StructLayout(LayoutKind.Explicit)]
+    // Size=32 matches the Win32 union _INPUT_UNION on 64-bit (dominated by MOUSEINPUT at 32 bytes).
+    // Without this, Marshal.SizeOf<INPUT>() = 32 instead of 40, causing SendInput to return
+    // ERROR_INVALID_PARAMETER (87).
+    [StructLayout(LayoutKind.Explicit, Size = 32)]
     private struct INPUTUNION
     {
         [FieldOffset(0)] public KEYBDINPUT Keyboard;
@@ -68,7 +71,8 @@ public sealed class KeyboardSimulator : IKeyboardSimulator
 
         uint sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
         if (sent != inputs.Length)
-            _logger.LogWarning("KeyboardSimulator: SendInput sent {Sent}/{Total} events", sent, inputs.Length);
+            _logger.LogWarning("KeyboardSimulator: SendInput sent {Sent}/{Total} events (Win32 error {Error})",
+                sent, inputs.Length, Marshal.GetLastWin32Error());
         else
             _logger.LogDebug("KeyboardSimulator: typed {Len} chars", text.Length);
     }

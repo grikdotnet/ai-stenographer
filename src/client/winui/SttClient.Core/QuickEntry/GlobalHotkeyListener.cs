@@ -4,70 +4,42 @@ using Microsoft.Extensions.Logging;
 namespace SttClient.QuickEntry;
 
 /// <summary>
-/// Registers a global system hotkey via Win32 <c>RegisterHotKey</c> on a message-only HWND
-/// and fires a callback whenever the hotkey is pressed by the user.
+/// Registers a global system hotkey via Win32 <c>RegisterHotKey(hWnd=0)</c> on a dedicated
+/// background thread and fires a callback whenever the hotkey is pressed by the user.
 ///
 /// Responsibilities:
 /// - Runs a Win32 message loop on a dedicated background thread.
+/// - Uses a null HWND with RegisterHotKey so WM_HOTKEY is posted to the thread queue directly,
+///   avoiding the need to create a message-only window.
+/// - Supports registering transient popup hotkeys (Enter/Escape) while the QuickEntry popup
+///   is visible, so the popup can be submitted or cancelled without keyboard focus.
 /// - Exposes <see cref="SimulateHotkeyForTest"/> so unit tests can trigger the callback
 ///   without a real Win32 environment.
 /// - Swallows callback exceptions to keep the message loop alive.
 /// </summary>
-public sealed class GlobalHotkeyListener : IDisposable
+public sealed class GlobalHotkeyListener : IPopupHotkeyRegistrar, IDisposable
 {
     // Ctrl+Space: MOD_CONTROL = 0x0002
     private const int HotkeyId = 9001;
+    private const int PopupSubmitHotkeyId = 9002;
+    private const int PopupCancelHotkeyId = 9003;
+    private const uint ModNone = 0x4000; // MOD_NOREPEAT, no modifier
     private const uint ModControl = 0x0002;
     private const uint VkSpace = 0x20;
+    private const uint VkReturn = 0x0D;
+    private const uint VkEscape = 0x1B;
     private const uint WmHotkey = 0x0312;
     private const uint WmQuit = 0x0012;
-    private const string WindowClassName = "SttHotkeyMsg";
-    // 1410 = ERROR_CLASS_ALREADY_EXISTS — safe to ignore on restart
-    private const int ErrorClassAlreadyExists = 1410;
+    private const uint WmAppRegisterPopup = 0x8001;
+    private const uint WmAppUnregisterPopup = 0x8002;
 
     private readonly Action _callback;
     private readonly ILogger<GlobalHotkeyListener> _logger;
 
-    private long _hwnd;
+    private uint _threadId;
     private Thread? _thread;
-
-    [DllImport("kernel32.dll")]
-    private static extern nint GetModuleHandleW(string? lpModuleName);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern ushort RegisterClassExW(ref WNDCLASSEX lpwcx);
-
-    [DllImport("user32.dll")]
-    private static extern nint DefWindowProcW(nint hWnd, uint uMsg, nint wParam, nint lParam);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern nint CreateWindowExW(
-        uint dwExStyle, string lpClassName, string lpWindowName,
-        uint dwStyle, int x, int y, int nWidth, int nHeight,
-        nint hWndParent, nint hMenu, nint hInstance, nint lpParam);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool DestroyWindow(nint hWnd);
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct WNDCLASSEX
-    {
-        public uint cbSize;
-        public uint style;
-        public nint lpfnWndProc;
-        public int cbClsExtra;
-        public int cbWndExtra;
-        public nint hInstance;
-        public nint hIcon;
-        public nint hCursor;
-        public nint hbrBackground;
-        public string? lpszMenuName;
-        public string lpszClassName;
-        public nint hIconSm;
-    }
-
-    private delegate nint WndProcDelegate(nint hWnd, uint uMsg, nint wParam, nint lParam);
-    private static readonly WndProcDelegate _defWndProc = DefWindowProcW;
+    private Action? _popupSubmitCallback;
+    private Action? _popupCancelCallback;
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool RegisterHotKey(nint hWnd, int id, uint fsModifiers, uint vk);
@@ -85,7 +57,10 @@ public sealed class GlobalHotkeyListener : IDisposable
     private static extern nint DispatchMessage(ref NativeMsg lpmsg);
 
     [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool PostMessage(nint hWnd, uint msg, nint wParam, nint lParam);
+    private static extern bool PostThreadMessage(uint idThread, uint msg, nint wParam, nint lParam);
+
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
 
     [StructLayout(LayoutKind.Sequential)]
     private struct NativeMsg
@@ -98,9 +73,6 @@ public sealed class GlobalHotkeyListener : IDisposable
         public int ptX;
         public int ptY;
     }
-
-    // HWND_MESSAGE sentinel for message-only windows
-    private static readonly nint HwndMessage = new(-3);
 
     /// <summary>
     /// Initializes a new <see cref="GlobalHotkeyListener"/>.
@@ -119,7 +91,7 @@ public sealed class GlobalHotkeyListener : IDisposable
     /// </summary>
     public void SimulateHotkeyForTest()
     {
-        InvokeCallback();
+        InvokeCallback(_callback);
     }
 
     /// <summary>Starts the Win32 message loop on a dedicated thread (production use).</summary>
@@ -130,75 +102,107 @@ public sealed class GlobalHotkeyListener : IDisposable
         _thread.Start();
     }
 
+    /// <summary>
+    /// Registers Enter and Escape as global hotkeys so the popup can be submitted or
+    /// cancelled without having keyboard focus. Must be called after <see cref="Start"/>.
+    /// </summary>
+    /// <param name="onSubmit">Invoked when Enter is pressed globally.</param>
+    /// <param name="onCancel">Invoked when Escape is pressed globally.</param>
+    public void RegisterPopupHotkeys(Action onSubmit, Action onCancel)
+    {
+        _popupSubmitCallback = onSubmit;
+        _popupCancelCallback = onCancel;
+        var threadId = Volatile.Read(ref _threadId);
+        if (threadId != 0)
+            PostThreadMessage(threadId, WmAppRegisterPopup, 0, 0);
+    }
+
+    /// <summary>
+    /// Unregisters the Enter and Escape popup hotkeys. Call when the popup hides.
+    /// </summary>
+    public void UnregisterPopupHotkeys()
+    {
+        var threadId = Volatile.Read(ref _threadId);
+        if (threadId != 0)
+            PostThreadMessage(threadId, WmAppUnregisterPopup, 0, 0);
+        _popupSubmitCallback = null;
+        _popupCancelCallback = null;
+    }
+
     /// <inheritdoc/>
     public void Dispose()
     {
-        var hwnd = (nint)Interlocked.Exchange(ref _hwnd, 0);
-        if (hwnd != 0)
+        var threadId = Interlocked.Exchange(ref _threadId, 0);
+        if (threadId != 0)
         {
-            UnregisterHotKey(hwnd, HotkeyId);
-            PostMessage(hwnd, WmQuit, 0, 0);
+            UnregisterHotKey(0, HotkeyId);
+            PostThreadMessage(threadId, WmQuit, 0, 0);
         }
     }
 
     private void RunMessageLoop()
     {
-        var hInstance = GetModuleHandleW(null);
-        var wc = new WNDCLASSEX
-        {
-            cbSize = (uint)Marshal.SizeOf<WNDCLASSEX>(),
-            lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_defWndProc),
-            hInstance = hInstance,
-            lpszClassName = WindowClassName
-        };
-        var atom = RegisterClassExW(ref wc);
-        if (atom == 0)
-        {
-            var err = Marshal.GetLastWin32Error();
-            if (err != ErrorClassAlreadyExists)
-            {
-                _logger.LogError("GlobalHotkeyListener: RegisterClassEx failed (error {Error})", err);
-                return;
-            }
-        }
+        _threadId = GetCurrentThreadId();
 
-        _hwnd = (long)CreateWindowExW(0, WindowClassName, string.Empty, 0, 0, 0, 0, 0, HwndMessage, 0, hInstance, 0);
-
-        if (_hwnd == 0)
+        if (!RegisterHotKey(0, HotkeyId, ModControl, VkSpace))
         {
-            _logger.LogError("GlobalHotkeyListener: CreateWindowEx failed (error {Error})", Marshal.GetLastWin32Error());
-            return;
-        }
-
-        if (!RegisterHotKey((nint)_hwnd, HotkeyId, ModControl, VkSpace))
-        {
-            _logger.LogWarning("GlobalHotkeyListener: RegisterHotKey failed (error {Error}) — hotkey unavailable", Marshal.GetLastWin32Error());
+            _logger.LogWarning("GlobalHotkeyListener: RegisterHotKey failed (error {Error}) — hotkey unavailable",
+                Marshal.GetLastWin32Error());
         }
         else
         {
             _logger.LogInformation("GlobalHotkeyListener: Ctrl+Space registered (id={Id})", HotkeyId);
         }
 
-        while (GetMessage(out var msg, (nint)_hwnd, 0, 0))
+        while (GetMessage(out var msg, 0, 0, 0))
         {
-            if (msg.message == WmHotkey && msg.wParam == HotkeyId)
-                InvokeCallback();
+            if (msg.message == WmHotkey)
+            {
+                if (msg.wParam == HotkeyId)
+                {
+                    _logger.LogInformation("GlobalHotkeyListener: WM_HOTKEY received — invoking callback");
+                    InvokeCallback(_callback);
+                }
+                else if (msg.wParam == PopupSubmitHotkeyId)
+                {
+                    _logger.LogInformation("GlobalHotkeyListener: popup Enter received");
+                    InvokeCallback(_popupSubmitCallback);
+                }
+                else if (msg.wParam == PopupCancelHotkeyId)
+                {
+                    _logger.LogInformation("GlobalHotkeyListener: popup Escape received");
+                    InvokeCallback(_popupCancelCallback);
+                }
+            }
+            else if (msg.message == WmAppRegisterPopup)
+            {
+                RegisterHotKey(0, PopupSubmitHotkeyId, ModNone, VkReturn);
+                RegisterHotKey(0, PopupCancelHotkeyId, ModNone, VkEscape);
+                _logger.LogDebug("GlobalHotkeyListener: popup hotkeys registered (Enter/Escape)");
+            }
+            else if (msg.message == WmAppUnregisterPopup)
+            {
+                UnregisterHotKey(0, PopupSubmitHotkeyId);
+                UnregisterHotKey(0, PopupCancelHotkeyId);
+                _logger.LogDebug("GlobalHotkeyListener: popup hotkeys unregistered");
+            }
 
             TranslateMessage(ref msg);
             DispatchMessage(ref msg);
         }
 
-        var hwnd = (nint)Interlocked.Exchange(ref _hwnd, 0);
-        UnregisterHotKey(hwnd, HotkeyId);
-        DestroyWindow(hwnd);
+        UnregisterHotKey(0, HotkeyId);
+        UnregisterHotKey(0, PopupSubmitHotkeyId);
+        UnregisterHotKey(0, PopupCancelHotkeyId);
         _logger.LogDebug("GlobalHotkeyListener: message loop exited");
     }
 
-    private void InvokeCallback()
+    private void InvokeCallback(Action? callback)
     {
+        if (callback == null) return;
         try
         {
-            _callback();
+            callback();
         }
         catch (Exception ex)
         {

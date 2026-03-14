@@ -23,6 +23,9 @@ public sealed partial class QuickEntryWindow : Window, IQuickEntryPopup
     [DllImport("user32.dll")]
     private static extern bool SetWindowPos(nint hWnd, nint hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
 
+    [DllImport("user32.dll")]
+    private static extern nint SetActiveWindow(nint hWnd);
+
     private const nint HwndTopmost = -1;
     private const uint SwpNomove = 0x0002;
     private const uint SwpNosize = 0x0001;
@@ -51,9 +54,13 @@ public sealed partial class QuickEntryWindow : Window, IQuickEntryPopup
         _onSubmit = onSubmit;
         _onCancel = onCancel;
         AppWindow.Resize(new SizeInt32(400, 80));
-        Activate();
+        // Show without activating so we don't steal focus from the target window.
+        AppWindow.Show(activateWindow: false);
         var hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
         SetWindowPos(hwnd, HwndTopmost, 0, 0, 0, 0, SwpNomove | SwpNosize | SwpNoactivate);
+        // SetActiveWindow makes WinUI commit the DComp render tree for this window
+        // (so text updates paint immediately) without changing the OS foreground process.
+        SetActiveWindow(hwnd);
     }
 
     /// <inheritdoc/>

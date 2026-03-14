@@ -27,6 +27,27 @@ public class QuickEntryControllerTests
         public void RestoreFocus() => RestoreCount++;
     }
 
+    private sealed class FakePopupHotkeyRegistrar : IPopupHotkeyRegistrar
+    {
+        public bool IsRegistered { get; private set; }
+        public Action? RegisteredSubmit { get; private set; }
+        public Action? RegisteredCancel { get; private set; }
+
+        public void RegisterPopupHotkeys(Action onSubmit, Action onCancel)
+        {
+            IsRegistered = true;
+            RegisteredSubmit = onSubmit;
+            RegisteredCancel = onCancel;
+        }
+
+        public void UnregisterPopupHotkeys()
+        {
+            IsRegistered = false;
+            RegisteredSubmit = null;
+            RegisteredCancel = null;
+        }
+    }
+
     private sealed class FakePopup : IQuickEntryPopup
     {
         public bool IsVisible { get; private set; }
@@ -49,23 +70,25 @@ public class QuickEntryControllerTests
         new(text, 0.0, 1.0, null, [], null);
 
     private static (QuickEntryController controller, FakeKeyboardSimulator keyboard,
-        FakeFocusTracker focus, FakePopup popup, QuickEntrySubscriber subscriber)
+        FakeFocusTracker focus, FakePopup popup, QuickEntrySubscriber subscriber,
+        FakePopupHotkeyRegistrar registrar)
         MakeController()
     {
         var keyboard = new FakeKeyboardSimulator();
         var focus = new FakeFocusTracker();
         var popup = new FakePopup();
+        var registrar = new FakePopupHotkeyRegistrar();
         var subscriber = new QuickEntrySubscriber(_ => { }, NullLogger<QuickEntrySubscriber>.Instance);
         var controller = new QuickEntryController(
-            subscriber, focus, keyboard, popup,
+            subscriber, focus, keyboard, popup, registrar,
             NullLogger<QuickEntryController>.Instance);
-        return (controller, keyboard, focus, popup, subscriber);
+        return (controller, keyboard, focus, popup, subscriber, registrar);
     }
 
     [Fact]
     public void OnHotkey_ShowsPopup()
     {
-        var (controller, _, _, popup, _) = MakeController();
+        var (controller, _, _, popup, _, _) = MakeController();
 
         controller.OnHotkey();
 
@@ -75,7 +98,7 @@ public class QuickEntryControllerTests
     [Fact]
     public void OnHotkey_SavesFocus()
     {
-        var (controller, _, focus, _, _) = MakeController();
+        var (controller, _, focus, _, _, _) = MakeController();
 
         controller.OnHotkey();
 
@@ -85,7 +108,7 @@ public class QuickEntryControllerTests
     [Fact]
     public void OnHotkey_WhenAlreadyShowing_HidesPopup()
     {
-        var (controller, _, _, popup, _) = MakeController();
+        var (controller, _, _, popup, _, _) = MakeController();
         controller.OnHotkey();
 
         controller.OnHotkey();
@@ -96,7 +119,7 @@ public class QuickEntryControllerTests
     [Fact]
     public void Submit_TypesAccumulatedText()
     {
-        var (controller, keyboard, _, _, subscriber) = MakeController();
+        var (controller, keyboard, _, _, subscriber, _) = MakeController();
         controller.OnHotkey();
         subscriber.OnFinalization(MakeResult("hello world"));
 
@@ -108,7 +131,7 @@ public class QuickEntryControllerTests
     [Fact]
     public void Submit_HidesPopup()
     {
-        var (controller, _, _, popup, _) = MakeController();
+        var (controller, _, _, popup, _, _) = MakeController();
         controller.OnHotkey();
 
         controller.Submit();
@@ -119,7 +142,7 @@ public class QuickEntryControllerTests
     [Fact]
     public void Submit_RestoresFocus()
     {
-        var (controller, _, focus, _, _) = MakeController();
+        var (controller, _, focus, _, _, _) = MakeController();
         controller.OnHotkey();
 
         controller.Submit();
@@ -130,7 +153,7 @@ public class QuickEntryControllerTests
     [Fact]
     public void Submit_WithEmptyText_DoesNotTypeAnything()
     {
-        var (controller, keyboard, _, _, _) = MakeController();
+        var (controller, keyboard, _, _, _, _) = MakeController();
         controller.OnHotkey();
 
         controller.Submit();
@@ -141,7 +164,7 @@ public class QuickEntryControllerTests
     [Fact]
     public void Cancel_HidesPopup()
     {
-        var (controller, _, _, popup, _) = MakeController();
+        var (controller, _, _, popup, _, _) = MakeController();
         controller.OnHotkey();
 
         controller.Cancel();
@@ -152,7 +175,7 @@ public class QuickEntryControllerTests
     [Fact]
     public void Cancel_RestoresFocus()
     {
-        var (controller, _, focus, _, _) = MakeController();
+        var (controller, _, focus, _, _, _) = MakeController();
         controller.OnHotkey();
 
         controller.Cancel();
@@ -163,12 +186,92 @@ public class QuickEntryControllerTests
     [Fact]
     public void Cancel_DoesNotTypeText()
     {
-        var (controller, keyboard, _, _, subscriber) = MakeController();
+        var (controller, keyboard, _, _, subscriber, _) = MakeController();
         controller.OnHotkey();
         subscriber.OnFinalization(MakeResult("some text"));
 
         controller.Cancel();
 
         Assert.Empty(keyboard.TypedTexts);
+    }
+
+    [Fact]
+    public void OnHotkey_RegistersPopupHotkeys()
+    {
+        var (controller, _, _, _, _, registrar) = MakeController();
+
+        controller.OnHotkey();
+
+        Assert.True(registrar.IsRegistered);
+    }
+
+    [Fact]
+    public void Submit_UnregistersPopupHotkeys()
+    {
+        var (controller, _, _, _, _, registrar) = MakeController();
+        controller.OnHotkey();
+
+        controller.Submit();
+
+        Assert.False(registrar.IsRegistered);
+    }
+
+    [Fact]
+    public void Cancel_UnregistersPopupHotkeys()
+    {
+        var (controller, _, _, _, _, registrar) = MakeController();
+        controller.OnHotkey();
+
+        controller.Cancel();
+
+        Assert.False(registrar.IsRegistered);
+    }
+
+    [Fact]
+    public void RegisteredEnterCallback_SubmitsText()
+    {
+        var (controller, keyboard, _, _, subscriber, registrar) = MakeController();
+        controller.OnHotkey();
+        subscriber.OnFinalization(MakeResult("hello"));
+
+        registrar.RegisteredSubmit!();
+
+        Assert.Equal(["hello"], keyboard.TypedTexts);
+    }
+
+    [Fact]
+    public void RegisteredEscapeCallback_CancelsWithoutTyping()
+    {
+        var (controller, keyboard, _, _, subscriber, registrar) = MakeController();
+        controller.OnHotkey();
+        subscriber.OnFinalization(MakeResult("hello"));
+
+        registrar.RegisteredCancel!();
+
+        Assert.Empty(keyboard.TypedTexts);
+    }
+
+    [Fact]
+    public void Submit_ClearsPopupText()
+    {
+        var (controller, _, _, popup, subscriber, _) = MakeController();
+        controller.OnHotkey();
+        subscriber.OnFinalization(MakeResult("hello world"));
+
+        controller.Submit();
+
+        Assert.Equal(string.Empty, popup.DisplayedText);
+    }
+
+    [Fact]
+    public void Cancel_ClearsPopupText()
+    {
+        var (controller, _, _, popup, subscriber, _) = MakeController();
+        controller.OnHotkey();
+        subscriber.OnFinalization(MakeResult("hello world"));
+
+        controller.Cancel();
+
+        Assert.Equal(string.Empty, popup.DisplayedText);
     }
 }
