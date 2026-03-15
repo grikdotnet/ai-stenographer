@@ -256,7 +256,6 @@ dotnet restore SttClient.sln
 ### Build (Debug)
 
 ```bash
-cd [project dir]\src\client\winui
 rm -Recurse -Force build\*, logs\* ; dotnet build SttClient.sln
 ```
 
@@ -294,6 +293,23 @@ All tests live in `SttClient.Tests/`. The test project references `SttClient.Cor
 ```bash
 dotnet test SttClient.Tests/SttClient.Tests.csproj
 ```
+
+### 2. Smoke test (runtime startup check)
+
+Launch the app briefly with a server running to verify the component graph wires up without runtime errors.
+The app stays alive after showing the error, so kill it after a few seconds:
+
+```bash
+Start-Process ./build/SttClient/SttClient.exe -ArgumentList "--server-url=ws://127.0.0.1:[port]" -PassThru | ForEach-Object { Start-Sleep 5; $_.Kill() }
+```
+
+After closing the app, check the log file:
+```bash
+cat logs/sttclient-$(date +%Y%m%d).log
+```
+
+Expected: LoadingWindow appears, if the port is wrong, connection attempt fails with a network error, error message is displayed in LoadingPage. App should not crash with an unhandled exception before being killed.
+
 
 ### Run a specific test class
 

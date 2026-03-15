@@ -156,6 +156,8 @@ public sealed class ClientOrchestrator : IAsyncDisposable
     /// <inheritdoc/>
     public async ValueTask DisposeAsync()
     {
+        _stateManager.RemoveObserver(OnStateChanged);
+
         if (_transport is not null)
             await _transport.DisposeAsync();
     }
@@ -203,7 +205,7 @@ public sealed class ClientOrchestrator : IAsyncDisposable
         if (_transport is null) return;
 
         var chunkId = Interlocked.Increment(ref _chunkId);
-        var timestamp = chunk.Timestamp.ToUnixTimeMilliseconds();
+        var timestamp = chunk.Timestamp.ToUnixTimeMilliseconds() / 1000.0;
         _transport.SendAudioChunkAsync(_transport.SessionId, chunkId, timestamp, chunk.Samples);
     }
 
@@ -218,7 +220,14 @@ public sealed class ClientOrchestrator : IAsyncDisposable
             _audioSource.ChunkReady -= OnChunkReady;
 
             if (!_clientShutdownInitiated && _transport is not null)
-                _ = _transport.StopAsync(serverInitiated: true);
+            {
+                var capturedTransport = _transport;
+                _ = Task.Run(async () =>
+                {
+                    try { await capturedTransport.StopAsync(serverInitiated: true); }
+                    catch (Exception ex) { _logger.LogWarning(ex, "StopAsync (server-initiated) failed"); }
+                });
+            }
         }
     }
 }

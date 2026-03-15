@@ -99,4 +99,16 @@ public class AppStateManager
             _observers.Add(observer);
         }
     }
+
+    /// <summary>
+    /// Removes a previously registered observer. No-op if the observer is not found.
+    /// </summary>
+    /// <param name="observer">The observer delegate to remove.</param>
+    public void RemoveObserver(Action<AppState, AppState> observer)
+    {
+        lock (_lock)
+        {
+            _observers.Remove(observer);
+        }
+    }
 }

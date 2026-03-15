@@ -1,5 +1,3 @@
-using System.ComponentModel;
-using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
 
 namespace SttClient.ViewModels;
@@ -12,15 +10,12 @@ namespace SttClient.ViewModels;
 /// - Provides <see cref="SetLiveText"/> for the QuickEntrySubscriber to push updates.
 /// - Implements INotifyPropertyChanged for WinUI data binding.
 /// </summary>
-public sealed class QuickEntryViewModel : INotifyPropertyChanged
+public sealed class QuickEntryViewModel : ViewModelBase
 {
     private readonly IDispatcherQueueAdapter _dispatcher;
     private readonly ILogger<QuickEntryViewModel> _logger;
 
     private string _liveText = string.Empty;
-
-    /// <inheritdoc/>
-    public event PropertyChangedEventHandler? PropertyChanged;
 
     /// <summary>
     /// Initializes a new <see cref="QuickEntryViewModel"/>.
@@ -60,12 +55,4 @@ public sealed class QuickEntryViewModel : INotifyPropertyChanged
         _dispatcher.TryEnqueue(() => LiveText = string.Empty);
     }
 
-    private void SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
-    {
-        if (EqualityComparer<T>.Default.Equals(field, value))
-            return;
-
-        field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-    }
 }

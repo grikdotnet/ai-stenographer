@@ -134,7 +134,7 @@ public sealed class ModelDownloadService : IModelDownloadService
         {
             CleanupFiles(partialPaths, sessionFiles);
             _logger?.LogError(ex, "Download failed");
-            throw new Exception(ClassifyError(ex), ex);
+            throw new ModelDownloadException(ClassifyError(ex), ex);
         }
     }
 
@@ -229,6 +229,16 @@ public sealed class ModelDownloadService : IModelDownloadService
         return msg.Contains("SSL", StringComparison.OrdinalIgnoreCase)
             || msg.Contains("certificate", StringComparison.OrdinalIgnoreCase);
     }
+}
+
+/// <summary>
+/// Thrown when a model download fails due to a network error or unexpected exception.
+/// The message is a user-friendly classified description; the inner exception is the original.
+/// </summary>
+public sealed class ModelDownloadException : Exception
+{
+    /// <summary>Initializes a new <see cref="ModelDownloadException"/>.</summary>
+    public ModelDownloadException(string message, Exception inner) : base(message, inner) { }
 }
 
 /// <summary>

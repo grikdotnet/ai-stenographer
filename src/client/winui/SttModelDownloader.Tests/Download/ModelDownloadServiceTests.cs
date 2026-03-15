@@ -137,7 +137,7 @@ public sealed class ModelDownloadServiceTests : IDisposable
         _handlerFactory.SetupFailOnFile(Files, failOnIndex: 2,
             exception: new HttpRequestException("simulated network error"));
 
-        await Assert.ThrowsAsync<Exception>(
+        await Assert.ThrowsAsync<ModelDownloadException>(
             () => _sut.DownloadAsync(_tempDir, new Progress<DownloadProgressUpdate>(_ => { }), CancellationToken.None));
 
         var modelDir = Path.Combine(_tempDir, "parakeet");
@@ -173,7 +173,7 @@ public sealed class ModelDownloadServiceTests : IDisposable
         var httpEx = new HttpRequestException("SSL error", authEx);
         _handlerFactory.SetupThrowOnSend(httpEx);
 
-        var ex = await Assert.ThrowsAsync<Exception>(
+        var ex = await Assert.ThrowsAsync<ModelDownloadException>(
             () => _sut.DownloadAsync(_tempDir, new Progress<DownloadProgressUpdate>(_ => { }), CancellationToken.None));
 
         Assert.Contains("SSL/certificate", ex.Message);
@@ -186,7 +186,7 @@ public sealed class ModelDownloadServiceTests : IDisposable
         var nonCancelledToken = CancellationToken.None;
         _handlerFactory.SetupThrowOnSend(new TaskCanceledException("operation timed out", null, nonCancelledToken));
 
-        var ex = await Assert.ThrowsAsync<Exception>(
+        var ex = await Assert.ThrowsAsync<ModelDownloadException>(
             () => _sut.DownloadAsync(_tempDir, new Progress<DownloadProgressUpdate>(_ => { }), CancellationToken.None));
 
         Assert.Contains("timed out", ex.Message);

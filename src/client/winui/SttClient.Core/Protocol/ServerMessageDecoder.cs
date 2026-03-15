@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.Extensions.Logging;
 
 namespace SttClient.Protocol;
@@ -10,10 +11,10 @@ namespace SttClient.Protocol;
 /// </summary>
 public sealed class ServerMessageDecoder
 {
-    private static readonly JsonSerializerOptions Options = new()
+    private static readonly WireTypesJsonContext Context = new(new JsonSerializerOptions
     {
         PropertyNameCaseInsensitive = true,
-    };
+    });
 
     private readonly ILogger<ServerMessageDecoder> _logger;
 
@@ -60,21 +61,21 @@ public sealed class ServerMessageDecoder
             string? type = typeElement.GetString();
             return type switch
             {
-                "session_created" => Deserialize<SessionCreated>(json),
-                "recognition_result" => Deserialize<RecognitionResultMessage>(json),
-                "session_closed" => Deserialize<SessionClosed>(json),
-                "error" => Deserialize<ErrorMessage>(json),
-                "ping" => Deserialize<PingMessage>(json),
+                "session_created" => Deserialize(json, Context.SessionCreated),
+                "recognition_result" => Deserialize(json, Context.RecognitionResultMessage),
+                "session_closed" => Deserialize(json, Context.SessionClosed),
+                "error" => Deserialize(json, Context.ErrorMessage),
+                "ping" => Deserialize(json, Context.PingMessage),
                 _ => LogUnknown(type),
             };
         }
     }
 
-    private ServerMessage? Deserialize<T>(string json) where T : ServerMessage
+    private ServerMessage? Deserialize<T>(string json, JsonTypeInfo<T> typeInfo) where T : ServerMessage
     {
         try
         {
-            return JsonSerializer.Deserialize<T>(json, Options);
+            return JsonSerializer.Deserialize(json, typeInfo);
         }
         catch (JsonException ex)
         {

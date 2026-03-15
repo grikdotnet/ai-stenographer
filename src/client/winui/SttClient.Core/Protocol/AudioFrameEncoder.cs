@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
@@ -41,7 +42,7 @@ public sealed class AudioFrameEncoder
 
         byte[] rented = ArrayPool<byte>.Shared.Rent(totalLen);
 
-        BinaryPrimitives_WriteUInt32LE(rented, (uint)headerLen);
+        BinaryPrimitives.WriteUInt32LittleEndian(rented, (uint)headerLen);
         headerBytes.CopyTo(rented, 4);
         MemoryMarshal.Cast<float, byte>(frame.Audio).CopyTo(rented.AsSpan(4 + headerLen));
 
@@ -62,14 +63,6 @@ public sealed class AudioFrameEncoder
         writer.Flush();
 
         return ms.ToArray();
-    }
-
-    private static void BinaryPrimitives_WriteUInt32LE(byte[] dest, uint value)
-    {
-        dest[0] = (byte)(value & 0xFF);
-        dest[1] = (byte)((value >> 8) & 0xFF);
-        dest[2] = (byte)((value >> 16) & 0xFF);
-        dest[3] = (byte)((value >> 24) & 0xFF);
     }
 
     /// <summary>

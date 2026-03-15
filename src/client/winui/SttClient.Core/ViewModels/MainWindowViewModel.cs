@@ -1,5 +1,3 @@
-using System.ComponentModel;
-using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
 using SttClient.Formatting;
 using SttClient.State;
@@ -15,7 +13,7 @@ namespace SttClient.ViewModels;
 /// - Observes <see cref="AppStateManager"/> to reflect pause/resume state changes.
 /// - Implements INotifyPropertyChanged for WinUI data binding.
 /// </summary>
-public sealed class MainWindowViewModel : INotifyPropertyChanged
+public sealed class MainWindowViewModel : ViewModelBase
 {
     private readonly IDispatcherQueueAdapter _dispatcher;
     private readonly ILogger<MainWindowViewModel> _logger;
@@ -24,9 +22,6 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
     private string _partialText = string.Empty;
     private bool _isPaused;
     private bool _isRunningOrPaused;
-
-    /// <inheritdoc/>
-    public event PropertyChangedEventHandler? PropertyChanged;
 
     /// <summary>
     /// Initializes a new <see cref="MainWindowViewModel"/>.
@@ -108,12 +103,4 @@ public sealed class MainWindowViewModel : INotifyPropertyChanged
         });
     }
 
-    private void SetProperty<T>(ref T field, T value, [CallerMemberName] string? propertyName = null)
-    {
-        if (EqualityComparer<T>.Default.Equals(field, value))
-            return;
-
-        field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-    }
 }

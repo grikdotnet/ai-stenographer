@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
 using System.Text;
+using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using SttClient.Protocol;
 using SttClient.Recognition;
@@ -22,10 +23,14 @@ public class WsClientTransportTests
     private static AppStateManager CreateStateManager() =>
         new(NullLogger<AppStateManager>.Instance);
 
+    private static ServerMessageDecoder CreateDecoder() =>
+        new(NullLogger<ServerMessageDecoder>.Instance);
+
     private static RemoteRecognitionPublisher CreatePublisher(AppStateManager stateManager) =>
         new(
             new RecognitionResultFanOut(NullLogger<RecognitionResultFanOut>.Instance),
             stateManager,
+            CreateDecoder(),
             NullLogger<RemoteRecognitionPublisher>.Instance);
 
     private static WsClientTransport CreateTransport(
@@ -54,7 +59,7 @@ public class WsClientTransportTests
         var fakeWs = new FakeWebSocket();
         var transport = CreateTransport(fakeWs);
 
-        transport.SendAudioChunkAsync("sess1", chunkId: 1, timestamp: 100L, samples: [0.1f, 0.2f]);
+        transport.SendAudioChunkAsync("sess1", chunkId: 1, timestamp: 100.0, samples: [0.1f, 0.2f]);
         transport.StartAsync();
 
         await fakeWs.WaitForSendCountAsync(minCount: 1, timeout: TimeSpan.FromSeconds(3));
@@ -74,16 +79,39 @@ public class WsClientTransportTests
         transport.StartAsync();
 
         for (int i = 0; i < 20; i++)
-            transport.SendAudioChunkAsync("sess1", i, timestamp: 0L, samples: [0.1f]);
+            transport.SendAudioChunkAsync("sess1", i, timestamp: 0.0, samples: [0.1f]);
 
         var overflowTask = Task.Run(() =>
-            transport.SendAudioChunkAsync("sess1", chunkId: 99, timestamp: 0L, samples: [0.1f]));
+            transport.SendAudioChunkAsync("sess1", chunkId: 99, timestamp: 0.0, samples: [0.1f]));
 
         var completedBeforeTimeout = await Task.WhenAny(overflowTask, Task.Delay(200)) == overflowTask;
 
         Assert.True(completedBeforeTimeout, "SendAudioChunkAsync should return immediately when queue is full");
 
         await transport.StopAsync(serverInitiated: true);
+    }
+
+    [Fact]
+    public async Task SendAudioChunkAsync_TimestampIsInSeconds()
+    {
+        var fakeWs = new FakeWebSocket();
+        var transport = CreateTransport(fakeWs);
+
+        var timestampSeconds = 1700000000.123;
+        transport.SendAudioChunkAsync("sess1", chunkId: 1, timestamp: timestampSeconds, samples: [0.1f]);
+        transport.StartAsync();
+
+        await fakeWs.WaitForSendCountAsync(minCount: 1, timeout: TimeSpan.FromSeconds(3));
+        await transport.StopAsync(serverInitiated: true);
+
+        var frame = fakeWs.BinarySends[0];
+        var headerLen = BitConverter.ToUInt32(frame, 0);
+        var headerJson = System.Text.Encoding.UTF8.GetString(frame, 4, (int)headerLen);
+        using var doc = System.Text.Json.JsonDocument.Parse(headerJson);
+        var ts = doc.RootElement.GetProperty("timestamp").GetDouble();
+
+        Assert.True(ts < 2e10, $"Timestamp {ts} looks like milliseconds, expected seconds");
+        Assert.Equal(timestampSeconds, ts, precision: 3);
     }
 
     // -------------------------------------------------------------------------
@@ -101,7 +129,7 @@ public class WsClientTransportTests
 
         var stateManager = CreateStateManager();
         var fanOut = new RecognitionResultFanOut(NullLogger<RecognitionResultFanOut>.Instance);
-        var publisher = new RemoteRecognitionPublisher(fanOut, stateManager, NullLogger<RemoteRecognitionPublisher>.Instance);
+        var publisher = new RemoteRecognitionPublisher(fanOut, stateManager, CreateDecoder(), NullLogger<RemoteRecognitionPublisher>.Instance);
         publisher.SetSessionId(sessionId);
 
         var resultTcs = new TaskCompletionSource<RecognitionResult>();
@@ -136,7 +164,7 @@ public class WsClientTransportTests
 
         var stateManager = CreateStateManager();
         var fanOut = new RecognitionResultFanOut(NullLogger<RecognitionResultFanOut>.Instance);
-        var publisher = new RemoteRecognitionPublisher(fanOut, stateManager, NullLogger<RemoteRecognitionPublisher>.Instance);
+        var publisher = new RemoteRecognitionPublisher(fanOut, stateManager, CreateDecoder(), NullLogger<RemoteRecognitionPublisher>.Instance);
         publisher.SetSessionId(sessionId);
 
         var resultTcs = new TaskCompletionSource<RecognitionResult>();
@@ -217,7 +245,7 @@ public class WsClientTransportTests
         var fakeWs = new FakeWebSocket();
         var stateManager = CreateStateManager();
         var fanOut = new RecognitionResultFanOut(NullLogger<RecognitionResultFanOut>.Instance);
-        var publisher = new RemoteRecognitionPublisher(fanOut, stateManager, NullLogger<RemoteRecognitionPublisher>.Instance);
+        var publisher = new RemoteRecognitionPublisher(fanOut, stateManager, CreateDecoder(), NullLogger<RemoteRecognitionPublisher>.Instance);
         var transport = new WsClientTransport(fakeWs, CreateEncoder(), publisher, stateManager, NullLogger<WsClientTransport>.Instance);
         publisher.SessionClosedCallback = transport.SignalSessionClosed;
         transport.SessionId = "sess-wait";
@@ -236,6 +264,27 @@ public class WsClientTransportTests
 
         // Should complete quickly (well under 2 s), because session_closed was received
         Assert.True(sw.ElapsedMilliseconds < 1500, $"StopAsync took {sw.ElapsedMilliseconds} ms — expected < 1500");
+    }
+
+    [Fact]
+    public async Task SendControlCommandShutdown_JsonIsValidAndContainsSessionId()
+    {
+        var fakeWs = new FakeWebSocket();
+        var transport = CreateTransport(fakeWs);
+        transport.SessionId = "sess-json-test";
+        transport.StartAsync();
+
+        await transport.StopAsync(serverInitiated: false);
+
+        Assert.Single(fakeWs.TextSends);
+
+        using var doc = JsonDocument.Parse(fakeWs.TextSends[0]);
+        var root = doc.RootElement;
+
+        Assert.Equal("control_command", root.GetProperty("type").GetString());
+        Assert.Equal("shutdown", root.GetProperty("command").GetString());
+        Assert.Equal("sess-json-test", root.GetProperty("session_id").GetString());
+        Assert.True(root.TryGetProperty("timestamp", out var ts) && ts.ValueKind == JsonValueKind.Number);
     }
 
     [Fact]

@@ -59,7 +59,8 @@ internal sealed class AppStartup
 
         var stateManager = new AppStateManager(loggerFactory.CreateLogger<AppStateManager>());
         var fanOut = new RecognitionResultFanOut(loggerFactory.CreateLogger<RecognitionResultFanOut>());
-        var publisher = new RemoteRecognitionPublisher(fanOut, stateManager, loggerFactory.CreateLogger<RemoteRecognitionPublisher>());
+        var decoder = new ServerMessageDecoder(loggerFactory.CreateLogger<ServerMessageDecoder>());
+        var publisher = new RemoteRecognitionPublisher(fanOut, stateManager, decoder, loggerFactory.CreateLogger<RemoteRecognitionPublisher>());
 
         var viewModel = new MainWindowViewModel(dispatcherAdapter, loggerFactory.CreateLogger<MainWindowViewModel>());
         stateManager.AddObserver(viewModel.OnStateChanged);

@@ -27,6 +27,7 @@ public sealed class WsClientTransport : IAsyncDisposable
     private readonly Channel<AudioFrameEncoder.PooledFrame> _sendChannel;
     private readonly CancellationTokenSource _cts = new();
     private readonly TaskCompletionSource _sessionClosedTcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly MemoryStream _messageBuffer = new();
 
     private Task? _drainTask;
     private Task? _receiveTask;
@@ -131,11 +132,11 @@ public sealed class WsClientTransport : IAsyncDisposable
     /// </summary>
     /// <param name="sessionId">Session identifier assigned by the server.</param>
     /// <param name="chunkId">Monotonically increasing chunk counter.</param>
-    /// <param name="timestamp">Wall-clock timestamp in milliseconds.</param>
+    /// <param name="timestamp">Wall-clock timestamp in seconds (Unix epoch, double precision).</param>
     /// <param name="samples">Raw PCM float samples.</param>
-    public void SendAudioChunkAsync(string sessionId, int chunkId, long timestamp, float[] samples)
+    public void SendAudioChunkAsync(string sessionId, int chunkId, double timestamp, float[] samples)
     {
-        var pooled = _encoder.Encode(new WsAudioFrame(sessionId, chunkId, (double)timestamp, samples));
+        var pooled = _encoder.Encode(new WsAudioFrame(sessionId, chunkId, timestamp, samples));
 
         if (!_sendChannel.Writer.TryWrite(pooled))
         {
@@ -198,7 +199,7 @@ public sealed class WsClientTransport : IAsyncDisposable
         {
             while (!ct.IsCancellationRequested)
             {
-                using var messageBuffer = new MemoryStream();
+                _messageBuffer.SetLength(0);
                 WebSocketReceiveResult result;
 
                 do
@@ -216,13 +217,13 @@ public sealed class WsClientTransport : IAsyncDisposable
                     }
 
                     if (result.Count > 0)
-                        messageBuffer.Write(chunk, 0, result.Count);
+                        _messageBuffer.Write(chunk, 0, result.Count);
                 }
                 while (!result.EndOfMessage);
 
                 if (result.MessageType == WebSocketMessageType.Text)
                 {
-                    var text = Encoding.UTF8.GetString(messageBuffer.GetBuffer(), 0, (int)messageBuffer.Length);
+                    var text = Encoding.UTF8.GetString(_messageBuffer.GetBuffer(), 0, (int)_messageBuffer.Length);
                     _publisher.Dispatch(text);
                 }
             }
@@ -241,13 +242,9 @@ public sealed class WsClientTransport : IAsyncDisposable
     {
         try
         {
-            var json = JsonSerializer.Serialize(new
-            {
-                type = "control_command",
-                command = "shutdown",
-                session_id = SessionId,
-                timestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0
-            });
+            var ts = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() / 1000.0;
+            var cmd = new ControlCommand("shutdown", SessionId, ts);
+            var json = JsonSerializer.Serialize(cmd, WireTypesJsonContext.Default.ControlCommand);
             await SendTextAsync(json);
         }
         catch (Exception ex)

@@ -56,7 +56,6 @@ public sealed class TextFormatter : IRecognitionSubscriber
 
         if (_lastFinalizedEndTime != 0
             && (result.StartTime - _lastFinalizedEndTime) >= ParagraphPauseThreshold
-            && _lastFinalizedText != string.Empty
             && _finalizedText.Length > 0
             && !_finalizedText.EndsWith('\n'))
         {

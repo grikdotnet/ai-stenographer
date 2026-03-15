@@ -85,11 +85,7 @@ public sealed class QuickEntryController
         lock (_lock)
         {
             text = _subscriber.GetAccumulatedText();
-            _subscriber.Deactivate();
-            _popup.Hide();
-            _popup.SetText(string.Empty);
-            _hotkeyRegistrar.UnregisterPopupHotkeys();
-            _isShowing = false;
+            ClosePopup();
         }
 
         if (text.Trim().Length > 0)
@@ -110,11 +106,7 @@ public sealed class QuickEntryController
     {
         lock (_lock)
         {
-            _subscriber.Deactivate();
-            _popup.Hide();
-            _popup.SetText(string.Empty);
-            _hotkeyRegistrar.UnregisterPopupHotkeys();
-            _isShowing = false;
+            ClosePopup();
         }
 
         _focusTracker.RestoreFocus();
@@ -133,13 +125,18 @@ public sealed class QuickEntryController
 
     private void HideAndCancel()
     {
+        ClosePopup();
+        _focusTracker.RestoreFocus();
+        _logger.LogInformation("QuickEntryController: popup hidden (hotkey toggle)");
+    }
+
+    private void ClosePopup()
+    {
         _subscriber.Deactivate();
         _popup.Hide();
         _popup.SetText(string.Empty);
         _hotkeyRegistrar.UnregisterPopupHotkeys();
         _isShowing = false;
-        _focusTracker.RestoreFocus();
-        _logger.LogInformation("QuickEntryController: popup hidden (hotkey toggle)");
     }
 
     private void UpdatePopupText(string text)

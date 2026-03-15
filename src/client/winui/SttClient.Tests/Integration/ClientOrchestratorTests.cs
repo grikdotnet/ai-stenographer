@@ -113,7 +113,8 @@ public sealed class ClientOrchestratorTests : IAsyncDisposable
         stateManager.AddObserver(viewModel.OnStateChanged);
 
         var fanOut = new RecognitionResultFanOut(NullLogger<RecognitionResultFanOut>.Instance);
-        var publisher = new RemoteRecognitionPublisher(fanOut, stateManager, NullLogger<RemoteRecognitionPublisher>.Instance);
+        var decoder = new ServerMessageDecoder(NullLogger<ServerMessageDecoder>.Instance);
+        var publisher = new RemoteRecognitionPublisher(fanOut, stateManager, decoder, NullLogger<RemoteRecognitionPublisher>.Instance);
         var formatter = new TextFormatter(viewModel.Apply, NullLogger<TextFormatter>.Instance);
         fanOut.AddSubscriber(formatter);
 
@@ -219,6 +220,60 @@ public sealed class ClientOrchestratorTests : IAsyncDisposable
     }
 
     [Fact]
+    public async Task OnChunkReady_AudioFrameTimestampIsInSeconds()
+    {
+        var receivedFrames = new List<byte[]>();
+        var frameReceived = new TaskCompletionSource<bool>();
+
+        var serverTask = Task.Run(async () =>
+        {
+            var ctx = await _httpListener.GetContextAsync();
+            var wsCtx = await ctx.AcceptWebSocketAsync(null);
+            var ws = wsCtx.WebSocket;
+
+            await ws.SendAsync(Encoding.UTF8.GetBytes(MakeSessionCreated()),
+                WebSocketMessageType.Text, true, CancellationToken.None);
+
+            var buf = new byte[65536];
+            while (ws.State == WebSocketState.Open)
+            {
+                WebSocketReceiveResult result;
+                try { result = await ws.ReceiveAsync(buf, CancellationToken.None); }
+                catch { break; }
+
+                if (result.MessageType == WebSocketMessageType.Binary)
+                {
+                    receivedFrames.Add(buf[..result.Count]);
+                    frameReceived.TrySetResult(true);
+                }
+                else if (result.MessageType == WebSocketMessageType.Close)
+                    break;
+            }
+        });
+
+        var orchestrator = BuildOrchestrator(out _, out _, out _, out var audioSource);
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+
+        await orchestrator.ConnectAsync(cts.Token);
+
+        audioSource.EmitChunk(new float[512]);
+
+        await frameReceived.Task.WaitAsync(TimeSpan.FromSeconds(3));
+
+        var frame = receivedFrames[0];
+        var headerLen = BitConverter.ToUInt32(frame, 0);
+        var headerJson = Encoding.UTF8.GetString(frame, 4, (int)headerLen);
+        using var doc = JsonDocument.Parse(headerJson);
+        var timestamp = doc.RootElement.GetProperty("timestamp").GetDouble();
+
+        Assert.True(timestamp > 1e9, $"Timestamp {timestamp} is too small for Unix seconds");
+        Assert.True(timestamp < 2e10, $"Timestamp {timestamp} looks like milliseconds, expected seconds");
+
+        await orchestrator.StopAsync();
+        await serverTask;
+    }
+
+    [Fact]
     public async Task RecognitionResult_FromServer_AppearsInViewModel()
     {
         var orchestrator = BuildOrchestrator(out var stateManager, out _, out var viewModel, out _);
@@ -284,6 +339,7 @@ public sealed class ClientOrchestratorTests : IAsyncDisposable
                         break;
                 }
                 catch (OperationCanceledException) { break; }
+                catch (WebSocketException) { break; }
             }
         });
 

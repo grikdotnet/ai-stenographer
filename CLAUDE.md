@@ -151,6 +151,8 @@ python -m pytest tests/gui -m gui
 
 Runs GUI tests separately. GUI tests live in `tests/gui/` and use tkinter, which fails when run many times in the same process, so they are kept separate from the main test suite.
 
+When running in Windows, `ls -la ` is not supported, use `find` command
+
 ## Architecture
 
 The system uses a **pipeline architecture** with threaded components communicating via queues.

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
+using SttClient.Protocol;
 using SttClient.Recognition;
 using SttClient.State;
 using Xunit;
@@ -22,10 +23,12 @@ public class RemoteRecognitionPublisherTests
         fanOut.AddSubscriber(subscriber.Object);
 
         var stateManager = new AppStateManager(NullLogger<AppStateManager>.Instance);
+        var decoder = new ServerMessageDecoder(NullLogger<ServerMessageDecoder>.Instance);
 
         var publisher = new RemoteRecognitionPublisher(
             fanOut,
             stateManager,
+            decoder,
             NullLogger<RemoteRecognitionPublisher>.Instance);
         publisher.SetSessionId(ValidSessionId);
 
@@ -162,5 +165,29 @@ public class RemoteRecognitionPublisherTests
         Assert.Equal("pong", root.GetProperty("type").GetString());
         Assert.Equal(ValidSessionId, root.GetProperty("session_id").GetString());
         Assert.Equal(1234567.89, root.GetProperty("timestamp").GetDouble(), precision: 2);
+    }
+
+    [Fact]
+    public void Dispatch_PingMessage_PongContainsValidJson()
+    {
+        var (publisher, _, _, _) = MakePublisher();
+
+        string? capturedPong = null;
+        publisher.PongSender = json =>
+        {
+            capturedPong = json;
+            return Task.CompletedTask;
+        };
+
+        publisher.Dispatch("""{"type":"ping","timestamp":9876.54}""");
+
+        Assert.NotNull(capturedPong);
+
+        using var doc = System.Text.Json.JsonDocument.Parse(capturedPong!);
+        var root = doc.RootElement;
+
+        Assert.Equal("pong", root.GetProperty("type").GetString());
+        Assert.Equal(ValidSessionId, root.GetProperty("session_id").GetString());
+        Assert.Equal(9876.54, root.GetProperty("timestamp").GetDouble(), precision: 2);
     }
 }

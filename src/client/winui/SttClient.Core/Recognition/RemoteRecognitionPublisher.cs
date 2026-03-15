@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
+using SttClient.Protocol;
 using SttClient.State;
 
 namespace SttClient.Recognition;
@@ -11,13 +12,9 @@ namespace SttClient.Recognition;
 /// </summary>
 public sealed class RemoteRecognitionPublisher
 {
-    private static readonly JsonSerializerOptions SnakeCase = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.SnakeCaseLower
-    };
-
     private readonly RecognitionResultFanOut _fanOut;
     private readonly AppStateManager _stateManager;
+    private readonly ServerMessageDecoder _decoder;
     private readonly ILogger<RemoteRecognitionPublisher> _logger;
 
     private string? _sessionId;
@@ -35,18 +32,21 @@ public sealed class RemoteRecognitionPublisher
     public Action? SessionClosedCallback { get; set; }
 
     /// <summary>
-    /// Initializes the publisher with the fan-out and state manager it routes events to.
+    /// Initializes the publisher with the fan-out, state manager, and decoder it routes events through.
     /// </summary>
     /// <param name="fanOut">Fan-out that dispatches recognition results to all subscribers.</param>
     /// <param name="stateManager">State machine updated on session lifecycle events.</param>
+    /// <param name="decoder">Decodes raw JSON into typed ServerMessage records.</param>
     /// <param name="logger">Logger for warnings and diagnostics.</param>
     public RemoteRecognitionPublisher(
         RecognitionResultFanOut fanOut,
         AppStateManager stateManager,
+        ServerMessageDecoder decoder,
         ILogger<RemoteRecognitionPublisher> logger)
     {
         _fanOut = fanOut;
         _stateManager = stateManager;
+        _decoder = decoder;
         _logger = logger;
     }
 
@@ -64,8 +64,8 @@ public sealed class RemoteRecognitionPublisher
     /// Parses and dispatches one JSON text frame from the server.
     ///
     /// Algorithm:
-    /// 1. Parse JSON and peek at "type" field.
-    /// 2. Route to the appropriate handler based on type.
+    /// 1. Decode JSON via ServerMessageDecoder into a typed record.
+    /// 2. Route to the appropriate handler via pattern matching.
     /// 3. Swallow all exceptions after logging — never rethrow.
     /// </summary>
     /// <param name="json">Raw JSON string received from the server WebSocket.</param>
@@ -73,39 +73,15 @@ public sealed class RemoteRecognitionPublisher
     {
         try
         {
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            if (!root.TryGetProperty("type", out var typeProp))
+            var message = _decoder.Decode(json);
+            switch (message)
             {
-                _logger.LogWarning("Received message with no 'type' field");
-                return;
+                case RecognitionResultMessage r: HandleRecognitionResult(r); break;
+                case SessionClosed:              HandleSessionClosed(); break;
+                case PingMessage p:              HandlePing(p); break;
+                case ErrorMessage e:             HandleError(e); break;
+                case null:                       break;
             }
-
-            var type = typeProp.GetString();
-
-            switch (type)
-            {
-                case "recognition_result":
-                    HandleRecognitionResult(root);
-                    break;
-                case "session_closed":
-                    HandleSessionClosed();
-                    break;
-                case "ping":
-                    HandlePing(root);
-                    break;
-                case "error":
-                    HandleError(root);
-                    break;
-                default:
-                    _logger.LogDebug("Ignoring unknown message type: {Type}", type);
-                    break;
-            }
-        }
-        catch (JsonException ex)
-        {
-            _logger.LogWarning(ex, "Received malformed JSON frame");
         }
         catch (Exception ex)
         {
@@ -113,29 +89,25 @@ public sealed class RemoteRecognitionPublisher
         }
     }
 
-    private void HandleRecognitionResult(JsonElement root)
+    private void HandleRecognitionResult(RecognitionResultMessage r)
     {
-        if (root.TryGetProperty("session_id", out var sessionIdProp))
+        if (r.SessionId != _sessionId)
         {
-            var incomingSessionId = sessionIdProp.GetString();
-            if (incomingSessionId != _sessionId)
-            {
-                _logger.LogWarning(
-                    "Discarding recognition_result: session_id mismatch (expected {Expected}, got {Got})",
-                    _sessionId, incomingSessionId);
-                return;
-            }
+            _logger.LogWarning(
+                "Discarding recognition_result: session_id mismatch (expected {Expected}, got {Got})",
+                _sessionId, r.SessionId);
+            return;
         }
 
-        var status = root.TryGetProperty("status", out var statusProp) ? statusProp.GetString() : null;
-        var result = DeserializeRecognitionResult(root);
+        var result = new RecognitionResult(
+            r.Text, r.StartTime, r.EndTime, r.UtteranceId, r.ChunkIds, r.TokenConfidences);
 
-        if (status == "partial")
+        if (r.Status == "partial")
             _fanOut.OnPartialUpdate(result);
-        else if (status == "final")
+        else if (r.Status == "final")
             _fanOut.OnFinalization(result);
         else
-            _logger.LogWarning("Unrecognized recognition_result status: {Status}", status);
+            _logger.LogWarning("Unrecognized recognition_result status: {Status}", r.Status);
     }
 
     private void HandleSessionClosed()
@@ -151,46 +123,18 @@ public sealed class RemoteRecognitionPublisher
         }
     }
 
-    private void HandlePing(JsonElement root)
+    private void HandlePing(PingMessage p)
     {
         if (PongSender is null)
             return;
 
-        var timestamp = root.TryGetProperty("timestamp", out var tsProp) ? tsProp.GetDouble() : 0.0;
-        var pongJson = JsonSerializer.Serialize(new
-        {
-            type = "pong",
-            session_id = _sessionId ?? string.Empty,
-            timestamp
-        });
-
+        var pong = new PongMessage(_sessionId ?? string.Empty, p.Timestamp);
+        var pongJson = JsonSerializer.Serialize(pong, WireTypesJsonContext.Default.PongMessage);
         _ = PongSender(pongJson);
     }
 
-    private void HandleError(JsonElement root)
+    private void HandleError(ErrorMessage e)
     {
-        var errorCode = root.TryGetProperty("error_code", out var codeProp) ? codeProp.GetString() : "unknown";
-        var message = root.TryGetProperty("message", out var msgProp) ? msgProp.GetString() : string.Empty;
-        _logger.LogWarning("Server error [{ErrorCode}]: {Message}", errorCode, message);
-    }
-
-    private static RecognitionResult DeserializeRecognitionResult(JsonElement root)
-    {
-        var text = root.TryGetProperty("text", out var textProp) ? textProp.GetString() ?? string.Empty : string.Empty;
-        var startTime = root.TryGetProperty("start_time", out var stProp) ? stProp.GetDouble() : 0.0;
-        var endTime = root.TryGetProperty("end_time", out var etProp) ? etProp.GetDouble() : 0.0;
-        int? utteranceId = root.TryGetProperty("utterance_id", out var uidProp) && uidProp.ValueKind != JsonValueKind.Null
-            ? uidProp.GetInt32()
-            : null;
-
-        int[] chunkIds = [];
-        if (root.TryGetProperty("chunk_ids", out var chunksProp) && chunksProp.ValueKind == JsonValueKind.Array)
-            chunkIds = chunksProp.Deserialize<int[]>(SnakeCase) ?? [];
-
-        double[]? tokenConfidences = null;
-        if (root.TryGetProperty("token_confidences", out var tcProp) && tcProp.ValueKind == JsonValueKind.Array)
-            tokenConfidences = tcProp.Deserialize<double[]>(SnakeCase);
-
-        return new RecognitionResult(text, startTime, endTime, utteranceId, chunkIds, tokenConfidences);
+        _logger.LogWarning("Server error [{ErrorCode}]: {Message}", e.ErrorCode, e.Message);
     }
 }

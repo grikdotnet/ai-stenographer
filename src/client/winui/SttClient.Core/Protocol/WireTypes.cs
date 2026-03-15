@@ -68,6 +68,23 @@ public sealed record PingMessage(
 ) : ServerMessage("ping");
 
 /// <summary>
+/// Client-to-server control command, e.g. shutdown.
+/// </summary>
+public sealed record ControlCommand(
+    [property: JsonPropertyName("command")] string Command,
+    [property: JsonPropertyName("session_id")] string SessionId,
+    [property: JsonPropertyName("timestamp")] double Timestamp
+) : ServerMessage("control_command");
+
+/// <summary>
+/// Client-to-server pong response echoing the server's ping timestamp.
+/// </summary>
+public sealed record PongMessage(
+    [property: JsonPropertyName("session_id")] string SessionId,
+    [property: JsonPropertyName("timestamp")] double Timestamp
+) : ServerMessage("pong");
+
+/// <summary>
 /// Binary audio frame sent from client to server. Contains a session identifier,
 /// monotonically increasing chunk counter, wall-clock timestamp, and raw PCM samples.
 /// </summary>
