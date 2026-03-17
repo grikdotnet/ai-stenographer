@@ -6,3 +6,4 @@ requests
 pynput>=1.7.6
 tqdm
 websockets>=12.0
+qrcode>=7.0

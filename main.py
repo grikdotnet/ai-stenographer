@@ -5,6 +5,7 @@ from pathlib import Path
 from src.PathResolver import PathResolver
 from src.asr.ModelManager import ModelManager
 from src.LoggingSetup import setup_logging
+from src.server.qr_display import print_qr_code
 
 
 # ============================================================================
@@ -157,13 +158,21 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
     )
     server_app.start()
 
-    if server_only:
-        logging.info("Running in --server-only mode. Press Ctrl+C to stop.")
-        server_app._ws_server.join()
-    else:
-        server_url = f"ws://127.0.0.1:{server_app.port}"
-        proc = _spawn_client(server_url, input_file=input_file)
-        proc.wait()
+    try:
+        if server_only:
+            server_url = f"ws://127.0.0.1:{server_app.port}"
+            print(f"Server listening on {server_url}", flush=True)
+            print_qr_code(server_url)
+            logging.info("Running in --server-only mode. Press Ctrl+C to stop.")
+            while server_app._ws_server._thread is not None and server_app._ws_server._thread.is_alive():
+                server_app._ws_server.join(timeout=0.5)
+        else:
+            server_url = f"ws://127.0.0.1:{server_app.port}"
+            proc = _spawn_client(server_url, input_file=input_file)
+            proc.wait()
+    except KeyboardInterrupt:
+        logging.info("Interrupted by user.")
+    finally:
         server_app.stop()
 
 
