@@ -35,8 +35,15 @@ python main.py --input-file=tests/fixtures/en_short.wav -v
 Starts the server without spawning a client. Prints the WebSocket URL and a QR code, then blocks until Ctrl+C.
 
 ```bash
+python main.py --server-only --port=62062
+```
+
+With a random port:
+
+```bash
 python main.py --server-only
 ```
+
 
 Debug mode:
 

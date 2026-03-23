@@ -62,7 +62,7 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
     """Core entry-point logic, extracted for testability.
 
     Algorithm:
-        1. Parse flags from argv.
+        1. Parse flags from argv (-v, --server-only, --input-file=, --port=).
         2. Setup logging.
         3. Check for missing models. In --server-only mode: exit 1 with stderr message.
            In default mode: spawn download_models.py; exit 0 if cancelled; re-check models.
@@ -93,6 +93,12 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
     input_file: str | None = next(
         (arg.split("=", 1)[1] for arg in argv if arg.startswith("--input-file=")),
         None,
+    )
+    port: int = int(
+        next(
+            (arg.split("=", 1)[1] for arg in argv if arg.startswith("--port=")),
+            "0",
+        )
     )
 
     is_frozen = getattr(sys, 'frozen', False)
@@ -154,7 +160,7 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
         config=config,
         vad_model_path=vad_model_path,
         host="127.0.0.1",
-        port=0,
+        port=port,
     )
     server_app.start()
 

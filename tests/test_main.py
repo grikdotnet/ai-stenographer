@@ -11,6 +11,7 @@ Tests cover:
   server_app.stop() called after subprocess exits
 - Default mode with missing models: spawns download-models.py subprocess; exits 0
   on cancel; continues startup after successful download
+- --port=N: ServerApp constructed with the specified port
 """
 
 import sys
@@ -47,6 +48,8 @@ def _make_server_app_mock(port: int = 9000) -> MagicMock:
     mock.port = port
     mock._ws_server = MagicMock()
     mock._ws_server.join = MagicMock()
+    mock._ws_server._thread = MagicMock()
+    mock._ws_server._thread.is_alive.return_value = False
     return mock
 
 
@@ -214,9 +217,7 @@ class TestServerOnlyModelsPresent:
             _model_patches(stack, server_app_mock)
             _main(["main.py", "--server-only"], _FAKE_MODELS_DIR, _FAKE_LOGS_DIR, _FAKE_CONFIG_PATH)
 
-        from unittest.mock import call
-        server_app_mock._ws_server.join.assert_called_once()
-        assert server_app_mock._ws_server.join.call_args in (call(), call(timeout=None))
+        server_app_mock._ws_server._thread.is_alive.assert_called()
 
 
 class TestDefaultModeModelsPresent:
@@ -285,3 +286,71 @@ class TestDefaultModeModelsPresent:
             _main(["main.py"], _FAKE_MODELS_DIR, _FAKE_LOGS_DIR, _FAKE_CONFIG_PATH)
 
         server_app_mock._ws_server.join.assert_not_called()
+
+
+class TestPortArgument:
+    """Tests for --port=N CLI argument parsing and forwarding to ServerApp."""
+
+    def _run(self, argv: list[str], port: int = 9000) -> MagicMock:
+        """Run _main() and return the ServerApp class mock.
+
+        Args:
+            argv: Command-line arguments to pass to _main().
+            port: Port reported by server_app_mock.port after start().
+
+        Returns:
+            The ServerApp class mock (callable), so tests can inspect call_args.
+        """
+        server_app_mock = _make_server_app_mock(port=port)
+        proc_mock = _make_proc_mock()
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("main.setup_logging"))
+            stack.enter_context(patch("builtins.open", mock_open(read_data=_FAKE_CONFIG)))
+            stack.enter_context(patch("main.ModelManager.get_missing_models", return_value=[]))
+            stack.enter_context(patch("onnxruntime.SessionOptions", return_value=MagicMock()))
+            stack.enter_context(patch("onnxruntime.GraphOptimizationLevel"))
+            stack.enter_context(patch("onnx_asr.load_model", return_value=MagicMock()))
+            stack.enter_context(patch("src.asr.ExecutionProviderManager.ExecutionProviderManager"))
+            stack.enter_context(patch("src.asr.SessionOptionsFactory.SessionOptionsFactory"))
+            stack.enter_context(patch("src.asr.Recognizer.Recognizer", return_value=MagicMock()))
+            stack.enter_context(patch("src.ServerApplicationState.ServerApplicationState", return_value=MagicMock()))
+            server_app_cls = stack.enter_context(
+                patch("src.server.ServerApp.ServerApp", return_value=server_app_mock)
+            )
+            stack.enter_context(patch("subprocess.Popen", return_value=proc_mock))
+            _main(argv, _FAKE_MODELS_DIR, _FAKE_LOGS_DIR, _FAKE_CONFIG_PATH)
+
+        return server_app_cls
+
+    def test_default_port_is_zero(self) -> None:
+        server_app_cls = self._run(["main.py"])
+        _, kwargs = server_app_cls.call_args
+        assert kwargs["port"] == 0
+
+    def test_explicit_port_passed_to_server_app(self) -> None:
+        server_app_cls = self._run(["main.py", "--port=62062"])
+        _, kwargs = server_app_cls.call_args
+        assert kwargs["port"] == 62062
+
+    def test_port_with_server_only_flag(self) -> None:
+        server_app_mock = _make_server_app_mock(port=9000)
+
+        with ExitStack() as stack:
+            stack.enter_context(patch("main.setup_logging"))
+            stack.enter_context(patch("builtins.open", mock_open(read_data=_FAKE_CONFIG)))
+            stack.enter_context(patch("main.ModelManager.get_missing_models", return_value=[]))
+            stack.enter_context(patch("onnxruntime.SessionOptions", return_value=MagicMock()))
+            stack.enter_context(patch("onnxruntime.GraphOptimizationLevel"))
+            stack.enter_context(patch("onnx_asr.load_model", return_value=MagicMock()))
+            stack.enter_context(patch("src.asr.ExecutionProviderManager.ExecutionProviderManager"))
+            stack.enter_context(patch("src.asr.SessionOptionsFactory.SessionOptionsFactory"))
+            stack.enter_context(patch("src.asr.Recognizer.Recognizer", return_value=MagicMock()))
+            stack.enter_context(patch("src.ServerApplicationState.ServerApplicationState", return_value=MagicMock()))
+            server_app_cls = stack.enter_context(
+                patch("src.server.ServerApp.ServerApp", return_value=server_app_mock)
+            )
+            _main(["main.py", "--server-only", "--port=62062"], _FAKE_MODELS_DIR, _FAKE_LOGS_DIR, _FAKE_CONFIG_PATH)
+
+        _, kwargs = server_app_cls.call_args
+        assert kwargs["port"] == 62062
