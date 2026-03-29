@@ -169,10 +169,16 @@ def decode_client_message(text: str) -> ClientTextMessage:
         command = obj.get("command")
         if command != "shutdown":
             raise ValueError(f"Invalid command value: {command!r} (must be 'shutdown')")
+        session_id = obj.get("session_id")
+        if session_id is None:
+            raise ValueError("control_command missing 'session_id' field")
+        timestamp = obj.get("timestamp")
+        if timestamp is None:
+            raise ValueError("control_command missing 'timestamp' field")
         return WsControlCommand(
-            session_id=obj["session_id"],
+            session_id=session_id,
             command="shutdown",
-            timestamp=obj["timestamp"],
+            timestamp=timestamp,
             request_id=obj.get("request_id"),
         )
 

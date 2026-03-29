@@ -1,0 +1,69 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #root {
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+.quickentry {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+  background: rgba(28, 27, 26, 0.88);
+  backdrop-filter: blur(24px);
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  color: rgba(255, 255, 255, 0.95);
+  overflow: hidden;
+}
+
+.quickentry__titlebar {
+  padding: 7px 14px;
+  background: rgba(255, 255, 255, 0.05);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  cursor: move;
+  user-select: none;
+}
+
+.quickentry__title {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.quickentry__content {
+  flex: 1;
+  font-size: 1.15rem;
+  font-weight: 500;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-y: auto;
+  max-height: 60vh;
+  padding: 10px 20px 6px;
+  color: rgba(255, 255, 255, 0.95);
+}
+
+.quickentry__placeholder {
+  color: rgba(255, 255, 255, 0.4);
+  font-style: italic;
+}
+
+.quickentry__hints {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 0 20px 10px;
+  font-size: 0.78rem;
+  color: rgba(255, 255, 255, 0.35);
+}
+
+.quickentry__separator {
+  font-size: 0.9rem;
+}

@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "quickentry",
+  "description": "QuickEntry popup window — display-only surface for live transcript.",
+  "windows": ["quickentry"],
+  "permissions": [
+    "core:event:allow-listen",
+    "core:window:allow-start-dragging"
+  ]
+}

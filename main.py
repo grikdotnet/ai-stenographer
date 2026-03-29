@@ -100,6 +100,9 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
             "0",
         )
     )
+    if not (0 <= port <= 65535):
+        print(f"Error: port must be 0-65535, got {port}", file=sys.stderr)
+        sys.exit(1)
 
     is_frozen = getattr(sys, 'frozen', False)
     setup_logging(logs_dir, verbose=verbose, is_frozen=is_frozen)
@@ -183,7 +186,6 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
 
 
 if __name__ == "__main__":
-    server_app = None
     try:
         _main(
             argv=sys.argv,
@@ -191,9 +193,6 @@ if __name__ == "__main__":
             logs_dir=LOGS_DIR,
             config_path=str(path_resolver.get_config_path("server_config.json")),
         )
-    except KeyboardInterrupt:
-        logging.info("Interrupted by user.")
-        sys.exit(0)
     except SystemExit:
         raise
     except Exception as e:
