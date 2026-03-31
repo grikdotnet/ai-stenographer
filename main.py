@@ -28,8 +28,8 @@ LOGS_DIR = PATHS.logs_dir
 path_resolver.ensure_local_dir_structure()
 
 
-def _spawn_client(server_url: str, input_file: str | None = None) -> "subprocess.Popen":
-    """Spawn client.py as a subprocess with the given server WebSocket URL.
+def _spawn_tauri_client(server_url: str, input_file: str | None = None) -> "subprocess.Popen":
+    """Spawn the Tauri desktop client binary with the given server WebSocket URL.
 
     Args:
         server_url: WebSocket URL passed as --server-url= argument.
@@ -39,8 +39,12 @@ def _spawn_client(server_url: str, input_file: str | None = None) -> "subprocess
         Running subprocess handle.
     """
     import subprocess
-    client_script = Path(__file__).parent / "src" / "client" / "tk" / "client.py"
-    cmd = [sys.executable, str(client_script), f"--server-url={server_url}"]
+    binary = (
+        Path(__file__).parent
+        / "src" / "client" / "tauri" / "src-tauri"
+        / "target" / "release" / "stt-tauri-client.exe"
+    )
+    cmd = [str(binary), f"--server-url={server_url}"]
     if input_file is not None:
         cmd.append(f"--input-file={input_file}")
     return subprocess.Popen(cmd)
@@ -63,13 +67,14 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
 
     Algorithm:
         1. Parse flags from argv (-v, --server-only, --input-file=, --port=).
+           Verify Tauri binary exists (default mode only); exit 1 with hint if missing.
         2. Setup logging.
         3. Check for missing models. In --server-only mode: exit 1 with stderr message.
            In default mode: spawn download_models.py; exit 0 if cancelled; re-check models.
         4. Load ONNX model and create Recognizer.
         5. Create and start ServerApp.
         6. In --server-only mode: block on WsServer.join().
-           In default mode: spawn client.py subprocess, block on subprocess exit,
+           In default mode: spawn Tauri client binary, block on subprocess exit,
            then stop ServerApp.
 
     Args:
@@ -103,6 +108,23 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
     if not (0 <= port <= 65535):
         print(f"Error: port must be 0-65535, got {port}", file=sys.stderr)
         sys.exit(1)
+
+    if not server_only:
+        tauri_binary = (
+            Path(__file__).parent
+            / "src" / "client" / "tauri" / "src-tauri"
+            / "target" / "release" / "stt-tauri-client.exe"
+        )
+        if not tauri_binary.exists():
+            print(
+                f"Error: Tauri client binary not found at:\n {tauri_binary}\n\n"
+                "Build it first with:\n"
+                "  cd src/client/tauri && npm run tauri:build\n\n"
+                "Or run in server-only mode:\n"
+                f"  python main.py --server-only [--port={port or ""}]",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     is_frozen = getattr(sys, 'frozen', False)
     setup_logging(logs_dir, verbose=verbose, is_frozen=is_frozen)
@@ -177,7 +199,7 @@ def _main(argv: list[str], models_dir: Path, logs_dir: Path, config_path: str) -
                 server_app._ws_server.join(timeout=0.5)
         else:
             server_url = f"ws://127.0.0.1:{server_app.port}"
-            proc = _spawn_client(server_url, input_file=input_file)
+            proc = _spawn_tauri_client(server_url, input_file=input_file)
             proc.wait()
     except KeyboardInterrupt:
         logging.info("Interrupted by user.")
