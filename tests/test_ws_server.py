@@ -9,16 +9,23 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.ServerApplicationState import ServerApplicationState
+from src.ApplicationState import ApplicationState
 from src.server.WsServer import WsServer
 
 
 def _make_server(port: int = 0) -> WsServer:
+    import queue
     session_manager = MagicMock()
     session_manager.create_session = AsyncMock()
     session_manager.destroy_session = AsyncMock()
-    app_state = ServerApplicationState()
-    return WsServer(session_manager=session_manager, app_state=app_state, port=port)
+    session_manager.close_all_sessions = AsyncMock()
+    app_state = ApplicationState()
+    return WsServer(
+        session_manager=session_manager,
+        app_state=app_state,
+        broadcast_queue=queue.SimpleQueue(),
+        port=port,
+    )
 
 
 class TestWsServerStartStop:
@@ -59,3 +66,31 @@ class TestWsServerStartStop:
             server.join(timeout=2.0)
         assert "Event loop stopped before Future completed" not in caplog.text
         assert "Task was destroyed but it is pending" not in caplog.text
+
+
+class TestWsServerBroadcastDrain:
+    """WsServer drain task: _SHUTDOWN sentinel triggers close_all_sessions."""
+
+    def test_shutdown_sentinel_triggers_close_all_sessions(self):
+        import queue
+        from src.server.broadcast import _SHUTDOWN
+
+        bq: queue.SimpleQueue = queue.SimpleQueue()
+
+        session_manager = MagicMock()
+        session_manager.create_session = AsyncMock()
+        session_manager.destroy_session = AsyncMock()
+        session_manager.close_all_sessions = AsyncMock()
+
+        app_state = ApplicationState()
+        server = WsServer(
+            session_manager=session_manager,
+            app_state=app_state,
+            broadcast_queue=bq,
+        )
+        server.start()
+
+        bq.put(_SHUTDOWN)
+        server.join(timeout=2.0)
+
+        session_manager.close_all_sessions.assert_awaited_once()

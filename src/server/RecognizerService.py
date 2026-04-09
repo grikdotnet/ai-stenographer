@@ -14,7 +14,7 @@ from src.types import AudioSegment, RecognitionTextMessage, RecognizerAck
 
 if TYPE_CHECKING:
     from src.asr.Recognizer import Recognizer
-    from src.ServerApplicationState import ServerApplicationState
+    from src.ApplicationState import ApplicationState
 
 logger = logging.getLogger(__name__)
 
@@ -29,19 +29,19 @@ class RecognizerService:
     After each inference call the result (and always an ACK) are routed to
     the correct per-session output queue by the ``message_id // 10_000_000`` key.
 
-    Observes ServerApplicationState for shutdown; stops inference thread on transition.
+    Observes ApplicationState for shutdown; stops inference thread on transition.
+    A Recognizer may be attached after construction via attach_recognizer(); segments
+    received before attachment are responded to with an error ACK.
 
     Args:
-        recognizer: Pure synchronous recognizer callable (recognize_window method used).
         app_state: Server lifecycle state; RecognizerService stops on shutdown.
     """
 
     def __init__(
         self,
-        recognizer: "Recognizer",
-        app_state: "ServerApplicationState",
+        app_state: "ApplicationState",
     ) -> None:
-        self._recognizer = recognizer
+        self._recognizer: "Recognizer | None" = None
         self._app_state = app_state
         self.input_queue: queue.Queue[AudioSegment] = queue.Queue()
         self._session_output_queues: dict[int, queue.Queue] = {}
@@ -50,6 +50,14 @@ class RecognizerService:
         self._running = False
 
         app_state.register_component_observer(self._on_state_change)
+
+    def attach_recognizer(self, recognizer: "Recognizer") -> None:
+        """Attach the recognizer after construction.
+
+        Args:
+            recognizer: Pure synchronous recognizer callable (recognize_window method used).
+        """
+        self._recognizer = recognizer
 
     def register_session(self, session_index: int, output_queue: queue.Queue) -> None:
         """Register a per-session output queue keyed by session_index.
@@ -117,6 +125,10 @@ class RecognizerService:
 
             message_id = segment.message_id
             session_index = message_id // _SESSION_PREFIX if message_id is not None else None
+
+            if self._recognizer is None:
+                self._route(session_index, RecognizerAck(message_id=message_id, ok=False, error="recognizer not ready"))
+                continue
 
             try:
                 result = self._recognizer.recognize_window(segment)

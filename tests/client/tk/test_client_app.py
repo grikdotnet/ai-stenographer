@@ -133,7 +133,10 @@ class TestClientAppWiring:
                 session_id="test-session-uuid",
                 config=_CONFIG,
             )
-            app.start()
+            try:
+                app.start()
+            finally:
+                app.stop()
 
         mock_source.start.assert_called_once()
 
@@ -212,8 +215,10 @@ class TestClientAppWiring:
                 session_id="test-session-uuid",
                 config=_CONFIG,
             )
-            app.start()
-            app.stop()  # no set_loop() call — must not raise
+            try:
+                app.start()
+            finally:
+                app.stop()  # no set_loop() call — must not raise
 
 
 class TestClientAppSessionCreated:

@@ -79,8 +79,16 @@ def _start_sender(session_id: str, ws: _FakeWebSocket) -> tuple[WsResultSender, 
     return sender, loop, t
 
 
-def _stop_sender(sender: WsResultSender, loop: asyncio.AbstractEventLoop) -> None:
+def _stop_sender(
+    sender: WsResultSender,
+    loop: asyncio.AbstractEventLoop,
+    loop_thread: threading.Thread,
+) -> None:
+    """Stop sender and fully tear down its background event loop."""
     asyncio.run_coroutine_threadsafe(sender.stop(), loop).result(timeout=5.0)
+    loop.call_soon_threadsafe(loop.stop)
+    loop_thread.join(timeout=3.0)
+    loop.close()
 
 
 # ---------------------------------------------------------------------------
@@ -90,7 +98,7 @@ def _stop_sender(sender: WsResultSender, loop: asyncio.AbstractEventLoop) -> Non
 class TestPublishPartialUpdate:
     def test_enqueues_message_as_json(self) -> None:
         ws = _FakeWebSocket()
-        sender, loop, _ = _start_sender("s1", ws)
+        sender, loop, loop_thread = _start_sender("s1", ws)
         try:
             sender.publish_partial_update(_result("hi", utterance_id=2))
             time.sleep(0.2)
@@ -100,11 +108,12 @@ class TestPublishPartialUpdate:
             assert obj["status"] == "partial"
             assert obj["text"] == "hi"
         finally:
-            _stop_sender(sender, loop)
+            _stop_sender(sender, loop, loop_thread)
+        assert not loop_thread.is_alive()
 
     def test_partial_result_contains_session_id_and_utterance_id(self) -> None:
         ws = _FakeWebSocket()
-        sender, loop, _ = _start_sender("my-session", ws)
+        sender, loop, loop_thread = _start_sender("my-session", ws)
         try:
             sender.publish_partial_update(_result(utterance_id=7))
             time.sleep(0.2)
@@ -113,7 +122,8 @@ class TestPublishPartialUpdate:
             assert obj["session_id"] == "my-session"
             assert obj["utterance_id"] == 7
         finally:
-            _stop_sender(sender, loop)
+            _stop_sender(sender, loop, loop_thread)
+        assert not loop_thread.is_alive()
 
 
 # ---------------------------------------------------------------------------
@@ -123,7 +133,7 @@ class TestPublishPartialUpdate:
 class TestPublishFinalization:
     def test_enqueues_final_status_with_session_id(self) -> None:
         ws = _FakeWebSocket()
-        sender, loop, _ = _start_sender("sess-99", ws)
+        sender, loop, loop_thread = _start_sender("sess-99", ws)
         try:
             sender.publish_finalization(_result("done"))
             time.sleep(0.2)
@@ -133,7 +143,8 @@ class TestPublishFinalization:
             assert obj["text"] == "done"
             assert obj["session_id"] == "sess-99"
         finally:
-            _stop_sender(sender, loop)
+            _stop_sender(sender, loop, loop_thread)
+        assert not loop_thread.is_alive()
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +154,7 @@ class TestPublishFinalization:
 class TestSenderTaskDrains:
     def test_multiple_messages_all_delivered(self) -> None:
         ws = _FakeWebSocket()
-        sender, loop, _ = _start_sender("s1", ws)
+        sender, loop, loop_thread = _start_sender("s1", ws)
         try:
             for i in range(5):
                 sender.publish_partial_update(_result(f"word{i}"))
@@ -159,11 +170,12 @@ class TestSenderTaskDrains:
             for i in range(5):
                 assert f"word{i}" in texts
         finally:
-            _stop_sender(sender, loop)
+            _stop_sender(sender, loop, loop_thread)
+        assert not loop_thread.is_alive()
 
     def test_partial_and_final_interleaved(self) -> None:
         ws = _FakeWebSocket()
-        sender, loop, _ = _start_sender("s1", ws)
+        sender, loop, loop_thread = _start_sender("s1", ws)
         try:
             sender.publish_partial_update(_result("partial"))
             sender.publish_finalization(_result("final"))
@@ -178,7 +190,8 @@ class TestSenderTaskDrains:
             assert "partial" in statuses
             assert "final" in statuses
         finally:
-            _stop_sender(sender, loop)
+            _stop_sender(sender, loop, loop_thread)
+        assert not loop_thread.is_alive()
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +208,7 @@ class TestBackpressure:
                 await asyncio.sleep(60)
 
         ws = _SlowWebSocket()
-        sender, loop, _ = _start_sender("s1", ws)  # type: ignore[arg-type]
+        sender, loop, loop_thread = _start_sender("s1", ws)  # type: ignore[arg-type]
         try:
             start = time.monotonic()
             # Flood beyond the bounded queue capacity (maxsize=20)
@@ -205,7 +218,8 @@ class TestBackpressure:
             # All 30 calls must return within 1 second total
             assert elapsed < 1.0
         finally:
-            _stop_sender(sender, loop)
+            _stop_sender(sender, loop, loop_thread)
+        assert not loop_thread.is_alive()
 
 
 # ---------------------------------------------------------------------------
@@ -215,11 +229,12 @@ class TestBackpressure:
 class TestClosedConnection:
     def test_send_on_closed_websocket_does_not_raise(self) -> None:
         ws = _FakeWebSocket()
-        sender, loop, _ = _start_sender("s1", ws)
+        sender, loop, loop_thread = _start_sender("s1", ws)
         ws.closed = True
         try:
             # Should not raise — error is logged and swallowed
             sender.publish_partial_update(_result())
             time.sleep(0.2)
         finally:
-            _stop_sender(sender, loop)
+            _stop_sender(sender, loop, loop_thread)
+        assert not loop_thread.is_alive()

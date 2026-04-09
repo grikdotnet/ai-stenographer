@@ -18,7 +18,7 @@ from src.SpeechEndRouter import SpeechEndRouter
 
 if TYPE_CHECKING:
     from src.server.RecognizerService import RecognizerService
-    from src.ServerApplicationState import ServerApplicationState
+    from src.ApplicationState import ApplicationState
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +54,7 @@ class ClientSession:
         websocket: Any,
         loop: Any,
         recognizer_service: "RecognizerService",
-        app_state: "ServerApplicationState",
+        app_state: "ApplicationState",
         config: dict,
         vad_model_path: Path,
     ) -> None:

@@ -64,6 +64,10 @@ class DownloadProgressReporter(tqdm):
     download progress and forward it to a callback function.
     """
 
+    # Disable tqdm's global monitor thread. It provides no value for this
+    # hidden reporter and otherwise leaks daemon monitor threads across tests.
+    monitor_interval = 0
+
     # Class variables to store parameters (set by BoundProgressReporter subclass)
     _callback = None
     _model_name = None

@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
-from src.ServerApplicationState import ServerApplicationState
+from src.ApplicationState import ApplicationState
 from src.server.ClientSession import ClientSession
 from src.server.RecognizerService import RecognizerService
 
@@ -65,10 +65,11 @@ def _make_mock_websocket() -> MagicMock:
     return ws
 
 
-def _make_recognizer_service(app_state: ServerApplicationState) -> RecognizerService:
+def _make_recognizer_service(app_state: ApplicationState) -> RecognizerService:
     recognizer = MagicMock()
     recognizer.recognize_window.return_value = None
-    service = RecognizerService(recognizer=recognizer, app_state=app_state)
+    service = RecognizerService(app_state=app_state)
+    service.attach_recognizer(recognizer)
     service.start()
     return service
 
@@ -76,11 +77,11 @@ def _make_recognizer_service(app_state: ServerApplicationState) -> RecognizerSer
 def _make_session(
     session_id: str = "test-session",
     session_index: int = 1,
-    app_state: ServerApplicationState | None = None,
+    app_state: ApplicationState | None = None,
     recognizer_service: RecognizerService | None = None,
-) -> tuple[ClientSession, ServerApplicationState, RecognizerService, asyncio.AbstractEventLoop]:
+) -> tuple[ClientSession, ApplicationState, RecognizerService, asyncio.AbstractEventLoop]:
     if app_state is None:
-        app_state = ServerApplicationState()
+        app_state = ApplicationState()
         app_state.set_state("running")
 
     loop = asyncio.new_event_loop()
@@ -208,7 +209,7 @@ class TestMessageIdPartitioning:
         recognizer_service.join()
 
     def test_session2_first_message_id_is_20_000_001(self) -> None:
-        app_state = ServerApplicationState()
+        app_state = ApplicationState()
         app_state.set_state("running")
         recognizer_service = _make_recognizer_service(app_state)
 

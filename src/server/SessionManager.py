@@ -4,8 +4,8 @@ Maintains an atomic session_index counter.  Each new WebSocket connection
 gets a unique session (1-based) that partitions its message_id space.
 """
 
-import asyncio
 import logging
+import queue
 import threading
 import time
 import uuid
@@ -15,10 +15,11 @@ from typing import Any, TYPE_CHECKING
 from src.network.codec import encode_server_message
 from src.network.types import WsSessionCreated
 from src.server.ClientSession import ClientSession
+from src.server.broadcast import _SHUTDOWN
 
 if TYPE_CHECKING:
     from src.server.RecognizerService import RecognizerService
-    from src.ServerApplicationState import ServerApplicationState
+    from src.ApplicationState import ApplicationState
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ logger = logging.getLogger(__name__)
 class SessionManager:
     """Creates and destroys ClientSession objects; tracks active sessions.
 
-    Observes ServerApplicationState for server shutdown and closes all
+    Observes ApplicationState for server shutdown and closes all
     active sessions when the server transitions to shutdown.
 
     Args:
@@ -34,19 +35,22 @@ class SessionManager:
         app_state: Server lifecycle state; triggers mass session close on shutdown.
         config: Application configuration dict (audio/vad/windowing sections).
         vad_model_path: Path to the Silero VAD ONNX model file.
+        broadcast_queue: Shared queue owned by ServerApp; puts _SHUTDOWN on shutdown.
     """
 
     def __init__(
         self,
         recognizer_service: "RecognizerService",
-        app_state: "ServerApplicationState",
+        app_state: "ApplicationState",
         config: dict,
         vad_model_path: Path,
+        broadcast_queue: queue.SimpleQueue,
     ) -> None:
         self._recognizer_service = recognizer_service
         self._app_state = app_state
         self._config = config
         self._vad_model_path = vad_model_path
+        self._broadcast_sink = broadcast_queue
 
         self._session_index_counter = 0
         self._counter_lock = threading.Lock()
@@ -54,20 +58,7 @@ class SessionManager:
         self._sessions: dict[str, ClientSession] = {}
         self._sessions_lock = threading.Lock()
 
-        self._loop: asyncio.AbstractEventLoop | None = None
-
         app_state.register_component_observer(self._on_state_change)
-
-    def set_event_loop(self, loop: asyncio.AbstractEventLoop) -> None:
-        """Register the asyncio event loop used to schedule async shutdown tasks.
-
-        Must be called from WsServer after the loop is running so that
-        _on_state_change can schedule close_all_sessions via run_coroutine_threadsafe.
-
-        Args:
-            loop: The running asyncio event loop owned by WsServer.
-        """
-        self._loop = loop
 
     async def create_session(self, websocket: Any, loop: Any) -> ClientSession:
         """Create a new ClientSession for a connected WebSocket client.
@@ -156,10 +147,11 @@ class SessionManager:
         logger.info("SessionManager: all sessions closed")
 
     def _on_state_change(self, old_state: str, new_state: str) -> None:
-        """Observe server shutdown and schedule close_all_sessions on the event loop.
+        """Observe server shutdown and send a signal to WsServer via queue.
+        Runs on whatever thread changes the state.
 
-        Runs on whatever thread calls set_state; uses run_coroutine_threadsafe to
-        hand the async cleanup off to the WsServer event loop.
+        Only the WsServer's async loop can call close_all_sessions(). 
+        So we put _SHUTDOWN into the broadcast sink (queue), and WsServer calls close_all_sessions();
 
         Args:
             old_state: Previous server state.
@@ -167,5 +159,5 @@ class SessionManager:
         """
         if new_state == "shutdown":
             logger.info("SessionManager: server shutdown observed")
-            if self._loop is not None:
-                asyncio.run_coroutine_threadsafe(self.close_all_sessions(), self._loop)
+            if self._broadcast_sink is not None:
+                self._broadcast_sink.put(_SHUTDOWN)

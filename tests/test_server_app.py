@@ -6,7 +6,7 @@ loading real ONNX models or binding real sockets.
 Tests verify:
 - ServerApp.start() starts WsServer and RecognizerService
 - bound port is available after start()
-- ServerApp.stop() transitions ServerApplicationState to shutdown
+- ServerApp.stop() transitions ApplicationState to shutdown
 - session_created is emitted when a client connects (integration via WsServer mock)
 """
 
@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 import pytest
 
-from src.ServerApplicationState import ServerApplicationState
+from src.ApplicationState import ApplicationState
 from src.server.ServerApp import ServerApp
 
 
@@ -43,9 +43,6 @@ def server_app_mocks():
     Yields the app, mock_ws_server, and mock_rs inside the patch context,
     so tests can call start()/stop() and inspect mock state.
     """
-    recognizer = MagicMock()
-    recognizer.recognize_window.return_value = None
-
     mock_ws_server = MagicMock()
     mock_ws_server.port = 9876
 
@@ -57,9 +54,9 @@ def server_app_mocks():
         patch("src.server.ServerApp.SessionManager"),
     ):
         app = ServerApp(
-            recognizer=recognizer,
             config=_CONFIG,
             vad_model_path=_MODELS_DIR / "silero_vad" / "silero_vad.onnx",
+            app_state=ApplicationState(),
         )
         yield app, mock_ws_server, mock_rs
 
@@ -106,3 +103,11 @@ class TestServerAppStop:
         app.start()
         app.stop()
         mock_rs.join.assert_called_once()
+
+
+class TestAttachRecognizer:
+    def test_attach_recognizer_delegates_to_recognizer_service(self, server_app_mocks) -> None:
+        app, _, mock_rs = server_app_mocks
+        recognizer = MagicMock()
+        app.attach_recognizer(recognizer)
+        mock_rs.attach_recognizer.assert_called_once_with(recognizer)

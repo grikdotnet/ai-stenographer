@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from src.ServerApplicationState import ServerApplicationState
+from src.ApplicationState import ApplicationState
 from src.server.RecognizerService import RecognizerService
 from src.types import AudioSegment, RecognitionResult, RecognitionTextMessage, RecognizerAck
 
@@ -50,9 +50,10 @@ def _make_recognizer(result: RecognitionResult | None) -> MagicMock:
 
 def _start_service(recognizer, app_state=None) -> RecognizerService:
     if app_state is None:
-        app_state = ServerApplicationState()
+        app_state = ApplicationState()
         app_state.set_state("running")
-    service = RecognizerService(recognizer=recognizer, app_state=app_state)
+    service = RecognizerService(app_state=app_state)
+    service.attach_recognizer(recognizer)
     service.start()
     return service
 
@@ -100,9 +101,10 @@ class TestResultRouting:
     def test_message_from_session1_routed_to_session1_queue(self) -> None:
         result = _make_recognition_result()
         recognizer = _make_recognizer(result)
-        app_state = ServerApplicationState()
+        app_state = ApplicationState()
         app_state.set_state("running")
-        service = RecognizerService(recognizer=recognizer, app_state=app_state)
+        service = RecognizerService(app_state=app_state)
+        service.attach_recognizer(recognizer)
 
         out1: queue.Queue = queue.Queue()
         out2: queue.Queue = queue.Queue()
@@ -123,9 +125,10 @@ class TestResultRouting:
     def test_message_from_session2_routed_to_session2_queue(self) -> None:
         result = _make_recognition_result()
         recognizer = _make_recognizer(result)
-        app_state = ServerApplicationState()
+        app_state = ApplicationState()
         app_state.set_state("running")
-        service = RecognizerService(recognizer=recognizer, app_state=app_state)
+        service = RecognizerService(app_state=app_state)
+        service.attach_recognizer(recognizer)
 
         out1: queue.Queue = queue.Queue()
         out2: queue.Queue = queue.Queue()
@@ -146,9 +149,10 @@ class TestResultRouting:
     def test_result_and_ack_both_routed(self) -> None:
         result = _make_recognition_result()
         recognizer = _make_recognizer(result)
-        app_state = ServerApplicationState()
+        app_state = ApplicationState()
         app_state.set_state("running")
-        service = RecognizerService(recognizer=recognizer, app_state=app_state)
+        service = RecognizerService(app_state=app_state)
+        service.attach_recognizer(recognizer)
 
         out: queue.Queue = queue.Queue()
         service.register_session(1, out)
@@ -167,9 +171,10 @@ class TestResultRouting:
     def test_empty_recognition_sends_only_ack(self) -> None:
         """When recognize_window returns None, only RecognizerAck is routed."""
         recognizer = _make_recognizer(None)
-        app_state = ServerApplicationState()
+        app_state = ApplicationState()
         app_state.set_state("running")
-        service = RecognizerService(recognizer=recognizer, app_state=app_state)
+        service = RecognizerService(app_state=app_state)
+        service.attach_recognizer(recognizer)
 
         out: queue.Queue = queue.Queue()
         service.register_session(1, out)
@@ -194,9 +199,10 @@ class TestSessionRemoval:
     def test_unregistered_session_results_are_dropped(self) -> None:
         result = _make_recognition_result()
         recognizer = _make_recognizer(result)
-        app_state = ServerApplicationState()
+        app_state = ApplicationState()
         app_state.set_state("running")
-        service = RecognizerService(recognizer=recognizer, app_state=app_state)
+        service = RecognizerService(app_state=app_state)
+        service.attach_recognizer(recognizer)
 
         out: queue.Queue = queue.Queue()
         service.register_session(1, out)
@@ -213,15 +219,16 @@ class TestSessionRemoval:
 
 
 # ---------------------------------------------------------------------------
-# Shutdown via ServerApplicationState
+# Shutdown via ApplicationState
 # ---------------------------------------------------------------------------
 
 class TestShutdown:
     def test_shutdown_stops_inference_thread(self) -> None:
         recognizer = _make_recognizer(None)
-        app_state = ServerApplicationState()
+        app_state = ApplicationState()
         app_state.set_state("running")
-        service = RecognizerService(recognizer=recognizer, app_state=app_state)
+        service = RecognizerService(app_state=app_state)
+        service.attach_recognizer(recognizer)
         service.start()
 
         assert service._thread is not None
@@ -233,14 +240,15 @@ class TestShutdown:
         assert not service._thread.is_alive()
 
     def test_service_uses_server_app_state_not_session_state(self) -> None:
-        """RecognizerService observes ServerApplicationState; session shutdown does not stop it."""
+        """RecognizerService observes ApplicationState; session shutdown does not stop it."""
         recognizer = _make_recognizer(None)
-        server_app_state = ServerApplicationState()
+        server_app_state = ApplicationState()
         server_app_state.set_state("running")
-        service = RecognizerService(recognizer=recognizer, app_state=server_app_state)
+        service = RecognizerService(app_state=server_app_state)
+        service.attach_recognizer(recognizer)
         service.start()
 
-        session_app_state = ServerApplicationState()
+        session_app_state = ApplicationState()
         session_app_state.set_state("running")
         session_app_state.set_state("shutdown")
 
@@ -249,3 +257,86 @@ class TestShutdown:
 
         server_app_state.set_state("shutdown")
         service.join(timeout=2.0)
+
+
+# ---------------------------------------------------------------------------
+# Without recognizer attached
+# ---------------------------------------------------------------------------
+
+class TestRecognizerServiceWithoutRecognizer:
+    def test_service_starts_without_recognizer(self) -> None:
+        app_state = ApplicationState()
+        app_state.set_state("running")
+        service = RecognizerService(app_state=app_state)
+        service.start()
+        assert service._thread is not None
+        assert service._thread.is_alive()
+        service.stop()
+        service.join()
+
+    def test_segment_gets_error_ack_when_recognizer_not_attached(self) -> None:
+        app_state = ApplicationState()
+        app_state.set_state("running")
+        service = RecognizerService(app_state=app_state)
+
+        out: queue.Queue = queue.Queue()
+        service.register_session(1, out)
+        service.start()
+
+        service.input_queue.put(_make_segment(message_id=10_000_001))
+
+        items = _drain(out, count=1)
+        service.stop()
+        service.join()
+
+        assert len(items) == 1
+        ack = items[0]
+        assert isinstance(ack, RecognizerAck)
+        assert ack.ok is False
+
+    def test_inference_succeeds_after_attach_recognizer(self) -> None:
+        result = _make_recognition_result()
+        recognizer = _make_recognizer(result)
+        app_state = ApplicationState()
+        app_state.set_state("running")
+        service = RecognizerService(app_state=app_state)
+
+        out: queue.Queue = queue.Queue()
+        service.register_session(1, out)
+        service.start()
+        service.attach_recognizer(recognizer)
+
+        service.input_queue.put(_make_segment(message_id=10_000_001))
+
+        items = _drain(out, count=2)
+        service.stop()
+        service.join()
+
+        types = {type(i) for i in items}
+        assert RecognitionTextMessage in types
+        assert RecognizerAck in types
+
+
+# ---------------------------------------------------------------------------
+# attach_recognizer
+# ---------------------------------------------------------------------------
+
+class TestAttachRecognizer:
+    def test_recognize_window_called_after_attach(self) -> None:
+        result = _make_recognition_result()
+        recognizer = _make_recognizer(result)
+        app_state = ApplicationState()
+        app_state.set_state("running")
+        service = RecognizerService(app_state=app_state)
+        service.attach_recognizer(recognizer)
+
+        out: queue.Queue = queue.Queue()
+        service.register_session(1, out)
+        service.start()
+
+        service.input_queue.put(_make_segment(message_id=10_000_001))
+        _drain(out, count=2)
+        service.stop()
+        service.join()
+
+        recognizer.recognize_window.assert_called_once()

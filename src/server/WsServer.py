@@ -6,6 +6,7 @@ Each connected client gets a ClientSession via SessionManager.
 
 import asyncio
 import logging
+import queue
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -14,10 +15,11 @@ from websockets.exceptions import ConnectionClosed
 
 from src.server.WsAudioReceiver import receive_audio
 from src.server.SessionManager import SessionManager
+from src.server.broadcast import _SHUTDOWN
 
 if TYPE_CHECKING:
     from src.server.RecognizerService import RecognizerService
-    from src.ServerApplicationState import ServerApplicationState
+    from src.ApplicationState import ApplicationState
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +36,14 @@ class WsServer:
         port: Port to listen on; 0 means OS assigns an available port.
         session_manager: Handles session creation and destruction.
         app_state: Server lifecycle state; stop() transitions to shutdown.
+        broadcast_queue: Shared queue owned by ServerApp; drained by _drain_broadcast_queue.
     """
 
     def __init__(
         self,
         session_manager: SessionManager,
-        app_state: "ServerApplicationState",
+        app_state: "ApplicationState",
+        broadcast_queue: queue.SimpleQueue,
         host: str = "127.0.0.1",
         port: int = 0,
     ) -> None:
@@ -47,11 +51,13 @@ class WsServer:
         self._port = port
         self._session_manager = session_manager
         self._app_state = app_state
+        self._broadcast_queue = broadcast_queue
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._server = None
         self._ready = threading.Event()
         self._stop_event: asyncio.Event | None = None
+        self._drain_task: asyncio.Task | None = None
 
     @property
     def port(self) -> int:
@@ -76,9 +82,13 @@ class WsServer:
 
     def stop(self) -> None:
         """Stop accepting connections and shut down the event loop thread."""
+        self._broadcast_queue.put(_SHUTDOWN)
         if self._loop is None or self._stop_event is None:
             return
-        self._loop.call_soon_threadsafe(self._stop_event.set)
+        try:
+            self._loop.call_soon_threadsafe(self._stop_event.set)
+        except RuntimeError:
+            pass
 
     def join(self, timeout: float | None = None) -> None:
         """Wait for the event loop thread to exit.
@@ -93,6 +103,7 @@ class WsServer:
         """Run the asyncio event loop until stop() is called."""
         asyncio.set_event_loop(self._loop)
         self._loop.run_until_complete(self._serve())
+        self._loop.run_until_complete(self._loop.shutdown_default_executor())
         self._loop.close()
 
     async def _serve(self) -> None:
@@ -113,9 +124,41 @@ class WsServer:
             self._port = bound_port
             logger.info("WsServer: listening on %s:%s", self._host, self._port)
             self._stop_event = asyncio.Event()
-            self._session_manager.set_event_loop(asyncio.get_event_loop())
+            self._drain_task = asyncio.create_task(self._drain_broadcast_queue())
             self._ready.set()
             await self._stop_event.wait()
+            if self._drain_task is not None:
+                await self._drain_task
+            await self._session_manager.close_all_sessions()
+
+    async def _drain_broadcast_queue(self) -> None:
+        """Drain the broadcast sink queue, dispatching messages to all clients.
+
+        Runs as an asyncio task for the lifetime of the server.
+        Blocks on queue.get via run_in_executor so the event loop stays free.
+
+        Algorithm:
+            1. Await next item from the thread-safe broadcast queue.
+            2. If _SHUTDOWN: set _stop_event so _serve() proceeds to close sessions.
+            3. Otherwise: forward to _send_all() (Phase 4 model-status broadcast).
+        """
+        loop = asyncio.get_event_loop()
+        while True:
+            msg = await loop.run_in_executor(None, self._broadcast_queue.get)
+            if msg is _SHUTDOWN:
+                self._stop_event.set()
+                break
+            await self._send_all(msg)
+
+    async def _send_all(self, msg: object) -> None:
+        """Broadcast a message to all connected clients.
+
+        Stub for Phase 4 model-status broadcast; logs unhandled messages now.
+
+        Args:
+            msg: Message object to broadcast.
+        """
+        logger.warning("WsServer: unhandled broadcast message %r", msg)
 
     async def _handle_connection(self, websocket, path: str = "/") -> None:
         """Handle a single WebSocket connection for its full lifetime.

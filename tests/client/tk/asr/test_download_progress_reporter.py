@@ -112,6 +112,10 @@ class TestBoundProgressReporter:
 class TestDownloadProgressReporter:
     """Test suite for DownloadProgressReporter."""
 
+    def test_monitor_thread_disabled(self):
+        """Reporter disables tqdm's monitor thread to avoid process-exit leaks."""
+        assert DownloadProgressReporter.monitor_interval == 0
+
     def test_update_tracks_progress(self):
         """update() tracks cumulative bytes and updates aggregator."""
         callback = MagicMock()
@@ -133,6 +137,7 @@ class TestDownloadProgressReporter:
         downloaded, total, percentage = aggregator.get_overall_progress()
         assert downloaded == 50 * 1024 * 1024
         assert total == 200 * 1024 * 1024
+        reporter.close()
 
     def test_filters_name_kwarg(self):
         """__init__ filters out 'name' kwarg that tqdm doesn't accept."""
@@ -149,6 +154,7 @@ class TestDownloadProgressReporter:
         )
 
         assert reporter.model_name == 'parakeet'
+        reporter.close()
 
     def test_forces_disable_true(self):
         """__init__ forces disable=True to prevent terminal output."""
@@ -165,6 +171,7 @@ class TestDownloadProgressReporter:
 
         # tqdm's disable attribute should be True
         assert reporter.disable is True
+        reporter.close()
 
     def test_callback_receives_progress_updates(self):
         """Callback receives progress updates with 5 parameters."""
@@ -190,6 +197,7 @@ class TestDownloadProgressReporter:
         assert status == 'downloading'
         assert downloaded_bytes == 50 * 1024 * 1024
         assert total_bytes == 200 * 1024 * 1024
+        reporter.close()
 
     def test_init_with_none_iterable(self):
         """__init__ handles None iterable without crashing (PRIMARY FIX)."""
@@ -212,6 +220,7 @@ class TestDownloadProgressReporter:
         # Should initialize successfully without crashing
         assert reporter.model_name == 'parakeet'
         assert reporter.aggregator is aggregator
+        reporter.close()
 
     def test_close_with_none_aggregator(self):
         """close() handles None aggregator without crashing."""
@@ -248,6 +257,7 @@ class TestDownloadProgressReporter:
 
         # Callback should NOT be called when aggregator is None
         assert callback.call_count == 0
+        reporter.close()
 
     def test_iter_with_none_iterable(self):
         """__iter__ handles None iterable without crashing."""
@@ -268,3 +278,4 @@ class TestDownloadProgressReporter:
         # Should return empty iterator, not crash
         result = list(reporter)
         assert result == []
+        reporter.close()

@@ -32,7 +32,7 @@ from src.client.tk.WsClientTransport import WsClientTransport
 from src.client.tk.network.codec import encode_audio_frame
 from src.network.types import WsAudioFrame
 from src.server.ServerApp import ServerApp
-from src.ServerApplicationState import ServerApplicationState
+from src.ApplicationState import ApplicationState
 from src.types import RecognitionResult
 
 
@@ -74,10 +74,10 @@ _SHUTDOWN_TIMEOUT_S = 8.0
 def _make_mock_recognizer() -> Recognizer:
     """Return a Recognizer backed by a mock model so no ONNX file is loaded.
 
-    A separate ServerApplicationState is used for the recognizer's lifecycle
+    A separate ApplicationState is used for the recognizer's lifecycle
     observer — the same pattern as main.py lines 112-120.
     """
-    recognizer_state = ServerApplicationState()
+    recognizer_state = ApplicationState()
     recognizer_state.set_state("running")
 
     mock_model = MagicMock()
@@ -98,13 +98,15 @@ def _make_mock_recognizer() -> Recognizer:
 
 def _make_server() -> ServerApp:
     """Start a real ServerApp on 127.0.0.1:0 with a mock recognizer."""
+    app_state = ApplicationState()
     server = ServerApp(
-        recognizer=_make_mock_recognizer(),
         config=_CONFIG,
         vad_model_path=_VAD_MODEL_PATH,
+        app_state=app_state,
         host="127.0.0.1",
         port=0,
     )
+    server.attach_recognizer(_make_mock_recognizer())
     server.start()
     return server
 
@@ -521,4 +523,7 @@ class TestGracefulDrain:
         assert leaked == [], f"Pipeline threads still alive after stop: {leaked}"
         assert "RecognizerService" not in alive_names, (
             "RecognizerService inference thread still alive after server stop"
+        )
+        assert not any(name.startswith("asyncio_") for name in alive_names), (
+            f"Asyncio executor threads still alive after server stop: {alive_names}"
         )

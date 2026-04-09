@@ -123,6 +123,23 @@ class WsError:
     fatal: bool = False
 
 
+@dataclass
+class WsModelInfo:
+    """Model metadata for download/status surfaces.
+
+    Args:
+        name: Stable model identifier.
+        display_name: Human-readable model name.
+        size_description: Human-readable download size.
+        status: Current availability state.
+    """
+
+    name: str
+    display_name: str
+    size_description: str
+    status: Literal["downloaded", "missing"]
+
+
 # ---------------------------------------------------------------------------
 # Union types
 # ---------------------------------------------------------------------------

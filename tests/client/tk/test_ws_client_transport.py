@@ -135,8 +135,16 @@ def _start_transport(
     return transport, loop, t
 
 
-def _stop_transport(transport: WsClientTransport, loop: asyncio.AbstractEventLoop) -> None:
+def _stop_transport(
+    transport: WsClientTransport,
+    loop: asyncio.AbstractEventLoop,
+    loop_thread: threading.Thread,
+) -> None:
+    """Stop transport and fully tear down its background event loop."""
     asyncio.run_coroutine_threadsafe(transport.stop(), loop).result(timeout=5.0)
+    loop.call_soon_threadsafe(loop.stop)
+    loop_thread.join(timeout=3.0)
+    loop.close()
 
 
 # ---------------------------------------------------------------------------
@@ -146,18 +154,19 @@ def _stop_transport(transport: WsClientTransport, loop: asyncio.AbstractEventLoo
 class TestAudioSend:
     def test_send_audio_chunk_puts_binary_frame_to_websocket(self) -> None:
         ws = _FakeWebSocket()
-        transport, loop, _ = _start_transport(ws)
+        transport, loop, loop_thread = _start_transport(ws)
         try:
             transport.send_audio_chunk(_make_audio_chunk())
             time.sleep(0.2)
             frame = asyncio.run_coroutine_threadsafe(ws.sent.get(), loop).result(timeout=2.0)
             assert isinstance(frame, bytes)
         finally:
-            _stop_transport(transport, loop)
+            _stop_transport(transport, loop, loop_thread)
+        assert not loop_thread.is_alive()
 
     def test_encoded_frame_decodes_back_to_correct_audio(self) -> None:
         ws = _FakeWebSocket()
-        transport, loop, _ = _start_transport(ws)
+        transport, loop, loop_thread = _start_transport(ws)
         try:
             audio = np.ones(256, dtype=np.float32) * 0.5
             transport.send_audio_chunk({"audio": audio, "timestamp": 2.0})
@@ -167,11 +176,12 @@ class TestAudioSend:
             assert len(decoded.audio) == 256
             np.testing.assert_array_almost_equal(decoded.audio, audio)
         finally:
-            _stop_transport(transport, loop)
+            _stop_transport(transport, loop, loop_thread)
+        assert not loop_thread.is_alive()
 
     def test_timestamp_preserved_in_encoded_frame(self) -> None:
         ws = _FakeWebSocket()
-        transport, loop, _ = _start_transport(ws)
+        transport, loop, loop_thread = _start_transport(ws)
         try:
             transport.send_audio_chunk({"audio": np.zeros(64, dtype=np.float32), "timestamp": 9.99})
             time.sleep(0.2)
@@ -179,11 +189,12 @@ class TestAudioSend:
             decoded = decode_audio_frame(frame_bytes, expected_session_id=_SESSION_ID)
             assert decoded.timestamp == pytest.approx(9.99)
         finally:
-            _stop_transport(transport, loop)
+            _stop_transport(transport, loop, loop_thread)
+        assert not loop_thread.is_alive()
 
     def test_chunk_ids_are_monotonically_increasing(self) -> None:
         ws = _FakeWebSocket()
-        transport, loop, _ = _start_transport(ws)
+        transport, loop, loop_thread = _start_transport(ws)
         try:
             for _ in range(3):
                 transport.send_audio_chunk(_make_audio_chunk())
@@ -196,7 +207,8 @@ class TestAudioSend:
             assert chunk_ids == sorted(chunk_ids)
             assert len(set(chunk_ids)) == 3
         finally:
-            _stop_transport(transport, loop)
+            _stop_transport(transport, loop, loop_thread)
+        assert not loop_thread.is_alive()
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +219,7 @@ class TestResultReceive:
     def test_partial_result_json_dispatches_to_on_partial_update(self) -> None:
         ws = _FakeWebSocket()
         subscriber = MagicMock()
-        transport, loop, _ = _start_transport(ws, subscriber=subscriber)
+        transport, loop, loop_thread = _start_transport(ws, subscriber=subscriber)
         try:
             ws.put_message(_make_result_json(status="partial", text="testing"))
             time.sleep(0.3)
@@ -215,12 +227,13 @@ class TestResultReceive:
             result = subscriber.on_partial_update.call_args[0][0]
             assert result.text == "testing"
         finally:
-            _stop_transport(transport, loop)
+            _stop_transport(transport, loop, loop_thread)
+        assert not loop_thread.is_alive()
 
     def test_final_result_json_dispatches_to_on_finalization(self) -> None:
         ws = _FakeWebSocket()
         subscriber = MagicMock()
-        transport, loop, _ = _start_transport(ws, subscriber=subscriber)
+        transport, loop, loop_thread = _start_transport(ws, subscriber=subscriber)
         try:
             ws.put_message(_make_result_json(status="final", text="done"))
             time.sleep(0.3)
@@ -228,31 +241,34 @@ class TestResultReceive:
             result = subscriber.on_finalization.call_args[0][0]
             assert result.text == "done"
         finally:
-            _stop_transport(transport, loop)
+            _stop_transport(transport, loop, loop_thread)
+        assert not loop_thread.is_alive()
 
     def test_session_created_json_does_not_raise(self) -> None:
         ws = _FakeWebSocket()
         subscriber = MagicMock()
-        transport, loop, _ = _start_transport(ws, subscriber=subscriber)
+        transport, loop, loop_thread = _start_transport(ws, subscriber=subscriber)
         try:
             ws.put_message(json.dumps({"type": "session_created", "session_id": _SESSION_ID}))
             time.sleep(0.2)
             subscriber.on_partial_update.assert_not_called()
             subscriber.on_finalization.assert_not_called()
         finally:
-            _stop_transport(transport, loop)
+            _stop_transport(transport, loop, loop_thread)
+        assert not loop_thread.is_alive()
 
     def test_unknown_message_type_is_logged_and_skipped(self) -> None:
         ws = _FakeWebSocket()
         subscriber = MagicMock()
-        transport, loop, _ = _start_transport(ws, subscriber=subscriber)
+        transport, loop, loop_thread = _start_transport(ws, subscriber=subscriber)
         try:
             ws.put_message(json.dumps({"type": "unknown_type"}))
             time.sleep(0.2)
             subscriber.on_partial_update.assert_not_called()
             subscriber.on_finalization.assert_not_called()
         finally:
-            _stop_transport(transport, loop)
+            _stop_transport(transport, loop, loop_thread)
+        assert not loop_thread.is_alive()
 
 
 # ---------------------------------------------------------------------------
@@ -262,8 +278,9 @@ class TestResultReceive:
 class TestDisconnect:
     def test_stop_completes_cleanly(self) -> None:
         ws = _FakeWebSocket()
-        transport, loop, _ = _start_transport(ws)
-        _stop_transport(transport, loop)
+        transport, loop, loop_thread = _start_transport(ws)
+        _stop_transport(transport, loop, loop_thread)
+        assert not loop_thread.is_alive()
 
     def test_connection_closed_transitions_app_state_to_shutdown(self) -> None:
         from websockets.exceptions import ConnectionClosed
@@ -316,9 +333,13 @@ class TestDisconnect:
             publisher=remote_publisher,
             loop=loop,
         )
-        asyncio.run_coroutine_threadsafe(transport.start(closing_ws), loop).result(timeout=2.0)
-        time.sleep(0.5)
-        assert app_state.get_state() == "shutdown"
+        try:
+            asyncio.run_coroutine_threadsafe(transport.start(closing_ws), loop).result(timeout=2.0)
+            time.sleep(0.5)
+            assert app_state.get_state() == "shutdown"
+        finally:
+            _stop_transport(transport, loop, t)
+        assert not t.is_alive()
 
     def test_clean_server_close_transitions_app_state_to_shutdown(self) -> None:
         app_state = _make_app_state()
@@ -369,9 +390,13 @@ class TestDisconnect:
             publisher=remote_publisher,
             loop=loop,
         )
-        asyncio.run_coroutine_threadsafe(transport.start(clean_ws), loop).result(timeout=2.0)
-        time.sleep(0.5)
-        assert app_state.get_state() == "shutdown"
+        try:
+            asyncio.run_coroutine_threadsafe(transport.start(clean_ws), loop).result(timeout=2.0)
+            time.sleep(0.5)
+            assert app_state.get_state() == "shutdown"
+        finally:
+            _stop_transport(transport, loop, t)
+        assert not t.is_alive()
 
 
 # ---------------------------------------------------------------------------
@@ -385,7 +410,7 @@ class TestBackpressure:
                 await asyncio.sleep(60)
 
         ws = _SlowWebSocket()
-        transport, loop, _ = _start_transport(ws)
+        transport, loop, loop_thread = _start_transport(ws)
         try:
             start = time.monotonic()
             for _ in range(30):
@@ -393,4 +418,5 @@ class TestBackpressure:
             elapsed = time.monotonic() - start
             assert elapsed < 1.0
         finally:
-            _stop_transport(transport, loop)
+            _stop_transport(transport, loop, loop_thread)
+        assert not loop_thread.is_alive()

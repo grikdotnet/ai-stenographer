@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.ServerApplicationState import ServerApplicationState
+from src.ApplicationState import ApplicationState
 from src.server.RecognizerService import RecognizerService
 from src.server.SessionManager import SessionManager
 
@@ -38,33 +38,39 @@ _CONFIG = {
 _VAD_MODEL_PATH = Path("/fake/silero_vad.onnx")
 
 
-def _make_app_state() -> ServerApplicationState:
-    app_state = ServerApplicationState()
+def _make_app_state() -> ApplicationState:
+    app_state = ApplicationState()
     app_state.set_state("running")
     return app_state
 
 
-def _make_recognizer_service(app_state: ServerApplicationState) -> RecognizerService:
+def _make_recognizer_service(app_state: ApplicationState) -> RecognizerService:
     recognizer = MagicMock()
     recognizer.recognize_window.return_value = None
-    service = RecognizerService(recognizer=recognizer, app_state=app_state)
+    service = RecognizerService(app_state=app_state)
+    service.attach_recognizer(recognizer)
     service.start()
     return service
 
 
 def _make_manager(
-    app_state: ServerApplicationState | None = None,
+    app_state: ApplicationState | None = None,
     recognizer_service: RecognizerService | None = None,
-) -> tuple[SessionManager, ServerApplicationState, RecognizerService]:
+    broadcast_queue=None,
+) -> tuple[SessionManager, ApplicationState, RecognizerService]:
+    import queue
     if app_state is None:
         app_state = _make_app_state()
     if recognizer_service is None:
         recognizer_service = _make_recognizer_service(app_state)
+    if broadcast_queue is None:
+        broadcast_queue = queue.SimpleQueue()
     manager = SessionManager(
         recognizer_service=recognizer_service,
         app_state=app_state,
         config=_CONFIG,
         vad_model_path=_VAD_MODEL_PATH,
+        broadcast_queue=broadcast_queue,
     )
     return manager, app_state, recognizer_service
 
@@ -332,37 +338,24 @@ class TestTwoSessionsIndependence:
 # ---------------------------------------------------------------------------
 
 class TestShutdownObserver:
-    def test_shutdown_state_triggers_close_all_sessions(self) -> None:
-        manager, app_state, recognizer_service = _make_manager()
+    def test_shutdown_puts_sentinel_into_sink_queue(self) -> None:
+        import queue
+        from src.server.broadcast import _SHUTDOWN
 
-        loop = asyncio.new_event_loop()
-        ws = _make_mock_websocket()
+        q: queue.SimpleQueue = queue.SimpleQueue()
+        manager, app_state, recognizer_service = _make_manager(broadcast_queue=q)
 
-        mock_a = _make_mock_session("alpha")
-        mock_b = _make_mock_session("beta")
-
-        with patch("src.server.SessionManager.ClientSession") as MockClientSession:
-            MockClientSession.side_effect = [mock_a, mock_b]
-            loop.run_until_complete(manager.create_session(ws, loop))
-            loop.run_until_complete(manager.create_session(ws, loop))
-
-        import threading
-        loop_thread = threading.Thread(target=loop.run_forever, daemon=True)
-        loop_thread.start()
-
-        manager.set_event_loop(loop)
         app_state.set_state("shutdown")
 
-        sentinel = asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop)
-        sentinel.result(timeout=2.0)
+        assert q.get(timeout=1.0) is _SHUTDOWN
 
-        loop.call_soon_threadsafe(loop.stop)
-        loop_thread.join(timeout=2.0)
-        loop.close()
+        recognizer_service.stop()
+        recognizer_service.join()
 
-        mock_a.close.assert_awaited_once()
-        mock_b.close.assert_awaited_once()
-        assert len(manager._sessions) == 0
+    def test_shutdown_without_sink_does_not_raise(self) -> None:
+        manager, app_state, recognizer_service = _make_manager()
+
+        app_state.set_state("shutdown")
 
         recognizer_service.stop()
         recognizer_service.join()
