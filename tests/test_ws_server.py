@@ -11,9 +11,12 @@ import socket
 from queue import SimpleQueue
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import numpy as np
 import pytest
 
+from conftest import encode_audio_frame
 from src.ApplicationState import ApplicationState
+from src.network.types import WsAudioFrame
 from src.server.WsServer import DEFAULT_SERVER_HOST, WsServer
 
 
@@ -173,9 +176,6 @@ class TestWsServerConnectionHandling:
     """WsServer routes audio and commands through the new orchestration path."""
 
     def test_close_session_command_uses_controller_and_destroys_session(self) -> None:
-        from src.client.tk.network.codec import encode_audio_frame
-        from src.network.types import WsAudioFrame
-
         session_manager = MagicMock()
         session_manager.destroy_session = AsyncMock()
         session_manager.close_session = AsyncMock()
@@ -213,10 +213,6 @@ class TestWsServerConnectionHandling:
         )
 
     def test_audio_frame_is_enqueued_when_server_running(self) -> None:
-        from src.client.tk.network.codec import encode_audio_frame
-        from src.network.types import WsAudioFrame
-        import numpy as np
-
         session = _FakeSession("session-1")
         session_manager = MagicMock()
         session_manager.destroy_session = AsyncMock()
@@ -247,10 +243,6 @@ class TestWsServerConnectionHandling:
         session_manager.destroy_session.assert_awaited_once_with("session-1")
 
     def test_audio_frame_when_not_running_sends_model_not_ready(self) -> None:
-        from src.client.tk.network.codec import encode_audio_frame
-        from src.network.types import WsAudioFrame
-        import numpy as np
-
         session_manager = MagicMock()
         session_manager.destroy_session = AsyncMock()
         session_manager.close_session = AsyncMock()

@@ -17,9 +17,9 @@ python -m pytest tests/ -q
 
 ---
 
-### Server + Tk Client (default)
+### Server + Tauri Client (default)
 
-Starts both the server and the Tk GUI client:
+Starts the Python server and attempts to spawn the built Tauri desktop client:
 
 ```
 python main.py
@@ -36,6 +36,8 @@ File input instead of microphone (for testing):
 ```
 python main.py --input-file=tests/fixtures/en_short.wav -v
 ```
+
+If the built Tauri binary is not present, `python main.py` fails with the existing Tauri-binary-not-found startup error.
 
 ---
 

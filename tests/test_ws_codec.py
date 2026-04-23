@@ -2,8 +2,6 @@
 
 Covers: decode_audio_frame validation errors, JSON server message encoding for
 all types, client message decoding (control_command), unknown type handling.
-
-Note: encode_audio_frame tests live in tests/client/tk/test_ws_codec.py.
 """
 
 import json
@@ -13,6 +11,7 @@ import time
 import numpy as np
 import pytest
 
+from conftest import encode_audio_frame
 from src.network.types import (
     WsAudioFrame,
     WsControlCommand,
@@ -26,7 +25,6 @@ from src.network.types import (
     WsSessionClosed,
     WsSessionCreated,
 )
-from src.client.tk.network.codec import encode_audio_frame
 from src.network.codec import (
     SessionIdMismatchError,
     decode_audio_frame,
@@ -51,7 +49,6 @@ def _frame(
         timestamp=1_000.0,
         audio=audio,
     )
-
 
 # ---------------------------------------------------------------------------
 # decode_audio_frame — validation errors

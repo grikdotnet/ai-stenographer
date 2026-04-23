@@ -923,287 +923,6 @@ class TestCompileToPyc:
         assert not (src_dir / "__pycache__").exists()
 
 
-class TestCopyTkinter:
-    """Test copying tkinter module to embedded Python."""
-
-    def test_copy_tkinter_success(self, tmp_path):
-        """Should copy tkinter module from system Python."""
-        from build_distribution import copy_tkinter_to_distribution
-        import sys
-
-        # Create fake system Python structure
-        system_python = tmp_path / "system_python"
-        system_lib = system_python / "Lib"
-        system_lib.mkdir(parents=True)
-
-        # Create fake tkinter module
-        tkinter_dir = system_lib / "tkinter"
-        tkinter_dir.mkdir()
-        (tkinter_dir / "__init__.py").write_text("# tkinter")
-        (tkinter_dir / "constants.py").write_text("# constants")
-
-        # Create fake _tkinter.pyd and required DLLs
-        system_dlls = system_python / "DLLs"
-        system_dlls.mkdir()
-        (system_dlls / "_tkinter.pyd").write_bytes(b"fake pyd")
-        (system_dlls / "zlib1.dll").write_bytes(b"fake zlib")
-
-        # Create distribution runtime directory
-        runtime_dir = tmp_path / "runtime"
-        runtime_dir.mkdir()
-
-        # Mock sys.base_prefix to point to fake system Python
-        with patch('sys.base_prefix', str(system_python)):
-            result = copy_tkinter_to_distribution(runtime_dir)
-
-            assert result is True
-            # Verify tkinter module copied
-            assert (runtime_dir / "Lib" / "tkinter" / "__init__.py").exists()
-            assert (runtime_dir / "Lib" / "tkinter" / "constants.py").exists()
-            # Verify _tkinter.pyd copied
-            assert (runtime_dir / "_tkinter.pyd").exists()
-            # Verify zlib1.dll copied
-            assert (runtime_dir / "zlib1.dll").exists()
-
-    def test_copy_tkinter_missing_source(self, tmp_path):
-        """Should return False if system Python doesn't have tkinter."""
-        from build_distribution import copy_tkinter_to_distribution
-        import sys
-
-        # Create fake system Python WITHOUT tkinter
-        system_python = tmp_path / "system_python"
-        system_python.mkdir()
-
-        runtime_dir = tmp_path / "runtime"
-        runtime_dir.mkdir()
-
-        with patch('sys.base_prefix', str(system_python)):
-            result = copy_tkinter_to_distribution(runtime_dir, allow_fallback=False)
-
-            assert result is False
-
-    def test_verify_tkinter_import(self, tmp_path):
-        """Should verify tkinter can be imported."""
-        from build_distribution import verify_tkinter
-        import sys
-
-        python_exe = Path(sys.executable)
-
-        # Use real Python to test tkinter import
-        result = verify_tkinter(python_exe)
-
-        # Should succeed if system Python has tkinter
-        assert result is True
-
-    def test_copy_tkinter_includes_zlib_dll(self, tmp_path):
-        """Should copy zlib1.dll which is required for _tkinter.pyd in Python 3.12+."""
-        from build_distribution import copy_tkinter_to_distribution
-
-        # Create fake system Python structure
-        system_python = tmp_path / "system_python"
-        system_lib = system_python / "Lib"
-        system_lib.mkdir(parents=True)
-
-        # Create fake tkinter module
-        tkinter_dir = system_lib / "tkinter"
-        tkinter_dir.mkdir()
-        (tkinter_dir / "__init__.py").write_text("# tkinter")
-
-        # Create fake DLLs directory with all required files
-        system_dlls = system_python / "DLLs"
-        system_dlls.mkdir()
-        (system_dlls / "_tkinter.pyd").write_bytes(b"fake pyd")
-        (system_dlls / "tcl86t.dll").write_bytes(b"fake tcl")
-        (system_dlls / "tk86t.dll").write_bytes(b"fake tk")
-        (system_dlls / "zlib1.dll").write_bytes(b"fake zlib")  # Critical for Python 3.12+
-
-        # Create distribution runtime directory
-        runtime_dir = tmp_path / "runtime"
-        runtime_dir.mkdir()
-
-        # Mock sys.base_prefix to point to fake system Python
-        with patch('sys.base_prefix', str(system_python)):
-            result = copy_tkinter_to_distribution(runtime_dir)
-
-            assert result is True
-            # Verify zlib1.dll was copied (critical for _tkinter.pyd to load)
-            assert (runtime_dir / "zlib1.dll").exists()
-            # Verify other DLLs copied
-            assert (runtime_dir / "tcl86t.dll").exists()
-            assert (runtime_dir / "tk86t.dll").exists()
-
-    def test_copy_tkinter_fails_without_zlib_dll(self, tmp_path):
-        """Should fail if zlib1.dll is missing (required for Python 3.12+)."""
-        from build_distribution import copy_tkinter_to_distribution
-
-        # Create fake system Python structure
-        system_python = tmp_path / "system_python"
-        system_lib = system_python / "Lib"
-        system_lib.mkdir(parents=True)
-
-        # Create fake tkinter module
-        tkinter_dir = system_lib / "tkinter"
-        tkinter_dir.mkdir()
-        (tkinter_dir / "__init__.py").write_text("# tkinter")
-
-        # Create fake DLLs directory WITHOUT zlib1.dll
-        system_dlls = system_python / "DLLs"
-        system_dlls.mkdir()
-        (system_dlls / "_tkinter.pyd").write_bytes(b"fake pyd")
-        (system_dlls / "tcl86t.dll").write_bytes(b"fake tcl")
-        (system_dlls / "tk86t.dll").write_bytes(b"fake tk")
-        # zlib1.dll is MISSING
-
-        # Create distribution runtime directory
-        runtime_dir = tmp_path / "runtime"
-        runtime_dir.mkdir()
-
-        # Mock sys.base_prefix to point to fake system Python
-        with patch('sys.base_prefix', str(system_python)):
-            result = copy_tkinter_to_distribution(runtime_dir, allow_fallback=False)
-
-            # Should fail because zlib1.dll is critical
-            assert result is False
-
-
-class TestCleanupTclUnnecessaryFiles:
-    """Test removing unnecessary Tcl/Tk files after tkinter copy."""
-
-    def test_cleanup_removes_tzdata(self, tmp_path):
-        """Should remove tzdata directory (timezone database not needed)."""
-        from build_distribution import cleanup_tcl_unnecessary_files
-
-        # Create runtime directory with fake Tcl structure
-        runtime_dir = tmp_path / "runtime"
-        tcl_dir = runtime_dir / "tcl" / "tcl8.6"
-        tzdata_dir = tcl_dir / "tzdata"
-        tzdata_dir.mkdir(parents=True)
-
-        # Create fake timezone files
-        (tzdata_dir / "UTC").write_text("# UTC timezone")
-        africa_dir = tzdata_dir / "Africa"
-        africa_dir.mkdir()
-        (africa_dir / "Cairo").write_text("# Cairo timezone")
-        (africa_dir / "Lagos").write_text("# Lagos timezone")
-
-        result = cleanup_tcl_unnecessary_files(runtime_dir)
-
-        assert result is True
-        # tzdata directory should be removed
-        assert not tzdata_dir.exists()
-        # Parent directories should remain
-        assert tcl_dir.exists()
-
-    def test_cleanup_removes_msgs(self, tmp_path):
-        """Should remove msgs directory (localization not needed for English-only app)."""
-        from build_distribution import cleanup_tcl_unnecessary_files
-
-        runtime_dir = tmp_path / "runtime"
-        tcl_dir = runtime_dir / "tcl" / "tcl8.6"
-        msgs_dir = tcl_dir / "msgs"
-        msgs_dir.mkdir(parents=True)
-
-        # Create fake message files
-        (msgs_dir / "en.msg").write_text("# English messages")
-        (msgs_dir / "fr.msg").write_text("# French messages")
-        (msgs_dir / "de.msg").write_text("# German messages")
-
-        result = cleanup_tcl_unnecessary_files(runtime_dir)
-
-        assert result is True
-        # msgs directory should be removed
-        assert not msgs_dir.exists()
-        # Parent directories should remain
-        assert tcl_dir.exists()
-
-    def test_cleanup_removes_both_tzdata_and_msgs(self, tmp_path):
-        """Should remove both tzdata and msgs in single operation."""
-        from build_distribution import cleanup_tcl_unnecessary_files
-
-        runtime_dir = tmp_path / "runtime"
-        tcl_dir = runtime_dir / "tcl" / "tcl8.6"
-
-        # Create tzdata with ~100 files
-        tzdata_dir = tcl_dir / "tzdata"
-        tzdata_dir.mkdir(parents=True)
-        for i in range(100):
-            (tzdata_dir / f"timezone_{i}.tz").write_text(f"# Timezone {i}")
-
-        # Create msgs with ~50 files
-        msgs_dir = tcl_dir / "msgs"
-        msgs_dir.mkdir(parents=True)
-        for i in range(50):
-            (msgs_dir / f"lang_{i}.msg").write_text(f"# Language {i}")
-
-        result = cleanup_tcl_unnecessary_files(runtime_dir)
-
-        assert result is True
-        assert not tzdata_dir.exists()
-        assert not msgs_dir.exists()
-
-    def test_cleanup_preserves_essential_tcl_files(self, tmp_path):
-        """Should only remove tzdata/msgs, not essential Tcl/Tk files."""
-        from build_distribution import cleanup_tcl_unnecessary_files
-
-        runtime_dir = tmp_path / "runtime"
-        tcl_dir = runtime_dir / "tcl"
-
-        # Create essential Tcl files that must NOT be removed
-        tcl8_6 = tcl_dir / "tcl8.6"
-        tcl8_6.mkdir(parents=True)
-        (tcl8_6 / "init.tcl").write_text("# Tcl init script")
-        (tcl8_6 / "package.tcl").write_text("# Tcl package system")
-
-        tk8_6 = tcl_dir / "tk8.6"
-        tk8_6.mkdir(parents=True)
-        (tk8_6 / "button.tcl").write_text("# Button widget")
-        (tk8_6 / "dialog.tcl").write_text("# Dialog widget")
-
-        # Create removable files
-        tzdata_dir = tcl8_6 / "tzdata"
-        tzdata_dir.mkdir()
-        (tzdata_dir / "UTC").write_text("# UTC")
-
-        result = cleanup_tcl_unnecessary_files(runtime_dir)
-
-        assert result is True
-        # Essential files preserved
-        assert (tcl8_6 / "init.tcl").exists()
-        assert (tcl8_6 / "package.tcl").exists()
-        assert (tk8_6 / "button.tcl").exists()
-        assert (tk8_6 / "dialog.tcl").exists()
-        # Removable files gone
-        assert not tzdata_dir.exists()
-
-    def test_cleanup_succeeds_with_no_tcl_directory(self, tmp_path):
-        """Should succeed gracefully if no tcl/ directory exists."""
-        from build_distribution import cleanup_tcl_unnecessary_files
-
-        runtime_dir = tmp_path / "runtime"
-        runtime_dir.mkdir()
-
-        result = cleanup_tcl_unnecessary_files(runtime_dir)
-
-        assert result is True
-
-    def test_cleanup_succeeds_with_already_clean_tcl(self, tmp_path):
-        """Should succeed if tzdata/msgs already removed."""
-        from build_distribution import cleanup_tcl_unnecessary_files
-
-        runtime_dir = tmp_path / "runtime"
-        tcl_dir = runtime_dir / "tcl" / "tcl8.6"
-        tcl_dir.mkdir(parents=True)
-
-        # Create only essential files, no tzdata or msgs
-        (tcl_dir / "init.tcl").write_text("# init")
-
-        result = cleanup_tcl_unnecessary_files(runtime_dir)
-
-        assert result is True
-        # Essential files still present
-        assert (tcl_dir / "init.tcl").exists()
-
-
 class TestBuildScriptConstants:
     """Test build script constants used by build validation."""
 
@@ -1212,6 +931,12 @@ class TestBuildScriptConstants:
         import build_distribution
 
         assert "websockets" in build_distribution.CRITICAL_MODULES
+
+    def test_critical_modules_exclude_tkinter(self):
+        """Build validation should no longer require the removed Tk client."""
+        import build_distribution
+
+        assert "tkinter" not in build_distribution.CRITICAL_MODULES
 
 
 class TestCreateReadme:
@@ -1244,3 +969,16 @@ class TestCreateReadme:
         readme = (build_dir / "README.txt").read_text(encoding="utf-8")
         assert "--window" not in readme
         assert "--step" not in readme
+
+    def test_create_readme_does_not_mention_tk_client(self, tmp_path):
+        """README should describe headless server mode without legacy Tk wording."""
+        from build_distribution import create_readme
+
+        build_dir = tmp_path / "AI-Stenographer"
+        build_dir.mkdir(parents=True)
+
+        result = create_readme(build_dir)
+
+        assert result is True
+        readme = (build_dir / "README.txt").read_text(encoding="utf-8")
+        assert "Tk client" not in readme

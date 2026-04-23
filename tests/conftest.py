@@ -1,22 +1,34 @@
 # tests/conftest.py
+import json
 import pytest
 import numpy as np
 import torch
+import struct
 import shutil
 from pathlib import Path
-import sys
-import os
-
-# Fix TCL/TK library paths for Windows Python 3.13+ (needed for tkinter tests)
-# This must run before any tkinter imports to avoid TclError
-if sys.platform == 'win32' and not os.environ.get('TCL_LIBRARY'):
-    # Use base Python installation (not venv) for TCL libraries
-    python_root = getattr(sys, 'base_prefix', os.path.dirname(sys.executable))
-    os.environ['TCL_LIBRARY'] = os.path.join(python_root, 'tcl', 'tcl8.6')
-    os.environ['TK_LIBRARY'] = os.path.join(python_root, 'tcl', 'tk8.6')
+from src.network.types import WsAudioFrame
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
 PYTEST_ARTIFACT_DIRS = (".pytest_cache", ".pytest_tmp")
+
+
+def encode_audio_frame(frame: WsAudioFrame) -> bytes:
+    """Encode a test audio frame with the v1 binary wire format.
+
+    Args:
+        frame: Audio frame to serialize for websocket tests.
+
+    Returns:
+        Binary frame bytes with header-length prefix, JSON header, and PCM payload.
+    """
+    header = {
+        "type": "audio_chunk",
+        "session_id": frame.session_id,
+        "chunk_id": frame.chunk_id,
+        "timestamp": frame.timestamp,
+    }
+    header_bytes = json.dumps(header).encode("utf-8")
+    return struct.pack("<I", len(header_bytes)) + header_bytes + frame.audio.astype(np.float32).tobytes()
 
 
 def cleanup_test_artifact_dirs(root_path: Path) -> None:

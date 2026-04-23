@@ -23,7 +23,7 @@ Transform the monolithic STT application into a distributed client-server archit
 **7.1 Platform compatibility research**
 
 - Add CoreML execution provider
-- Test all Python dependencies on macOS (sounddevice, tkinter)
+- Test all Python dependencies on macOS (sounddevice)
 - Research universal binary vs. architecture-specific builds (Intel/M)
 
 **7.2 Build system for macOS**

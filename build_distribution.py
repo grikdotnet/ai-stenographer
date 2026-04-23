@@ -23,12 +23,11 @@ AI-Stenographer/
     ├── Lib/            # Dependencies
     ├── app/            # Application code (.pyc)
     │   ├── src/        # Source code with domain-based organization
-    │   │   ├── sound/           # Audio processing (AudioSource, SoundPreProcessor)
-    │   │   ├── asr/             # Speech recognition (Recognizer, AdaptiveWindower, VAD)
-    │   │   ├── postprocessing/  # Text processing (TextMatcher, TextNormalizer)
-    │   │   ├── gui/             # GUI components (TextDisplayWidget, TextFormatter)
-    │   │   ├── controllers/     # MVC controllers (PauseController, InsertionController)
-    │   │   └── quickentry/      # Quick entry feature (global hotkey, popup)
+    │   │   ├── sound/           # Audio processing and segmentation
+    │   │   ├── asr/             # Speech recognition and model management
+    │   │   ├── postprocessing/  # Text processing and filtering
+    │   │   ├── network/         # WebSocket protocol types/codecs
+    │   │   └── server/          # Server orchestration and session lifecycle
     │   ├── config/     # Configuration files
     │   └── assets/     # Static assets
     └── models/         # Downloaded at runtime
@@ -54,7 +53,6 @@ CRITICAL_MODULES = [
     "onnxruntime",
     "sounddevice",
     "onnx_asr",
-    "tkinter",
     "pynput",
     "websockets",
 ]
@@ -422,23 +420,11 @@ def main():
         print("\nWarning: Python executables are not properly signed")
         print("This may cause SmartScreen warnings on user machines")
 
-    # Step 6: Copy tkinter module from system Python
-    if not copy_tkinter_to_distribution(paths["runtime"]):
-        print("\nWarning: Failed to copy tkinter module")
-        print("Tkinter will not be available in the distribution")
-        print("Continuing with build...")
-
-    # Step 6a: Remove unnecessary Tcl/Tk files
-    if not cleanup_tcl_unnecessary_files(paths["runtime"]):
-        print("\nWarning: Failed to cleanup Tcl/Tk files")
-        print("Build will continue, but distribution size will be larger")
-
     # Step 7: Create python312._pth configuration
     # Paths are relative to python.exe location (_internal/runtime/)
     try:
         pth_paths = [
             "python312.zip",            # In same dir as python.exe
-            "Lib",                      # For tkinter module (in runtime/Lib/)
             "../Lib/site-packages",     # Up one, then to Lib/site-packages
             "../app",                   # Up one, then to app
             "import site"
@@ -460,11 +446,6 @@ def main():
     if not verify_pip(python_exe):
         print("\nWarning: Pip verification failed")
         print("Dependency installation may not work")
-
-    # Step 10: Verify tkinter is importable
-    if not verify_tkinter(python_exe):
-        print("\nWarning: Tkinter verification failed")
-        print("GUI functionality may not work")
 
     # Step 11: Collect third-party licenses
     if not collect_third_party_licenses(project_root):
@@ -673,230 +654,6 @@ def verify_pip(python_exe: Path) -> bool:
         print(f"Error verifying pip: {e}")
         return False
 
-
-def copy_tkinter_to_distribution(runtime_dir: Path, allow_fallback: bool = True) -> bool:
-    """
-    Copies tkinter module and Tcl/Tk libraries from system Python.
-
-    Python embeddable package includes Tcl/Tk DLLs but NOT:
-    - tkinter module itself
-    - tcl/tk library files (_tkinter.pyd depends on these)
-
-    This copies from system Python to make GUI functionality available.
-
-    Copies:
-    - Lib/tkinter/ directory → runtime/Lib/tkinter/
-    - DLLs/_tkinter.pyd → runtime/_tkinter.pyd
-    - tcl/ directory → runtime/tcl/ (Tcl/Tk library files)
-    - DLLs/zlib1.dll → runtime/zlib1.dll (required for Python 3.12+)
-
-    Args:
-        runtime_dir: Path to embedded Python runtime directory
-        allow_fallback: If True, attempt to find matching Python installation when
-                       version mismatch occurs. Set to False in tests to prevent
-                       finding real system Python installations.
-
-    Returns:
-        True if tkinter was successfully copied, False otherwise
-    """
-    print("Copying tkinter module and Tcl/Tk libraries from system Python...")
-
-    try:
-        # Locate system Python (use sys.base_prefix to get actual installation, not venv)
-        system_python = Path(sys.base_prefix)
-
-        # Check version compatibility (must match minor version)
-        system_version = f"{sys.version_info.major}.{sys.version_info.minor}"
-        target_version = PYTHON_VERSION.rsplit('.', 1)[0]  # e.g., "3.12.10" -> "3.12"
-
-        if system_version != target_version:
-            if allow_fallback:
-                # Try to find matching Python installation
-                target_major_minor = target_version.replace('.', '')  # "3.12" -> "312"
-                python_install_path = Path(f"C:/Python{target_major_minor}")
-
-                if python_install_path.exists():
-                    print(f"  [INFO] System Python {system_version} != target {target_version}")
-                    print(f"  [INFO] Using {python_install_path} for tkinter extraction")
-                    system_python = python_install_path
-                else:
-                    print(f"  [WARNING] System Python {system_version} does not match target {target_version}")
-                    print(f"  [WARNING] C:/Python{target_major_minor} not found")
-                    print(f"  [ERROR] Cannot extract tkinter - version mismatch")
-                    return False
-            else:
-                # Fallback disabled (for testing)
-                print(f"  [ERROR] System Python {system_version} does not match target {target_version}")
-                return False
-
-        # 1. Copy tkinter module
-        system_tkinter = system_python / "Lib" / "tkinter"
-        if not system_tkinter.exists():
-            print(f"  [ERROR] tkinter not found: {system_tkinter}")
-            print(f"  System Python must have tkinter installed")
-            return False
-
-        dest_lib = runtime_dir / "Lib"
-        dest_lib.mkdir(parents=True, exist_ok=True)
-
-        dest_tkinter = dest_lib / "tkinter"
-        if dest_tkinter.exists():
-            shutil.rmtree(dest_tkinter)
-
-        shutil.copytree(system_tkinter, dest_tkinter)
-        file_count = sum(1 for _ in dest_tkinter.rglob("*") if _.is_file())
-        print(f"  Copied tkinter module ({file_count} files)")
-
-        # 2. Copy _tkinter.pyd binary
-        system_tkinter_pyd = system_python / "DLLs" / "_tkinter.pyd"
-        if not system_tkinter_pyd.exists():
-            print(f"  [ERROR] _tkinter.pyd not found: {system_tkinter_pyd}")
-            return False
-
-        dest_pyd = runtime_dir / "_tkinter.pyd"
-        shutil.copy2(system_tkinter_pyd, dest_pyd)
-        print(f"  Copied _tkinter.pyd ({dest_pyd.stat().st_size} bytes)")
-
-        # 3. Copy tcl/ directory (Tcl/Tk library files required by _tkinter.pyd)
-        system_tcl = system_python / "tcl"
-        if system_tcl.exists():
-            dest_tcl = runtime_dir / "tcl"
-            if dest_tcl.exists():
-                shutil.rmtree(dest_tcl)
-
-            shutil.copytree(system_tcl, dest_tcl)
-            tcl_size_mb = sum(f.stat().st_size for f in dest_tcl.rglob("*") if f.is_file()) / (1024 * 1024)
-            print(f"  Copied tcl/ directory ({tcl_size_mb:.1f}MB)")
-        else:
-            print(f"  [WARNING] tcl/ directory not found: {system_tcl}")
-            print(f"  Tkinter may not work without Tcl/Tk library files")
-
-        # 4. Copy Tcl/Tk DLLs (tcl86t.dll, tk86t.dll, zlib1.dll)
-        # Python 3.12+ requires zlib1.dll for _tkinter.pyd to load
-        # Some Python embedded versions don't include these
-        system_dlls = system_python / "DLLs"
-        required_dlls = ["tcl86t.dll", "tk86t.dll", "zlib1.dll"]
-        copied_dlls = []
-
-        for dll_name in required_dlls:
-            dll_src = system_dlls / dll_name
-            if dll_src.exists():
-                dll_dest = runtime_dir / dll_name
-                if not dll_dest.exists():  # Don't overwrite if already present
-                    shutil.copy2(dll_src, dll_dest)
-                    copied_dlls.append(dll_name)
-            elif dll_name == "zlib1.dll":
-                # zlib1.dll is CRITICAL for _tkinter.pyd in Python 3.12+
-                print(f"  [ERROR] {dll_name} not found: {dll_src}")
-                print(f"  _tkinter.pyd will fail to load without zlib1.dll")
-                return False
-
-        if copied_dlls:
-            print(f"  Copied required DLLs: {', '.join(copied_dlls)}")
-
-        return True
-
-    except Exception as e:
-        print(f"  [ERROR] Failed to copy tkinter: {e}")
-        return False
-
-
-def cleanup_tcl_unnecessary_files(runtime_dir: Path) -> bool:
-    """
-    Removes unnecessary Tcl/Tk files from distribution.
-
-    The application uses only basic tkinter widgets (Label, Text, Button)
-    which don't require timezone data or advanced Tcl libraries.
-
-    Removes:
-    - tcl/tcl8.6/tzdata/ (~600 files, 2.1MB) - Timezone database not needed
-    - tcl/tcl8.6/msgs/ - Localization messages (app is English-only)
-    - tcl/tcl8/8.6/encoding/ (partial) - Keep only utf-8, unicode, and common encodings
-
-    Preserves:
-    - Core Tcl/Tk init scripts (required for tkinter to work)
-    - Basic widgets and dialogs
-
-    Args:
-        runtime_dir: Path to embedded Python runtime directory
-
-    Returns:
-        True if cleanup succeeded, False otherwise
-    """
-    print("Removing unnecessary Tcl/Tk files...")
-
-    try:
-        tcl_dir = runtime_dir / "tcl"
-        if not tcl_dir.exists():
-            print("  [SKIP] No tcl/ directory found")
-            return True
-
-        removed_items = []
-        total_size = 0
-
-        # Remove timezone data (not used by basic tkinter widgets)
-        tzdata_dir = tcl_dir / "tcl8.6" / "tzdata"
-        if tzdata_dir.exists():
-            tzdata_size = sum(f.stat().st_size for f in tzdata_dir.rglob("*") if f.is_file())
-            file_count = sum(1 for _ in tzdata_dir.rglob("*") if _.is_file())
-            total_size += tzdata_size
-            shutil.rmtree(tzdata_dir)
-            removed_items.append(f"tzdata/ ({file_count} files)")
-
-        # Remove localization messages (app is English-only)
-        msgs_dir = tcl_dir / "tcl8.6" / "msgs"
-        if msgs_dir.exists():
-            msgs_size = sum(f.stat().st_size for f in msgs_dir.rglob("*") if f.is_file())
-            file_count = sum(1 for _ in msgs_dir.rglob("*") if _.is_file())
-            total_size += msgs_size
-            shutil.rmtree(msgs_dir)
-            removed_items.append(f"msgs/ ({file_count} files)")
-
-        if removed_items:
-            size_mb = total_size / (1024 * 1024)
-            print(f"  Removed: {', '.join(removed_items)}")
-            print(f"  Space saved: {size_mb:.1f}MB")
-        else:
-            print("  Nothing to remove (already clean)")
-
-        return True
-
-    except Exception as e:
-        print(f"  [ERROR] Failed to cleanup Tcl/Tk files: {e}")
-        return False
-
-
-def verify_tkinter(python_exe: Path) -> bool:
-    """
-    Verifies that tkinter module can be imported.
-
-    Args:
-        python_exe: Path to python.exe
-
-    Returns:
-        True if tkinter imports successfully
-    """
-    print("Verifying tkinter is importable...")
-
-    try:
-        result = subprocess.run(
-            [str(python_exe), "-c", "import tkinter"],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-
-        if result.returncode == 0:
-            print(f"  [OK] tkinter imports successfully")
-            return True
-        else:
-            print(f"  [FAIL] tkinter import failed:")
-            print(f"  {result.stderr.strip()}")
-            return False
-
-    except Exception as e:
-        print(f"  [ERROR] Error verifying tkinter: {e}")
-        return False
 
 def collect_third_party_licenses(project_root: Path) -> bool:
     """
@@ -1681,8 +1438,8 @@ FEATURES
 
 USAGE
 -----
-- The application window shows transcribed text in real-time
-- Press Ctrl+C in the window or close it to stop
+- The desktop client shows transcribed text in real-time
+- Close the desktop window or stop the server process to exit
 - Models are downloaded once and reused on subsequent runs
 - Models are stored in: ./models/
 
@@ -1713,7 +1470,7 @@ ADVANCED OPTIONS
 Run from command line for verbose output:
   _internal\\runtime\\python.exe _internal\\app\\main.pyc -v
 
-Run server only (no local Tk client):
+Run server only (skip desktop client launch):
   _internal\\runtime\\python.exe _internal\\app\\main.pyc --server-only
 
 PRIVACY & DATA

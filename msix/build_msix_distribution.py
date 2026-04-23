@@ -49,9 +49,6 @@ from build_distribution import (
     create_directory_structure,
     copy_signed_executables_from_system,
     verify_signatures,
-    copy_tkinter_to_distribution,
-    cleanup_tcl_unnecessary_files,
-    verify_tkinter,
     create_pth_file,
     enable_pip,
     verify_pip,
@@ -880,19 +877,6 @@ def main():
     if not verify_signatures(paths["runtime"]):
         print("\nWarning: Python executables are not properly signed")
 
-    # Step 6: Copy tkinter module
-    print("\n" + "=" * 80)
-    print("STEP 6: Copy Tkinter Module")
-    print("=" * 80)
-    if not copy_tkinter_to_distribution(paths["runtime"]):
-        print("\nWarning: Failed to copy tkinter module")
-        print("Tkinter will not be available in the distribution")
-        print("Continuing with build...")
-
-    # Step 6a: Remove unnecessary Tcl/Tk files
-    if not cleanup_tcl_unnecessary_files(paths["runtime"]):
-        print("\nWarning: Failed to cleanup Tcl/Tk files")
-
     # Step 7: Create python312._pth configuration
     print("\n" + "=" * 80)
     print("STEP 7: Configure Module Search Paths")
@@ -900,7 +884,6 @@ def main():
     try:
         pth_paths = [
             "python312.zip",
-            "Lib",
             "../Lib/site-packages",
             "../app",
             "import site"
@@ -924,10 +907,6 @@ def main():
     python_exe = paths["runtime"] / "python.exe"
     if not verify_pip(python_exe):
         print("\nWarning: Pip verification failed")
-
-    # Step 10: Verify tkinter
-    if not verify_tkinter(python_exe):
-        print("\nWarning: Tkinter verification failed")
 
     # Step 11: Collect third-party licenses
     print("\n" + "=" * 80)
@@ -966,7 +945,7 @@ def main():
     print("\n" + "=" * 80)
     print("STEP 16: Test Critical Imports")
     print("=" * 80)
-    critical_modules = ["numpy", "onnxruntime", "sounddevice", "onnx_asr", "tkinter", "pynput", "winrt.windows.storage"]
+    critical_modules = ["numpy", "onnxruntime", "sounddevice", "onnx_asr", "pynput", "winrt.windows.storage"]
     import_results = test_imports(python_exe, critical_modules)
     failed_imports = [m for m, success in import_results.items() if not success]
 

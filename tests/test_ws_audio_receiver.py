@@ -5,13 +5,12 @@ import queue
 
 import numpy as np
 
-from src.client.tk.network.codec import encode_audio_frame
+from conftest import encode_audio_frame
 from src.network.codec import SessionIdMismatchError
 from src.network.types import WsAudioFrame
 from src.server.WsAudioReceiver import handle_audio_frame
 
 _SESSION_ID = "test-session"
-
 
 def _make_audio_frame(
     session_id: str = _SESSION_ID,

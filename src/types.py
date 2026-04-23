@@ -92,9 +92,9 @@ MatcherQueueItem = Union[RecognitionResult, SpeechEndSignal]
 class DisplayInstructions:
     """Pure data DTO - separates WHAT to display from HOW to display it.
 
-    Carries formatting decisions from TextFormatter to TextDisplayWidget.
-    TextFormatter calculates these instructions based on recognition results.
-    TextDisplayWidget renders these instructions to tkinter GUI.
+    Carries formatting decisions from formatting logic to the display layer.
+    Producers calculate these instructions from recognition results.
+    Consumers render them in the active client UI.
 
     Attributes:
         action: Type of display operation to perform
