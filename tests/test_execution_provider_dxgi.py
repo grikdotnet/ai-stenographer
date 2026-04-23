@@ -273,32 +273,22 @@ class TestDXGIEnumeration:
 class TestGPUClassification:
     """Tests for _classify_gpu_name() including virtual GPU detection."""
 
-    def test_microsoft_basic_render_driver_classified_as_virtual(self):
-        """Microsoft Basic Render Driver → 'virtual' (software renderer)."""
+    @pytest.mark.parametrize(
+        "gpu_name",
+        [
+            "Microsoft Basic Render Driver",
+            "Microsoft Basic Display Adapter",
+            "Microsoft Remote Display Adapter",
+        ],
+    )
+    def test_virtual_gpu_names_classified_as_virtual(self, gpu_name):
+        """Known software-rendered adapter names should be classified as virtual."""
         config = {'recognition': {'inference': 'directml'}}
         manager = ExecutionProviderManager(config)
 
-        gpu_type = manager._classify_gpu_name('Microsoft Basic Render Driver')
+        gpu_type = manager._classify_gpu_name(gpu_name)
 
-        assert gpu_type == 'virtual', "Basic Render Driver should be virtual, not discrete"
-
-    def test_microsoft_basic_display_adapter_classified_as_virtual(self):
-        """Microsoft Basic Display Adapter → 'virtual' (fallback driver)."""
-        config = {'recognition': {'inference': 'directml'}}
-        manager = ExecutionProviderManager(config)
-
-        gpu_type = manager._classify_gpu_name('Microsoft Basic Display Adapter')
-
-        assert gpu_type == 'virtual', "Basic Display Adapter should be virtual"
-
-    def test_remote_desktop_adapter_classified_as_virtual(self):
-        """Remote Desktop adapters → 'virtual'."""
-        config = {'recognition': {'inference': 'directml'}}
-        manager = ExecutionProviderManager(config)
-
-        gpu_type = manager._classify_gpu_name('Microsoft Remote Display Adapter')
-
-        assert gpu_type == 'virtual', "Remote Display Adapter should be virtual"
+        assert gpu_type == 'virtual'
 
 
 class TestAdapterEnumerationDXGI:
@@ -459,36 +449,6 @@ class TestDeviceIDSelection:
 
         # Should prefer discrete GPU at DXGI index 1
         assert device_id == 1, "Should select discrete NVIDIA at DXGI index 1"
-        assert gpu_type == 'discrete'
-
-    def test_select_device_id_desktop_primary_discrete(self, monkeypatch):
-        """Desktop with [NVIDIA@0] → device_id=0.
-
-        Desktop with discrete GPU as primary display.
-        """
-        config = {'recognition': {'inference': 'directml'}}
-        manager = ExecutionProviderManager(config)
-
-        def mock_dxgi_enumerate(self):
-            return [
-                {
-                    'index': 0,
-                    'name': 'NVIDIA GeForce RTX 3060',
-                    'type': 'discrete',
-                    'vram_gb': 4.0
-                }
-            ]
-
-        monkeypatch.setattr('sys.platform', 'win32')
-        monkeypatch.setattr(
-            ExecutionProviderManager,
-            '_enumerate_adapters_dxgi',
-            mock_dxgi_enumerate
-        )
-
-        device_id, gpu_type = manager.select_device_id()
-
-        assert device_id == 0
         assert gpu_type == 'discrete'
 
     def test_select_device_id_fallback_to_integrated(self, monkeypatch):

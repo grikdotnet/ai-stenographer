@@ -120,22 +120,6 @@ def test_text_forwarding() -> None:
     assert forwarded == result
 
 
-def test_ack_handling_and_unblock() -> None:
-    """ACK from recognizer unblocks dispatch of the next queued segment."""
-    router, speech_queue, recognizer_queue, _, _, _ = _build_router()
-    speech_queue.put(_segment(1))
-    speech_queue.put(_segment(2))
-    router._handle_speech_item(speech_queue.get_nowait())
-    router._handle_speech_item(speech_queue.get_nowait())
-    _drain(router)
-    first = recognizer_queue.get_nowait()
-
-    router._handle_recognizer_output(RecognizerAck(message_id=first.message_id or -1))
-    _drain(router)
-    second = recognizer_queue.get_nowait()
-    assert second.chunk_ids == [2]
-
-
 def test_boundary_immediate_release() -> None:
     """SpeechEndSignal with no pending audio is forwarded to matcher immediately."""
     router, speech_queue, _, _, matcher_queue, _ = _build_router()

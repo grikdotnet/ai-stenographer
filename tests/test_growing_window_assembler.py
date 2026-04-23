@@ -153,17 +153,6 @@ class TestGrowingWindowAssembler:
         assert window.chunk_ids == [1]
         assert len(window.data) == sample_rate  # Only 1 second
 
-    def test_flush_idempotent_with_empty_buffer(self, config):
-        """flush() should be safe to call multiple times with empty buffer."""
-        speech_queue = queue.Queue()
-        assembler = GrowingWindowAssembler(speech_queue, config)
-
-        assembler.flush()
-        assembler.flush()
-        assembler.flush()
-
-        assert speech_queue.empty()
-
 class TestGrowingWindowAssemblerContext:
     """Tests for left/right context handling in GrowingWindowAssembler.
 
@@ -433,26 +422,28 @@ class TestGrowingWindowAssemblerShutdown:
             chunk_ids=[chunk_id],
         )
 
-    def test_flush_with_no_segments_no_error(self, config):
-        """flush() on an empty assembler must not raise."""
-        assembler = GrowingWindowAssembler(speech_queue=queue.Queue(), config=config)
-        assembler.flush()
-        assert assembler.segments == []
-
-    def test_flush_with_none_segment_and_empty_buffer_no_error(self, config):
-        """flush(None) on an empty assembler must not raise or emit a window."""
+    def test_empty_flush_variants_do_not_emit_or_raise(self, config):
+        """Empty-buffer flush variants should remain harmless and side-effect free."""
         speech_queue = queue.Queue()
         assembler = GrowingWindowAssembler(speech_queue=speech_queue, config=config)
-        assembler.flush(None)
-        assert speech_queue.empty()
 
-    def test_double_flush_no_error(self, config):
-        """Calling flush() twice (as in double-stop scenarios) must not raise."""
+        assembler.flush()
+        assembler.flush(None)
+
+        assembler.flush()
+
+        assert speech_queue.empty()
+        assert assembler.segments == []
+
+    def test_flush_remains_safe_after_buffer_resets(self, config):
+        """A second flush after a completed flush should not emit extra windows."""
         speech_queue = queue.Queue()
         assembler = GrowingWindowAssembler(speech_queue=speech_queue, config=config)
         seg = self._create_segment(0.0, 0.5, chunk_id=0)
+
         assembler.flush(seg)
-        assembler.flush()  # second flush on now-empty assembler
+        assembler.flush()
+
         assert speech_queue.qsize() == 1
 
     def test_flush_after_process_segment_emits_one_window(self, config):

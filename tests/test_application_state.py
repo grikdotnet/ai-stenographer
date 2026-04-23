@@ -30,36 +30,28 @@ class TestApplicationState(unittest.TestCase):
         app_state = ApplicationState()
         observer1 = Mock()
         observer2 = Mock()
-        observer3 = Mock()
         app_state.register_component_observer(observer1)
         app_state.register_component_observer(observer2)
-        app_state.register_component_observer(observer3)
 
         app_state.set_state("running")
 
         observer1.assert_called_once_with("starting", "running")
         observer2.assert_called_once_with("starting", "running")
-        observer3.assert_called_once_with("starting", "running")
 
-    def test_valid_transition_starting_to_waiting_for_model(self):
-        """starting → waiting_for_model is a valid transition."""
-        app_state = ApplicationState()
-        app_state.set_state("waiting_for_model")
-        self.assertEqual(app_state.get_state(), "waiting_for_model")
+    def test_valid_transitions_update_state(self):
+        """Supported state transitions update the current state."""
+        cases = [
+            (["waiting_for_model"], "waiting_for_model"),
+            (["waiting_for_model", "running"], "running"),
+            (["waiting_for_model", "shutdown"], "shutdown"),
+        ]
 
-    def test_valid_transition_waiting_for_model_to_running(self):
-        """waiting_for_model → running is a valid transition."""
-        app_state = ApplicationState()
-        app_state.set_state("waiting_for_model")
-        app_state.set_state("running")
-        self.assertEqual(app_state.get_state(), "running")
-
-    def test_valid_transition_waiting_for_model_to_shutdown(self):
-        """waiting_for_model → shutdown is a valid transition."""
-        app_state = ApplicationState()
-        app_state.set_state("waiting_for_model")
-        app_state.set_state("shutdown")
-        self.assertEqual(app_state.get_state(), "shutdown")
+        for transitions, expected_state in cases:
+            with self.subTest(transitions=transitions):
+                app_state = ApplicationState()
+                for state in transitions:
+                    app_state.set_state(state)
+                self.assertEqual(app_state.get_state(), expected_state)
 
     def test_invalid_transition_waiting_for_model_to_starting(self):
         """waiting_for_model → starting raises ValueError."""

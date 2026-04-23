@@ -349,16 +349,6 @@ class TestIncrementalTextMatcherEdgeCases:
     def mock_publisher(self):
         return Mock(spec=['publish_partial_update', 'publish_finalization'])
 
-    def test_empty_result_text(self, text_queue, mock_publisher):
-        """Test handling of empty result text."""
-        matcher = IncrementalTextMatcher(text_queue, mock_publisher)
-
-        result = RecognitionResult(text='', start_time=0.0, end_time=1.0, chunk_ids=[0])
-        matcher.process_incremental(result)
-
-        # Should handle gracefully (publish empty preliminary or skip)
-        # Implementation should not crash
-
     def test_result_with_extra_whitespace(self, text_queue, mock_publisher):
         """Test handling of results with extra whitespace."""
         matcher = IncrementalTextMatcher(text_queue, mock_publisher)

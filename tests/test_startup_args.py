@@ -10,17 +10,9 @@ from src.StartupArgs import StartupArgs
 class TestDefaults:
     """No flags -> safe defaults."""
 
-    def test_no_args_gives_defaults(self) -> None:
-        args = StartupArgs.from_argv(["main.py"])
-        assert args.verbose is False
-        assert args.server_only is False
-        assert args.download_model is False
-        assert args.host is None
-        assert args.input_file is None
-        assert args.port == 0
-
-    def test_empty_argv_gives_defaults(self) -> None:
-        args = StartupArgs.from_argv([])
+    @pytest.mark.parametrize("argv", [["main.py"], []])
+    def test_defaults_are_applied(self, argv: list[str]) -> None:
+        args = StartupArgs.from_argv(argv)
         assert args.verbose is False
         assert args.server_only is False
         assert args.download_model is False
