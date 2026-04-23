@@ -12,6 +12,7 @@ from src.StartupController import (
 )
 from src.asr.ModelManager import ModelManager
 from src.asr.ModelLoader import ModelLoadError
+from src.asr.ModelRegistry import ModelRegistry
 
 
 if hasattr(sys.modules['__main__'], '__file__'):
@@ -20,7 +21,6 @@ else:
     SCRIPT_PATH = Path(__file__).resolve()
 
 path_resolver = PathResolver(SCRIPT_PATH)
-path_resolver.ensure_local_dir_structure()
 
 
 def _main(argv: list[str]) -> None:
@@ -30,11 +30,15 @@ def _main(argv: list[str]) -> None:
         argv: Command-line arguments (typically sys.argv).
     """
     try:
-        StartupController(
-            StartupArgs.from_argv(argv), 
-            path_resolver, 
-            ModelManager(path_resolver.paths.models_dir)
-            ).run()
+        path_resolver.ensure_local_dir_structure()
+        resolved_paths = path_resolver.paths
+        model_registry = ModelRegistry(resolved_paths)
+        controller = StartupController(
+            StartupArgs.from_argv(argv),
+            resolved_paths,
+            ModelManager(model_registry),
+        )
+        controller.run()
     except (TauriBinaryNotFoundError, MissingModelsError, ModelLoadError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)

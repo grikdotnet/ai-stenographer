@@ -1,6 +1,7 @@
 import queue
 from unittest.mock import Mock
 
+from src.ApplicationState import ApplicationState
 from src.postprocessing.IncrementalTextMatcher import IncrementalTextMatcher
 from src.types import RecognitionResult, SpeechEndSignal
 
@@ -10,7 +11,6 @@ def test_speech_end_signal_finalizes_pending_and_resets_state() -> None:
     matcher = IncrementalTextMatcher(
         text_queue=queue.Queue(),
         publisher=publisher,
-        app_state=Mock(),
     )
 
     matcher.process_incremental(

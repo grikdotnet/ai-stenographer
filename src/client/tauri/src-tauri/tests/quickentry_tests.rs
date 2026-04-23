@@ -599,6 +599,7 @@ fn popup_auto_cancelled_when_state_transitions_to_paused() {
         }
     }));
 
+    state_manager.set_state(AppState::WaitingForServer).unwrap();
     state_manager.set_state(AppState::Running).unwrap();
     controller.show_popup();
     assert!(controller.is_visible());

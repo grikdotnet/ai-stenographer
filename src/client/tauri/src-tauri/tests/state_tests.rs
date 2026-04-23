@@ -3,23 +3,24 @@ use stt_tauri_client::state::{AppState, AppStateManager};
 use std::sync::{Arc, Mutex};
 
 #[test]
-fn starting_to_running_succeeds() {
+fn starting_to_waiting_for_server_succeeds() {
     let mgr = AppStateManager::new();
+    assert!(mgr.set_state(AppState::WaitingForServer).is_ok());
+    assert_eq!(mgr.current_state(), AppState::WaitingForServer);
+}
+
+#[test]
+fn waiting_for_server_to_running_succeeds() {
+    let mgr = AppStateManager::new();
+    mgr.set_state(AppState::WaitingForServer).unwrap();
     assert!(mgr.set_state(AppState::Running).is_ok());
     assert_eq!(mgr.current_state(), AppState::Running);
 }
 
 #[test]
-fn running_to_paused_succeeds() {
-    let mgr = AppStateManager::new();
-    mgr.set_state(AppState::Running).unwrap();
-    assert!(mgr.set_state(AppState::Paused).is_ok());
-    assert_eq!(mgr.current_state(), AppState::Paused);
-}
-
-#[test]
 fn paused_to_running_succeeds() {
     let mgr = AppStateManager::new();
+    mgr.set_state(AppState::WaitingForServer).unwrap();
     mgr.set_state(AppState::Running).unwrap();
     mgr.set_state(AppState::Paused).unwrap();
     assert!(mgr.set_state(AppState::Running).is_ok());
@@ -29,6 +30,7 @@ fn paused_to_running_succeeds() {
 #[test]
 fn running_to_shutdown_succeeds() {
     let mgr = AppStateManager::new();
+    mgr.set_state(AppState::WaitingForServer).unwrap();
     mgr.set_state(AppState::Running).unwrap();
     assert!(mgr.set_state(AppState::Shutdown).is_ok());
     assert_eq!(mgr.current_state(), AppState::Shutdown);
@@ -37,6 +39,7 @@ fn running_to_shutdown_succeeds() {
 #[test]
 fn paused_to_shutdown_succeeds() {
     let mgr = AppStateManager::new();
+    mgr.set_state(AppState::WaitingForServer).unwrap();
     mgr.set_state(AppState::Running).unwrap();
     mgr.set_state(AppState::Paused).unwrap();
     assert!(mgr.set_state(AppState::Shutdown).is_ok());
@@ -75,6 +78,7 @@ fn starting_to_paused_is_invalid() {
 #[test]
 fn running_to_starting_is_invalid() {
     let mgr = AppStateManager::new();
+    mgr.set_state(AppState::WaitingForServer).unwrap();
     mgr.set_state(AppState::Running).unwrap();
     assert!(mgr.set_state(AppState::Starting).is_err());
 }
@@ -110,11 +114,11 @@ fn observer_notified_on_state_change() {
         log_clone.lock().unwrap().push((old, new));
     }));
 
-    mgr.set_state(AppState::Running).unwrap();
+    mgr.set_state(AppState::WaitingForServer).unwrap();
 
     let entries = log.lock().unwrap();
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0], (AppState::Starting, AppState::Running));
+    assert_eq!(entries[0], (AppState::Starting, AppState::WaitingForServer));
 }
 
 #[test]
@@ -147,7 +151,7 @@ fn multiple_observers_all_notified() {
         *b.lock().unwrap() += 1;
     }));
 
-    mgr.set_state(AppState::Running).unwrap();
+    mgr.set_state(AppState::WaitingForServer).unwrap();
 
     assert_eq!(*count_a.lock().unwrap(), 1);
     assert_eq!(*count_b.lock().unwrap(), 1);
@@ -177,6 +181,7 @@ fn shutdown_to_shutdown_does_not_notify_observers() {
 #[test]
 fn app_state_display_trait() {
     assert_eq!(format!("{}", AppState::Starting), "Starting");
+    assert_eq!(format!("{}", AppState::WaitingForServer), "WaitingForServer");
     assert_eq!(format!("{}", AppState::Running), "Running");
     assert_eq!(format!("{}", AppState::Paused), "Paused");
     assert_eq!(format!("{}", AppState::Shutdown), "Shutdown");

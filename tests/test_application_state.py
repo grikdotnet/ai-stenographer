@@ -41,6 +41,33 @@ class TestApplicationState(unittest.TestCase):
         observer2.assert_called_once_with("starting", "running")
         observer3.assert_called_once_with("starting", "running")
 
+    def test_valid_transition_starting_to_waiting_for_model(self):
+        """starting → waiting_for_model is a valid transition."""
+        app_state = ApplicationState()
+        app_state.set_state("waiting_for_model")
+        self.assertEqual(app_state.get_state(), "waiting_for_model")
+
+    def test_valid_transition_waiting_for_model_to_running(self):
+        """waiting_for_model → running is a valid transition."""
+        app_state = ApplicationState()
+        app_state.set_state("waiting_for_model")
+        app_state.set_state("running")
+        self.assertEqual(app_state.get_state(), "running")
+
+    def test_valid_transition_waiting_for_model_to_shutdown(self):
+        """waiting_for_model → shutdown is a valid transition."""
+        app_state = ApplicationState()
+        app_state.set_state("waiting_for_model")
+        app_state.set_state("shutdown")
+        self.assertEqual(app_state.get_state(), "shutdown")
+
+    def test_invalid_transition_waiting_for_model_to_starting(self):
+        """waiting_for_model → starting raises ValueError."""
+        app_state = ApplicationState()
+        app_state.set_state("waiting_for_model")
+        with self.assertRaises(ValueError):
+            app_state.set_state("starting")
+
     def test_invalid_transition_rejected(self):
         """Invalid state transitions raise ValueError."""
         app_state = ApplicationState()
@@ -68,7 +95,7 @@ class TestApplicationState(unittest.TestCase):
         def read_state():
             for _ in range(100):
                 state = app_state.get_state()
-                if state not in ("starting", "running", "shutdown"):
+                if state not in ("starting", "waiting_for_model", "running", "shutdown"):
                     errors.append(state)
 
         threads = [threading.Thread(target=read_state) for _ in range(5)]

@@ -8,6 +8,8 @@ message IDs (session_index * 10_000_000).
 import logging
 import queue
 import threading
+import time
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from src.types import AudioSegment, RecognitionTextMessage, RecognizerAck
@@ -19,6 +21,28 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _SESSION_PREFIX = 10_000_000
+
+
+@dataclass
+class _SessionDrainState:
+    """Per-session drain bookkeeping for graceful close_session."""
+
+    output_queue: queue.Queue
+    pending_segments: int = 0
+    drain_event: threading.Event | None = None
+
+
+class _RecognizerInputQueue:
+    """Queue-like wrapper that records pending per-session segments on submit."""
+
+    def __init__(self, owner: "RecognizerService") -> None:
+        self._owner = owner
+
+    def put(self, item: AudioSegment, block: bool = True, timeout: float | None = None) -> None:
+        self._owner._enqueue_segment(item, block=block, timeout=timeout)
+
+    def put_nowait(self, item: AudioSegment) -> None:
+        self._owner._enqueue_segment(item, block=False, timeout=None)
 
 
 class RecognizerService:
@@ -43,8 +67,10 @@ class RecognizerService:
     ) -> None:
         self._recognizer: "Recognizer | None" = None
         self._app_state = app_state
-        self.input_queue: queue.Queue[AudioSegment] = queue.Queue()
+        self._input_queue: queue.Queue[AudioSegment] = queue.Queue()
+        self.input_queue = _RecognizerInputQueue(self)
         self._session_output_queues: dict[int, queue.Queue] = {}
+        self._session_states: dict[int, _SessionDrainState] = {}
         self._routing_lock = threading.Lock()
         self._thread: threading.Thread | None = None
         self._running = False
@@ -68,6 +94,7 @@ class RecognizerService:
         """
         with self._routing_lock:
             self._session_output_queues[session_index] = output_queue
+            self._session_states[session_index] = _SessionDrainState(output_queue=output_queue)
 
     def unregister_session(self, session_index: int) -> None:
         """Remove a session's output queue; subsequent results for it are dropped.
@@ -77,6 +104,32 @@ class RecognizerService:
         """
         with self._routing_lock:
             self._session_output_queues.pop(session_index, None)
+            self._session_states.pop(session_index, None)
+
+    def flush_session(self, session_index: int, timeout: float) -> None:
+        """Block until the session has no pending recognizer work.
+
+        Args:
+            session_index: Session to wait for.
+            timeout: Maximum number of seconds to wait.
+        """
+        with self._routing_lock:
+            state = self._session_states.get(session_index)
+            if state is None:
+                return
+            if state.pending_segments == 0:
+                return
+            drain_event = state.drain_event
+            if drain_event is None:
+                drain_event = threading.Event()
+                state.drain_event = drain_event
+
+        if not drain_event.wait(timeout=timeout):
+            logger.warning(
+                "RecognizerService: flush_session timed out for session %s after %.2fs",
+                session_index,
+                timeout,
+            )
 
     def start(self) -> None:
         """Start the inference thread."""
@@ -119,7 +172,7 @@ class RecognizerService:
         """
         while self._running:
             try:
-                segment: AudioSegment = self.input_queue.get(timeout=0.1)
+                segment: AudioSegment = self._input_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
 
@@ -158,17 +211,66 @@ class RecognizerService:
             return
 
         with self._routing_lock:
-            out_queue = self._session_output_queues.get(session_index)
+            state = self._session_states.get(session_index)
 
-        if out_queue is None:
+        if state is None:
             logger.debug(
                 "RecognizerService: session %s not registered, dropping result", session_index
             )
             return
 
+        out_queue = state.output_queue
         try:
             out_queue.put_nowait(item)
         except queue.Full:
             logger.warning(
                 "RecognizerService: output queue full for session %s, dropping", session_index
             )
+        finally:
+            if isinstance(item, RecognizerAck):
+                self._mark_segment_complete(session_index)
+
+    def _enqueue_segment(
+        self,
+        segment: AudioSegment,
+        *,
+        block: bool,
+        timeout: float | None,
+    ) -> None:
+        """Track session work before placing a segment on the input queue."""
+        message_id = segment.message_id
+        session_index = message_id // _SESSION_PREFIX if message_id is not None else None
+        if session_index is None:
+            raise ValueError("RecognizerService: message_id is required for routing")
+
+        with self._routing_lock:
+            state = self._session_states.get(session_index)
+            if state is not None:
+                state.pending_segments += 1
+                if state.drain_event is not None:
+                    state.drain_event.clear()
+
+        try:
+            if block:
+                self._input_queue.put(segment, timeout=timeout)
+            else:
+                self._input_queue.put_nowait(segment)
+        except Exception:
+            with self._routing_lock:
+                state = self._session_states.get(session_index)
+                if state is not None and state.pending_segments > 0:
+                    state.pending_segments -= 1
+                    if state.pending_segments == 0 and state.drain_event is not None:
+                        state.drain_event.set()
+            raise
+
+    def _mark_segment_complete(self, session_index: int) -> None:
+        """Decrease pending segment count after terminal ACK routing."""
+        with self._routing_lock:
+            state = self._session_states.get(session_index)
+            if state is None:
+                return
+            if state.pending_segments > 0:
+                state.pending_segments -= 1
+            if state.pending_segments == 0 and state.drain_event is not None:
+                state.drain_event.set()

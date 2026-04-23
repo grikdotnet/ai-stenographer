@@ -14,6 +14,7 @@ class StartupArgs:
         verbose: If True, logging level is set to DEBUG.
         server_only: If True, skips Tauri client launch and runs headless.
         download_model: If True, auto-downloads missing models in server-only mode.
+        host: Optional WebSocket host override; falls back to config/default when None.
         input_file: Optional path to a WAV file forwarded to the Tauri client.
         port: WebSocket port to bind on; 0 for OS-assigned.
     """
@@ -21,6 +22,7 @@ class StartupArgs:
     verbose: bool
     server_only: bool
     download_model: bool
+    host: str | None
     input_file: str | None
     port: int
 
@@ -28,7 +30,8 @@ class StartupArgs:
     def from_argv(cls, argv: list[str]) -> "StartupArgs":
         """Parse and validate raw argv into a StartupArgs instance.
 
-        Parses: -v, --server-only, --download-model, --input-file=<path>, --port=<n>.
+        Parses: -v, --server-only, --download-model, --host=<value>,
+        --input-file=<path>, --port=<n>.
 
         Args:
             argv: Raw argument list (typically sys.argv).
@@ -42,6 +45,10 @@ class StartupArgs:
         verbose = "-v" in argv
         server_only = "--server-only" in argv
         download_model = "--download-model" in argv
+        host: str | None = next(
+            (arg.split("=", 1)[1] for arg in argv if arg.startswith("--host=")),
+            None,
+        )
         input_file: str | None = next(
             (arg.split("=", 1)[1] for arg in argv if arg.startswith("--input-file=")),
             None,
@@ -68,6 +75,7 @@ class StartupArgs:
             verbose=verbose,
             server_only=server_only,
             download_model=download_model,
+            host=host,
             input_file=input_file,
             port=port,
         )

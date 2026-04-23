@@ -6,22 +6,25 @@ Each connected client gets a ClientSession via SessionManager.
 
 import asyncio
 import logging
-import queue
 import threading
-from pathlib import Path
-from typing import TYPE_CHECKING
 
 from websockets.exceptions import ConnectionClosed
 
-from src.server.WsAudioReceiver import receive_audio
+from src.ApplicationState import ApplicationState
+from src.network.codec import encode_server_message
+from src.server.CommandController import CommandController
+from src.server.WsAudioReceiver import handle_audio_frame
+from src.server.WsMessageRouter import (
+    RoutedAudioMessage,
+    RoutedCommandMessage,
+    RoutedProtocolError,
+    route_incoming_message,
+)
 from src.server.SessionManager import SessionManager
-from src.server.broadcast import _SHUTDOWN
-
-if TYPE_CHECKING:
-    from src.server.RecognizerService import RecognizerService
-    from src.ApplicationState import ApplicationState
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_SERVER_HOST = "127.0.0.1"
 
 
 class WsServer:
@@ -35,27 +38,28 @@ class WsServer:
         host: Hostname or IP to bind to (default ``"127.0.0.1"``).
         port: Port to listen on; 0 means OS assigns an available port.
         session_manager: Handles session creation and destruction.
-        app_state: Server lifecycle state; stop() transitions to shutdown.
-        broadcast_queue: Shared queue owned by ServerApp; drained by _drain_broadcast_queue.
+        app_state: Server lifecycle state used to accept or reject audio frames.
+        command_controller: Executes client control commands.
     """
 
     def __init__(
         self,
         session_manager: SessionManager,
-        app_state: "ApplicationState",
-        broadcast_queue: queue.SimpleQueue,
-        host: str = "127.0.0.1",
+        app_state: ApplicationState,
+        command_controller: CommandController | None = None,
+        host: str = DEFAULT_SERVER_HOST,
         port: int = 0,
     ) -> None:
         self._host = host
         self._port = port
         self._session_manager = session_manager
         self._app_state = app_state
-        self._broadcast_queue = broadcast_queue
+        self._command_controller = command_controller
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread: threading.Thread | None = None
         self._server = None
         self._ready = threading.Event()
+        self._startup_error: Exception | None = None
         self._stop_event: asyncio.Event | None = None
         self._drain_task: asyncio.Task | None = None
 
@@ -68,10 +72,17 @@ class WsServer:
         """
         return self._port
 
+    def set_command_controller(self, command_controller: CommandController) -> None:
+        """Inject the command controller after construction."""
+        self._command_controller = command_controller
+
     def start(self) -> None:
         """Start the asyncio event loop thread and begin accepting connections.
 
         Blocks until the server is bound and ready to accept connections.
+
+        Raises:
+            Exception: Any exception raised while binding the WebSocket server.
         """
         self._loop = asyncio.new_event_loop()
         self._thread = threading.Thread(
@@ -79,10 +90,11 @@ class WsServer:
         )
         self._thread.start()
         self._ready.wait()
+        if self._startup_error is not None:
+            raise self._startup_error
 
     def stop(self) -> None:
         """Stop accepting connections and shut down the event loop thread."""
-        self._broadcast_queue.put(_SHUTDOWN)
         if self._loop is None or self._stop_event is None:
             return
         try:
@@ -99,12 +111,22 @@ class WsServer:
         if self._thread is not None:
             self._thread.join(timeout=timeout)
 
+    def is_running(self) -> bool:
+        """Return whether the event loop thread is currently alive."""
+        return self._thread is not None and self._thread.is_alive()
+
     def _run_loop(self) -> None:
         """Run the asyncio event loop until stop() is called."""
         asyncio.set_event_loop(self._loop)
-        self._loop.run_until_complete(self._serve())
-        self._loop.run_until_complete(self._loop.shutdown_default_executor())
-        self._loop.close()
+        try:
+            self._loop.run_until_complete(self._serve())
+        except Exception as exc:
+            if not self._ready.is_set():
+                self._startup_error = exc
+        finally:
+            self._ready.set()
+            self._loop.run_until_complete(self._loop.shutdown_default_executor())
+            self._loop.close()
 
     async def _serve(self) -> None:
         """Bind the WebSocket server and run the accept loop.
@@ -124,49 +146,18 @@ class WsServer:
             self._port = bound_port
             logger.info("WsServer: listening on %s:%s", self._host, self._port)
             self._stop_event = asyncio.Event()
-            self._drain_task = asyncio.create_task(self._drain_broadcast_queue())
             self._ready.set()
             await self._stop_event.wait()
-            if self._drain_task is not None:
-                await self._drain_task
             await self._session_manager.close_all_sessions()
-
-    async def _drain_broadcast_queue(self) -> None:
-        """Drain the broadcast sink queue, dispatching messages to all clients.
-
-        Runs as an asyncio task for the lifetime of the server.
-        Blocks on queue.get via run_in_executor so the event loop stays free.
-
-        Algorithm:
-            1. Await next item from the thread-safe broadcast queue.
-            2. If _SHUTDOWN: set _stop_event so _serve() proceeds to close sessions.
-            3. Otherwise: forward to _send_all() (Phase 4 model-status broadcast).
-        """
-        loop = asyncio.get_event_loop()
-        while True:
-            msg = await loop.run_in_executor(None, self._broadcast_queue.get)
-            if msg is _SHUTDOWN:
-                self._stop_event.set()
-                break
-            await self._send_all(msg)
-
-    async def _send_all(self, msg: object) -> None:
-        """Broadcast a message to all connected clients.
-
-        Stub for Phase 4 model-status broadcast; logs unhandled messages now.
-
-        Args:
-            msg: Message object to broadcast.
-        """
-        logger.warning("WsServer: unhandled broadcast message %r", msg)
 
     async def _handle_connection(self, websocket, path: str = "/") -> None:
         """Handle a single WebSocket connection for its full lifetime.
 
         Algorithm:
             1. Create a ClientSession via SessionManager.
-            2. Run receive_audio coroutine until it returns (shutdown/disconnect).
-            3. Destroy the session.
+            2. Read websocket frames for the lifetime of the connection.
+            3. Route audio frames to the audio receiver and text frames to CommandController.
+            4. Destroy the session on disconnect or close_session.
 
         Args:
             websocket: Connected WebSocket client.
@@ -174,22 +165,69 @@ class WsServer:
         """
         loop = asyncio.get_event_loop()
         session = await self._session_manager.create_session(websocket, loop)
-        session_id = session._session_id
+        session_id = session.session_id
+        gracefully_closed = False
 
         try:
-            reason = await receive_audio(
-                websocket=websocket,
-                session_id=session_id,
-                chunk_queue=session.chunk_queue,
-            )
-            logger.info(
-                "WsServer: receive_audio returned reason=%s for session %s",
-                reason,
-                session_id,
-            )
+            async for message in websocket:
+                routed = route_incoming_message(message, session_id)
+
+                if isinstance(routed, RoutedProtocolError):
+                    await websocket.send(encode_server_message(routed.error))
+                    continue
+
+                if isinstance(routed, RoutedAudioMessage):
+                    error = handle_audio_frame(
+                        raw=routed.raw,
+                        session_id=session_id,
+                        chunk_queue=session.chunk_queue,
+                        server_state=self._app_state.get_state(),
+                    )
+                    if error is not None:
+                        await websocket.send(encode_server_message(error))
+                    continue
+
+                if isinstance(routed, RoutedCommandMessage):
+                    if self._command_controller is None:
+                        raise RuntimeError("WsServer command controller is not configured")
+                    should_close, response = self._command_controller.handle(
+                        routed.text,
+                        session_id=session_id,
+                    )
+                    if response is not None:
+                        await websocket.send(encode_server_message(response))
+                    if should_close:
+                        await self._session_manager.close_session(
+                            session_id,
+                            reason="close_session",
+                        )
+                        gracefully_closed = True
+                        await self._close_websocket_if_possible(websocket)
+                        return
         except ConnectionClosed:
             logger.info("WsServer: connection closed unexpectedly for session %s", session_id)
         except Exception:
             logger.exception("WsServer: error in session %s", session_id)
+            try:
+                await self._session_manager.close_session(
+                    session_id,
+                    reason="error",
+                    message="internal server error",
+                )
+                gracefully_closed = True
+                await self._close_websocket_if_possible(websocket)
+            except Exception:
+                logger.exception(
+                    "WsServer: failed to close errored session %s gracefully",
+                    session_id,
+                )
         finally:
-            await self._session_manager.destroy_session(session_id)
+            if not gracefully_closed:
+                await self._session_manager.destroy_session(session_id)
+
+    async def _close_websocket_if_possible(self, websocket) -> None:
+        """Close websocket when the object supports an async close method."""
+        close = getattr(websocket, "close", None)
+        if close is None:
+            return
+        await close()

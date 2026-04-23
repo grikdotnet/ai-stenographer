@@ -1,25 +1,44 @@
-# AGENTS.md
+## Project Context
 
-## Instruction Priority
+This is a real-time Python STT pipeline using Parakeet ONNX with threaded components communicating via queues.
 
-Follow instructions in this order:
-1. Direct user request
-2. `AGENTS.md`
-3. System and developer instructions
+`ARCHITECTURE.md` contains detailed documentation of the system structure.
 
 ## Execution and Scope
 
-- Proceed by default within the user-requested scope.
-- Ask for confirmation only when actions are risky, or out of scope.
 - Do not refactor unrelated code unless required for correctness.
 - Before acting on any TODO, verify it is in the task definition and not invented.
+- Never stage, commit, or amend git repo automatically without explicit user approval or command.
 
 ## Engineering Rules
 
 - Use TDD flow: plan tests first, write/adjust tests, then implement.
-- SOLID design is mandatory for new or changed code.
+- Single Responsibility and Interface Segregation design principles are mandatory for the code design.
 - Define parameter and return types where possible; use type hints on new/changed functions.
 - Prefer existing project datatypes (for example from `src/types.py`) over ad-hoc structures.
+- When variable is used in a single method, prefer a local varible over class property.
+
+**Simplicity First**
+
+Minimum code that solves the problem. Nothing speculative.
+No abstractions for single-use code.
+No "flexibility" or "configurability" that wasn't explicitly requested.
+No error handling for impossible scenarios.
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+**Surgical Changes**
+
+Touch only what you must. Clean up only your own edits.
+Don't refactor code that wasn't requested.
+Before doing anything check whether the todo item is in the task definition (plan).
+
+### Planning Architecture Checks
+
+- During planning, classify every new or changed class into one of the 5 server-side layers documented in the Appendix of `ARCHITECTURE.md`.
+- Reject dependencies from a lower layer to a higher layer. Higher layers may depend on lower layers; lower layers must not depend on higher layers.
+- Avoid skipping two layers when introducing dependencies. The intentional exemptions are the Entry-Point as composition root and the Protocol / Wire layer as a cross-cutting boundary.
+- If an existing design violates these rules, propose a fix (move code or introduce a protocol) instead of adding another exception.
+- Use `ARCHITECTURE.md` as the canonical source for layer definitions, litmus questions, and detailed examples.
 
 ## Testing Policy
 
@@ -42,7 +61,7 @@ Follow instructions in this order:
 
 ### Inline Comments
 - Default: no inline comments.
-- Inline comments are allowed only for:
+- Inline comments are good for:
   - Critical decisions (thresholds, tolerances, magic numbers with justification)
   - External API quirks or contradictions
   - Performance vs correctness trade-offs
@@ -51,36 +70,23 @@ Follow instructions in this order:
 
 ## Runtime and Commands (PowerShell)
 
-- Activate venv before Python commands: `.\\venv\\Scripts\\Activate.ps1`
-- Run app: `python main.py`
-- Run verbose: `python main.py -v`
-- Run file input mode: `python main.py --input-file=tests/fixtures/en.wav -v`
-- Run tests (default, excludes GUI): `python -m pytest tests/ -q`
-- Run GUI tests only: `python -m pytest tests/gui -m gui -q`
-- Run all tests explicitly: `python -m pytest tests/ -m "gui or not gui" -q`
+- Activate venv before Python commands. 
+In Windows environment:
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+.\venv\Scripts\Activate.ps1
+```
 
-## Git and Change Safety
-
-- Never stage, commit, or amend automatically without explicit user request.
-- Do not make unrelated dependency updates.
-- Do not rewrite broad test suites unless required by the requested change.
-- If writing commit messages and replacing generator/co-author footer lines is requested, replace with a joke.
+Commands to run server and client applications are listed in the [./commands.md](commands.md) file.
 
 ## End-of-Task Verification
 
-Before finishing, provide:
+Before finishing a task, provide a summary:
 - What changed and why
-- What was validated (tests/checks run)
-- What was not validated
-- Residual risks and suggested follow-up tests
+- What was and what was not validated (tests/checks)
+- Risks and suggested follow-up
 
-## Project Context
-
-This is a real-time Python STT pipeline using Parakeet ONNX with threaded components communicating via queues.
-
-If assumptions conflict with implementation details, defer to `ARCHITECTURE.md` and current source code.
-
-### Pipeline Quick Reference
+### Sound processing pipeline quick reference
 1. `AudioSource` -> 32ms frames -> raw audio dict -> `chunk_queue`
 2. `SoundPreProcessor` -> reads `chunk_queue` -> normalization + VAD + buffering -> preliminary `AudioSegment` -> `speech_queue`
 3. `SoundPreProcessor` -> `GrowingWindowAssembler` (sync) -> incremental `AudioSegment` -> `speech_queue`

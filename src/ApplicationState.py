@@ -19,7 +19,8 @@ class ApplicationState:
     """
 
     _VALID_TRANSITIONS: dict[str, set[str]] = {
-        "starting": {"running", "shutdown"},
+        "starting": {"waiting_for_model", "running", "shutdown"},
+        "waiting_for_model": {"running", "shutdown"},
         "running": {"shutdown"},
         "shutdown": set(),
     }

@@ -299,6 +299,8 @@ fn main() {
             commands::pause,
             commands::resume,
             commands::clear,
+            commands::list_models,
+            commands::download_model,
             commands::toggle_insertion,
             commands::quickentry_submit,
             commands::quickentry_cancel,

@@ -2,7 +2,6 @@
 
 import json
 import logging
-from pathlib import Path
 from typing import Any
 
 import onnx_asr
@@ -15,10 +14,13 @@ from onnx_asr.loader import (
     MoreThanOneModelFileFoundError,
 )
 
+from src.asr.ModelDefinitions import IModelDefinition
+
 logger = logging.getLogger(__name__)
 
 _MODEL_NAME = "nemo-parakeet-tdt-0.6b-v3"
 _QUANTIZATION = "fp16"
+ProviderOption = str | tuple[str, dict[str, Any]]
 
 
 class ModelLoadError(RuntimeError):
@@ -26,14 +28,14 @@ class ModelLoadError(RuntimeError):
 
 
 def load_model(
-    models_dir: Path,
-    providers: list,
+    model_definition: IModelDefinition,
+    providers: list[ProviderOption],
     sess_options: rt.SessionOptions,
 ) -> Any:
     """Load the parakeet ASR model with timestamps enabled.
 
     Args:
-        models_dir: Root models directory; the parakeet model is expected at models_dir/parakeet.
+        model_definition: Concrete ASR model definition to load.
         providers: ONNX Runtime execution provider list.
         sess_options: ONNX Runtime session options.
 
@@ -43,7 +45,7 @@ def load_model(
     Raises:
         ModelLoadError: On any onnx_asr or onnxruntime loading failure.
     """
-    model_path = models_dir / "parakeet"
+    model_path = model_definition.get_model_path()
     try:
         base_model = onnx_asr.load_model(
             _MODEL_NAME,

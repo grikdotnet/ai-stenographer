@@ -53,6 +53,7 @@ class WsResultSender:
         self._loop = loop
         self._send_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=_SEND_QUEUE_MAXSIZE)
         self._sender_task: asyncio.Task[None] | None = None
+        self._send_error: Exception | None = None
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -65,6 +66,7 @@ class WsResultSender:
         publish calls are made.
         """
         self._send_queue = asyncio.Queue(maxsize=_SEND_QUEUE_MAXSIZE)
+        self._send_error = None
         self._sender_task = asyncio.get_event_loop().create_task(self._drain_loop())
 
     async def stop(self) -> None:
@@ -80,6 +82,16 @@ class WsResultSender:
         except asyncio.CancelledError:
             pass
         self._sender_task = None
+
+    async def wait_for_drain(self, timeout: float) -> None:
+        """Wait until all queued outbound messages have been sent."""
+        await asyncio.wait_for(self._send_queue.join(), timeout=timeout)
+
+    async def flush(self, timeout: float) -> None:
+        """Wait for queued sends to finish and surface the first send failure."""
+        await self.wait_for_drain(timeout=timeout)
+        if self._send_error is not None:
+            raise self._send_error
 
     # ------------------------------------------------------------------
     # RecognitionResultPublisher protocol
@@ -105,6 +117,10 @@ class WsResultSender:
         """
         self._enqueue(_encode(self._session_id, result, status="final"))
 
+    def send_encoded(self, encoded: str) -> None:
+        """Enqueue an already-encoded server message for async delivery."""
+        self._enqueue(encoded)
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
@@ -115,6 +131,15 @@ class WsResultSender:
         Uses loop.call_soon_threadsafe to safely cross the thread boundary.
         Drops the message if the queue is full.
         """
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+
+        if running_loop is self._loop:
+            self._put_nowait(encoded)
+            return
+
         self._loop.call_soon_threadsafe(self._put_nowait, encoded)
 
     def _put_nowait(self, encoded: str) -> None:
@@ -138,14 +163,20 @@ class WsResultSender:
             encoded = await self._send_queue.get()
             try:
                 await self._websocket.send(encoded)
-            except websockets.exceptions.ConnectionClosed:
+            except websockets.exceptions.ConnectionClosed as exc:
+                if self._send_error is None:
+                    self._send_error = ConnectionError(str(exc))
                 logger.info(
                     "WsResultSender[%s]: connection closed, dropping message", self._session_id
                 )
-            except Exception:
+            except Exception as exc:
+                if self._send_error is None:
+                    self._send_error = exc
                 logger.exception(
                     "WsResultSender[%s]: error sending message", self._session_id
                 )
+            finally:
+                self._send_queue.task_done()
 
 
 def _encode(session_id: str, result: RecognitionResult, status: str) -> str:

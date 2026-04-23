@@ -15,6 +15,7 @@ class TestDefaults:
         assert args.verbose is False
         assert args.server_only is False
         assert args.download_model is False
+        assert args.host is None
         assert args.input_file is None
         assert args.port == 0
 
@@ -23,6 +24,7 @@ class TestDefaults:
         assert args.verbose is False
         assert args.server_only is False
         assert args.download_model is False
+        assert args.host is None
         assert args.input_file is None
         assert args.port == 0
 
@@ -78,6 +80,15 @@ class TestInputFileArg:
 
     def test_input_file_absent_gives_none(self) -> None:
         assert StartupArgs.from_argv(["main.py"]).input_file is None
+
+
+class TestHostArg:
+    def test_host_absent_gives_none(self) -> None:
+        assert StartupArgs.from_argv(["main.py"]).host is None
+
+    def test_host_parsed_correctly(self) -> None:
+        args = StartupArgs.from_argv(["main.py", "--host=localhost"])
+        assert args.host == "localhost"
 
 
 class TestPortArg:

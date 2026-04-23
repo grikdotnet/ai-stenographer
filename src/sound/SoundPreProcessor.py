@@ -13,13 +13,12 @@ import logging
 from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum, auto
-from typing import Dict, Any, TYPE_CHECKING, Optional
+from typing import Dict, Any, TYPE_CHECKING
 from ..types import AudioSegment, RecognizerFreeSignal, SpeechEndSignal
 
 if TYPE_CHECKING:
     from src.asr.VoiceActivityDetector import VoiceActivityDetector
     from src.sound.GrowingWindowAssembler import GrowingWindowAssembler
-    from src.ApplicationState import ApplicationState
 
 
 # ========================================================================
@@ -142,6 +141,7 @@ class SoundPreProcessor:
         vad: VoiceActivityDetector instance
         windower: GrowingWindowAssembler instance (called synchronously)
         config: Configuration dictionary
+        control_queue: Queue carrying ACK-driven recognizer-free signals
         verbose: Enable verbose logging
     """
 
@@ -155,7 +155,6 @@ class SoundPreProcessor:
                  windower: GrowingWindowAssembler,
                  config: Dict[str, Any],
                  control_queue: queue.Queue,
-                 app_state: Optional['ApplicationState'] = None,
                  verbose: bool = False):
 
         self.chunk_queue: queue.Queue = chunk_queue      # INPUT: raw audio
@@ -193,12 +192,7 @@ class SoundPreProcessor:
         self.is_running: bool = False
         self.thread: threading.Thread | None = None
         self.verbose: bool = verbose
-        self.app_state = app_state
         self.dropped_segments: int = 0
-
-        # Register as component observer if app_state provided
-        if self.app_state:
-            self.app_state.register_component_observer(self.on_state_change)
 
     @property
     def state(self) -> ProcessingStatesEnum:
@@ -749,17 +743,3 @@ class SoundPreProcessor:
         s.utterance_open = False
         s.current_utterance_id = None
 
-    def on_state_change(self, old_state: str, new_state: str) -> None:
-        """
-        Observes ApplicationState and reacts to:
-        paused: flush pending segments
-        shutdown: stop processing and flush
-
-        Args:
-            old_state: Previous state
-            new_state: New state
-        """
-        if new_state == 'paused':
-            self.flush()
-        elif new_state == 'shutdown':
-            self.stop()

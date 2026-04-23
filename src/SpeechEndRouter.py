@@ -2,7 +2,7 @@ import logging
 import queue
 import threading
 from collections import deque
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
 
 from .types import (
     AudioSegment,
@@ -15,9 +15,6 @@ from .types import (
     SpeechQueueItem,
 )
 
-if TYPE_CHECKING:
-    from src.ApplicationState import ApplicationState
-
 
 class SpeechEndRouter:
     """Routes speech and recognizer protocol messages with strict ordering.
@@ -27,8 +24,6 @@ class SpeechEndRouter:
     - Hold end-of-speech boundaries until in-flight audio completes.
     - Forward recognition text and final boundaries to matcher queue in order.
 
-    Observer Pattern:
-    - Subscribes to ApplicationState and stops on shutdown.
     """
 
     def __init__(
@@ -37,7 +32,6 @@ class SpeechEndRouter:
         recognizer_queue: queue.Queue,
         recognizer_output_queue: queue.Queue,
         matcher_queue: queue.Queue,
-        app_state: "ApplicationState",
         control_queue: queue.Queue,
         verbose: bool = False,
         first_message_id: int = 1,
@@ -46,7 +40,6 @@ class SpeechEndRouter:
         self.recognizer_queue: queue.Queue[AudioSegment] = recognizer_queue
         self.recognizer_output_queue: queue.Queue[RecognizerOutputItem] = recognizer_output_queue
         self.matcher_queue: queue.Queue[MatcherQueueItem] = matcher_queue
-        self.app_state: "ApplicationState" = app_state
         self.verbose: bool = verbose
 
         self.is_running: bool = False
@@ -69,8 +62,6 @@ class SpeechEndRouter:
         self.dropped_matcher_messages: int = 0
         self.dropped_recognizer_messages: int = 0
 
-        self.app_state.register_component_observer(self.on_state_change)
-
     def start(self) -> None:
         """Start router worker thread."""
         self.is_running = True
@@ -83,10 +74,15 @@ class SpeechEndRouter:
             return
         self.is_running = False
 
-    def on_state_change(self, old_state: str, new_state: str) -> None:
-        """Stop when application transitions to shutdown."""
-        if new_state == "shutdown":
-            self.stop()
+    def is_idle(self) -> bool:
+        """Return True when no pending work remains in router-owned buffers."""
+        return (
+            self.speech_queue.empty()
+            and self.recognizer_output_queue.empty()
+            and not self._audio_fifo
+            and self._held_boundary is None
+            and self._in_flight_message_id is None
+        )
 
     def process(self) -> None:
         """Route messages from both inputs and maintain protocol invariants."""

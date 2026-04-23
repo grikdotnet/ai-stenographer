@@ -31,8 +31,10 @@ from src.client.tk.RemoteRecognitionPublisher import RemoteRecognitionPublisher
 from src.client.tk.WsClientTransport import WsClientTransport
 from src.client.tk.network.codec import encode_audio_frame
 from src.network.types import WsAudioFrame
-from src.server.ServerApp import ServerApp
 from src.ApplicationState import ApplicationState
+from src.PathResolver import ResolvedPaths
+from src.asr.ModelRegistry import ModelRegistry
+from src.server.ServerApp import ServerApp
 from src.types import RecognitionResult
 
 
@@ -43,6 +45,17 @@ from src.types import RecognitionResult
 _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 _EN_SHORT_WAV = _FIXTURES_DIR / "en_short.wav"
 _VAD_MODEL_PATH = Path("./models/silero_vad/silero_vad.onnx")
+_PATHS = ResolvedPaths(
+    app_dir=Path("."),
+    internal_dir=Path("."),
+    root_dir=Path("."),
+    models_dir=_VAD_MODEL_PATH.parent.parent,
+    config_dir=Path("./config"),
+    assets_dir=Path("."),
+    logs_dir=Path("./logs"),
+    environment="development",
+)
+_REGISTRY = ModelRegistry(_PATHS)
 
 _CONFIG = {
     "audio": {
@@ -101,12 +114,13 @@ def _make_server() -> ServerApp:
     app_state = ApplicationState()
     server = ServerApp(
         config=_CONFIG,
-        vad_model_path=_VAD_MODEL_PATH,
+        model_registry=_REGISTRY,
         app_state=app_state,
         host="127.0.0.1",
         port=0,
     )
     server.attach_recognizer(_make_mock_recognizer())
+    app_state.set_state("running")
     server.start()
     return server
 
@@ -191,9 +205,10 @@ async def _connect_and_send_audio(
     received: list[dict] = []
 
     async with websockets.connect(server_url) as ws:
-        raw = await ws.recv()
-        msg = json.loads(raw)
-        session_id = msg["session_id"]
+        created = json.loads(await ws.recv())
+        session_id = created["session_id"]
+        snapshot = json.loads(await ws.recv())
+        assert snapshot["type"] == "server_state"
 
         send_task = asyncio.create_task(
             _send_chunks(ws, session_id, audio_chunks)
@@ -215,7 +230,7 @@ async def _connect_and_send_audio(
 
 
 async def _send_chunks(ws, session_id: str, audio_chunks: list) -> None:
-    """Send audio chunks as binary WsAudioFrame messages, then send shutdown.
+    """Send audio chunks as binary WsAudioFrame messages, then close the session.
 
     Args:
         ws: Connected WebSocket.
@@ -237,7 +252,7 @@ async def _send_chunks(ws, session_id: str, audio_chunks: list) -> None:
         {
             "type": "control_command",
             "session_id": session_id,
-            "command": "shutdown",
+            "command": "close_session",
             "timestamp": time.time(),
         }
     )
@@ -291,6 +306,8 @@ class TestSingleClientFinalization:
             )
             finals = _count_finals(frames)
             assert finals == 1, f"Expected exactly one finalization, got {finals}"
+            assert frames[-1]["type"] == "session_closed"
+            assert frames[-1]["reason"] == "close_session"
         finally:
             server.stop()
 

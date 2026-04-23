@@ -1,584 +1,507 @@
-# STT Pipeline Architecture Documentation
+# STT Server and System Architecture
 
-## System Overview
+Client-specific architecture is documented separately in `src/client/tauri/ARCHITECTURE.md`.
 
-The Speech-to-Text system is a **two-process client-server application**. The server process handles all audio processing, VAD, and ASR inference. The client process handles microphone capture, the Tk GUI, and text insertion. The two processes communicate over a local WebSocket connection (protocol v1).
+## Overview
 
-Launching `python main.py` starts the server in-process and spawns `src/client/tk/client.py` as a subprocess. A daemon watcher thread in `main.py` monitors the subprocess: when it exits (user closes the window or crash), the watcher calls `server_app.stop()`. Running `python main.py --server-only` starts the server headlessly without spawning a client.
+The system is a two-process application:
 
-Application state is split: `ServerApplicationState` manages server lifecycle (`starting → running → shutdown`, component observers only, no pause, no GUI scheduling). `ClientApplicationState` manages the full client lifecycle (`starting → running ⟷ paused → shutdown`) including GUI observers and tkinter scheduling.
+- the **Python server** owns model loading, audio preprocessing, VAD, window assembly, recognition, overlap resolution, and WebSocket session lifecycle
+- the **Tauri desktop client** owns capture, UI, quick entry, insertion, and client-side transport behavior
 
-## Router Protocol Overview
-
-`SpeechEndRouter` mediates flow between `SoundPreProcessor`, `RecognizerService`, and `IncrementalTextMatcher`. It enforces one in-flight `AudioSegment` at a time per session, assigns monotonic `message_id` values, forwards `RecognitionTextMessage` payloads to the matcher input queue, and unblocks on terminal `RecognizerAck`. `SpeechEndSignal` boundaries are held until all in-flight audio for that utterance is acknowledged.
-
-In the multi-session server each `SpeechEndRouter` instance receives a `first_message_id` constructor parameter equal to `session_index * 10_000_000 + 1`. This partitions the message ID space so `RecognizerService` can route results back to the correct session by pure arithmetic (`message_id // 10_000_000`), with no routing table lookup on the hot path.
+This document describes the **server and system architecture**. For Tauri internals, see `src/client/tauri/ARCHITECTURE.md`.
 
 ---
 
-## Entry Points and Process Startup
+## Startup and Deployment
 
-### `main.py`
+`main.py` is a thin entry point. It resolves paths, builds `ModelRegistry` and `ModelManager`, parses CLI args, constructs `StartupController`, and maps typed errors to exit codes.
 
-1. Resolves paths and loads config.
-2. Checks for missing ASR models. In `--server-only` mode: prints missing model names to stderr and exits with code 1 if any are absent (no GUI dialogs).
-3. Constructs `ServerApp` and calls `server_app.start()` — binds the WebSocket server to an OS-assigned port.
-4. **Default mode**: spawns `src/client/client.py` as a subprocess with `--server-url=ws://127.0.0.1:<port>`. Starts a daemon watcher thread calling `client_proc.wait()`, then `server_app.stop()` + `client_proc.terminate()`.
-5. **`--server-only` mode**: blocks on `WsServer.join()`.
+`StartupController.run()` owns startup decisions:
 
-### `src/client/tk/client.py`
+1. validates the environment (default mode verifies the Tauri binary exists; `--server-only` skips)
+2. sets up logging
+3. checks model availability and resolves `StartupDecisions` from CLI args
+4. in `--server-only` with a missing model, auto-downloads or prompts on the CLI
+5. starts web socket server manager `ServerApp`
+6. creates and attaches the recognizer if the model is present, transitions to `running`
+7. in default mode, launches the Tauri client with `--server-url=...` and watches for its exit
+8. in `--server-only` mode, prints the server URL and QR code and stays headless
+9. blocks on the web socker server lifecycle; stops the server
 
-Subprocess entry script. Not intended for direct user invocation. Parses `--server-url`, shows `LoadingWindow`, reads the `session_created` frame, calls `ClientApp.from_session_created()`. See [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md) for the full startup sequence.
 
-### CLI Flags
+### Model availability at startup
 
-| Flag | Effect |
-|---|---|
-| *(default)* | Server + Tk client subprocess |
-| `--server-only` | Headless server; no GUI |
-| `-v` | Verbose logging |
-| `--input-file=path` | `FileAudioSource` replaces `AudioSource` (client-side, for testing) |
+The startup path has two distinct behaviors:
 
----
-
-## Network Protocol (v1)
-
-All wire types are defined in `src/network/types.py`; encode/decode is in `src/network/codec.py`.
-
-### Client → Server
-
-| Type | Wire format | Description |
-|---|---|---|
-| `WsAudioFrame` | Binary | 4-byte little-endian header_len + JSON header + raw float32 PCM payload |
-| `WsControlCommand` | JSON text | `{"type": "control_command", "command": "shutdown", "session_id": ..., "timestamp": ...}` |
-
-### Server → Client
-
-| Type | Wire format | Description |
-|---|---|---|
-| `WsSessionCreated` | JSON text | Sent immediately on connect; contains `session_id`, `protocol_version`, `server_time` |
-| `WsRecognitionResult` | JSON text | `status`: `"partial"` or `"final"`; contains text, timing, chunk_ids, utterance_id, confidence fields |
-| `WsSessionClosed` | JSON text | Reason: `"shutdown"`, `"timeout"`, or `"error"` |
-| `WsError` | JSON text | Non-fatal errors continue the session; `fatal: true` closes the connection |
-
-### Error Codes (`WsError.error_code`)
-
-`INVALID_AUDIO_FRAME`, `UNKNOWN_MESSAGE_TYPE`, `SESSION_ID_MISMATCH`, `BACKPRESSURE_DROP`, `PROTOCOL_VIOLATION`, `INTERNAL_ERROR`
-
-### Session Lifecycle
-
-```
-client connects
-  → server sends session_created (session_id, protocol_version, server_time)
-  → client stamps session_id on all outbound WsAudioFrame headers
-  → server streams recognition_result frames (partial + final)
-  → client sends control_command shutdown (or closes WebSocket)
-  → server sends session_closed, tears down ClientSession
-```
+- if the model already exists, startup creates and attaches the recognizer immediately and the server can move to `running`
+- if the model is missing:
+  - in default mode, the server starts in `waiting_for_model` and the connected Tauri client drives model download over the protocol
+  - in server-only mode, startup can auto-download or prompt on the CLI, depending on flags and TTY availability
 
 ---
 
-## Client Application
+## Server Runtime Topology
 
-The Tk client runs as a subprocess of `main.py`. It has no ASR inference — it captures microphone audio, encodes it as `WsAudioFrame` binary frames, streams them to the server, and receives `WsRecognitionResult` JSON frames in return.
+The Python server is composed of:
 
-The client subprocess is spawned with `--server-url=ws://127.0.0.1:<port>`. A daemon watcher thread in `main.py` monitors it: when the client exits (window closed), the watcher calls `server_app.stop()`. When the server shuts down, `WsClientTransport` receives `ConnectionClosed` and transitions the client to `shutdown`.
+- `ApplicationState`
+  - server lifecycle state machine
+  - valid states: `starting`, `waiting_for_model`, `running`, `shutdown`
 
-Full client architecture: [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md)
+- `ServerApp`
+  - web socket server manager
+  - wires `RecognizerService`, `SessionManager`, `WsServer`, `CommandController`, readiness coordination, and broadcasters
 
----
+- `WsServer`
+  - owns the asyncio WebSocket server
+  - runs on a dedicated daemon thread
 
-## Module Organization
+- `SessionManager`
+  - creates and destroys `ClientSession` instances
+  - owns session map
+  - broadcasts `server_state` transitions to active sessions
+  - handles graceful close and shutdown-wide close
 
-### Root (`src/`)
+- `RecognizerService`
+  - single shared multiplexer for multiple sessions and an ASR inference
+  - routes recognizer output back to the owning session
 
-- **`ApplicationState.py`**: Base class; full state machine (`starting → running ⟷ paused → shutdown`); component + GUI observers; thread-safe mutations. Used as base by `ClientApplicationState`.
-- **`ServerApplicationState.py`**: 3-state server-only state machine (`starting → running → shutdown`); component observers only; no GUI scheduling; no `paused` state.
-- **`RecognitionResultPublisher.py`**: `@runtime_checkable` Protocol with `publish_partial_update()` and `publish_finalization()`. Implemented by `WsResultSender` (server) and `RecognitionResultFanOut` (client).
-- **`SpeechEndRouter.py`**: Routes audio and results between `SoundPreProcessor`, `RecognizerService`, and `IncrementalTextMatcher`; enforces single-in-flight per session.
-- **`types.py`**: `AudioSegment`, `RecognitionResult`, `RecognitionTextMessage`, `RecognizerAck`, `RecognizerFreeSignal`, `SpeechEndSignal`.
-- **`protocols.py`**: `TextRecognitionSubscriber` protocol.
+- per-session workers inside `ClientSession`
+  - `SoundPreProcessor`
+  - `SpeechEndRouter`
+  - `IncrementalTextMatcher`
+  - `WsResultSender`
 
-### Server (`src/server/`)
-
-- **`ServerApp.py`**: Orchestrates `WsServer` + `RecognizerService`; server-mode entry point.
-- **`WsServer.py`**: `websockets.serve()` asyncio loop on a daemon thread; delegates connections to `SessionManager`.
-- **`SessionManager.py`**: Allocates 1-based session indices (atomic); creates and destroys `ClientSession` instances; observes `ServerApplicationState` for shutdown.
-- **`ClientSession.py`**: Owns all per-client queues and pipeline workers; `start()` / `close()` lifecycle.
-- **`RecognizerService.py`**: Single shared inference daemon thread; routes results by `message_id // 10_000_000`; `register_session()` / `unregister_session()` per-session output queues.
-- **`WsAudioReceiver.py`**: Async coroutine running inside the WS connection handler; decodes binary `WsAudioFrame` → puts audio dicts onto `ClientSession.chunk_queue`; sends `BACKPRESSURE_DROP` error if queue is full.
-- **`WsResultSender.py`**: Implements `RecognitionResultPublisher` protocol; sync-to-async bridge via bounded `asyncio.Queue(20)`; single drain async task sends JSON to the client WebSocket.
-
-### Network (`src/network/`)
-
-- **`types.py`**: `WsAudioFrame`, `WsControlCommand`, `WsSessionCreated`, `WsRecognitionResult`, `WsSessionClosed`, `WsError`; union aliases `ServerMessage`, `ClientTextMessage`.
-- **`codec.py`**: `encode_audio_frame()`, `decode_audio_frame()`, `encode_server_message()`, `decode_client_message()`.
-
-### Client (`src/client/tk/`)
-
-The Tk GUI client subprocess. Handles mic capture, WebSocket audio streaming, recognition result rendering, text insertion, and quick-entry popup. Full module organization: [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md).
-
-### Shared Processing (server-side at runtime)
-
-- **`src/sound/`**: `SoundPreProcessor`, `GrowingWindowAssembler` — server-side; one instance per `ClientSession`.
-- **`src/asr/`**: `Recognizer` (pure callable; see note below), `VoiceActivityDetector` (stateful, one per session), `ModelManager`, `ExecutionProviderManager`, `SessionOptionsFactory`, `SessionOptionsStrategy`, `DownloadProgressReporter`.
-- **`src/postprocessing/`**: `IncrementalTextMatcher`, `PostRecognitionFilter`, `TextNormalizer`.
+- server-wide protocol broadcast helpers
+  - `DownloadProgressNotifier`
 
 ---
 
-## Architecture Diagram
+## Session and Audio Pipeline
 
-### Server-Side Session Pipeline
+Each websocket connection gets one `ClientSession`. ClientSession instance owns stateful per-client processing objects.
 
-```
-┌──────────────────────────────────────────────────────────────────────────┐
-│  SERVER PROCESS                                                           │
-│  asyncio event loop thread (WsServer)                                     │
-│    WsAudioReceiver coroutine (per session)                                │
-│      ← binary WsAudioFrame from client                                    │
-│      → chunk_queue (per session, maxsize=100)                             │
-├──────────────────────────────────────────────────────────────────────────┤
-│  Per-Session Daemon Threads (owned by ClientSession)                      │
-│                                                                           │
-│  SoundPreProcessor thread                                                 │
-│    ← chunk_queue.get()                                                    │
-│    → _normalize_rms() → VoiceActivityDetector.process_frame()            │
-│    → GrowingWindowAssembler.process_segment() [sync, no thread]          │
-│    → speech_queue (AudioSegment + SpeechEndSignal)                        │
-│                                                                           │
-│  SpeechEndRouter thread                                                   │
-│    ← speech_queue.get()                                                   │
-│    → assigns message_id = session_index * 10_000_000 + local_id          │
-│    → RecognizerService.input_queue (shared across all sessions)           │
-│    ← recognizer_output_queue (per session, keyed by session_index)       │
-│    → matcher_queue (RecognitionResult + SpeechEndSignal)                  │
-│                                                                           │
-│  IncrementalTextMatcher thread                                            │
-│    ← matcher_queue.get()                                                  │
-│    → overlap resolution, duplicate detection                              │
-│    → WsResultSender.publish_partial_update / publish_finalization         │
-├──────────────────────────────────────────────────────────────────────────┤
-│  Server-Global                                                            │
-│                                                                           │
-│  RecognizerService daemon thread (shared, one per server)                 │
-│    ← input_queue.get() (AudioSegment from any session)                   │
-│    → Recognizer.recognize_window(segment) [blocking inference]            │
-│    → session_index = message_id // 10_000_000                            │
-│    → session_output_queues[session_index].put_nowait(result / ack)        │
-│                                                                           │
-│  WsResultSender (per session, asyncio task in WsServer loop)              │
-│    ← publish_*() calls from IncrementalTextMatcher thread                 │
-│    → loop.call_soon_threadsafe → asyncio.Queue(20) → websocket.send()    │
-│    → JSON WsRecognitionResult frame → client                             │
-└──────────────────────────────────────────────────────────────────────────┘
+```text
+audio websocket frame
+  -> WsAudioReceiver
+  -> ClientSession.chunk_queue
+  -> SoundPreProcessor
+  -> speech_queue
+  -> SpeechEndRouter
+  -> RecognizerService.input_queue
+  -> RecognizerService inference thread
+  -> recognizer_output_queue
+  -> IncrementalTextMatcher
+  -> WsResultSender
+  -> websocket text frames
 ```
 
-### Client-Side Pipeline
+### `SoundPreProcessor`
 
-See [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md) for the client-side pipeline diagram.
+Responsibilities:
 
-### Process Startup Sequence
+- consume raw audio chunks from `chunk_queue`
+- apply normalization and VAD
+- emit `AudioSegment` windows
+- emit `SpeechEndSignal` boundaries
 
-```
-main.py
-  → ServerApp.start()
-      → WsServer: asyncio loop binds port P (OS-assigned)
-      → RecognizerService.start() (inference daemon thread)
-  → subprocess.Popen(["python", "src/client/tk/client.py", "--server-url=ws://127.0.0.1:P"])
-  → daemon watcher thread: client_proc.wait() → server_app.stop()
+It uses `GrowingWindowAssembler` synchronously, not as a separate thread.
 
-src/client/tk/client.py (subprocess)
-  → (see src/client/tk/ARCHITECTURE.md for client startup sequence)
-```
+### `SpeechEndRouter`
 
----
+Responsibilities:
 
-## Threading Model
+- process in-flight signals
+- assign monotonically increasing message IDs
+- hold speech-end boundaries until the corresponding in-flight work is acknowledged
+- route recognizer output to the matcher queue in protocol-safe order
 
-### Server Process Threads
+Message IDs are session-partitioned:
 
-| Component | Thread Type | Purpose | Blocking Operations |
-|---|---|---|---|
-| **WsServer** | Daemon (asyncio event loop) | Accept WS connections; run session handler coroutines | `asyncio.sleep()`, WS I/O |
-| **WsAudioReceiver** | Async coroutine (WsServer loop) | Decode binary frames → `chunk_queue` per session | `websocket.__aiter__()` |
-| **WsResultSender._drain_loop** | Async task (WsServer loop, per session) | Drain bounded queue → `websocket.send()` | `asyncio.Queue.get()`, `websocket.send()` |
-| **RecognizerService** | Daemon (one, shared) | Sequential ASR inference; route results by session_index | `input_queue.get(timeout=0.1)`, `recognize_window()` |
-| **SoundPreProcessor** | Daemon (per session) | VAD, RMS normalization, speech buffering | `chunk_queue.get(timeout=0.1)`, `speech_queue.put()` |
-| **GrowingWindowAssembler** | **No thread** | Grow recognition windows (sync call from SPP) | Called synchronously by SoundPreProcessor |
-| **SpeechEndRouter** | Daemon (per session) | Assign message IDs; enforce in-flight ordering | `speech_queue.get(timeout=0.1)`, `recognizer_output_queue.get()` |
-| **IncrementalTextMatcher** | Daemon (per session) | Overlap resolution; publish via WsResultSender | `matcher_queue.get(timeout=0.1)` |
-| **SessionManager** | **No thread** | Creates/destroys ClientSession on connect/disconnect; observes ServerApplicationState | — |
-| **ServerApplicationState** | **No thread** | Thread-safe state; 3 states | `threading.Lock` |
+- `message_id = session_index * 10_000_000 + local_id`
 
-### Client Process Threads
+That lets `RecognizerService` recover the owning session with:
 
-See [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md) for the client threading model.
+- `session_index = message_id // 10_000_000`
 
----
+### `RecognizerService`
 
-## Application State
+Responsibilities:
 
-### ServerApplicationState
+- own the single shared inference thread
+- read `AudioSegment` items from the shared input queue
+- call `recognize_window()`
+- route `RecognitionTextMessage` and terminal `RecognizerAck` to the correct session output queue
 
-**File:** `src/ServerApplicationState.py`
 
-**Responsibility:** Server lifecycle management — no GUI, no `paused` state.
+### `IncrementalTextMatcher`
 
-**State machine:** `starting → running → shutdown`
+Responsibilities:
 
-**Observer types:** Component observers only (called directly; no `root.after()` scheduling).
+- resolve overlap between successive recognition windows
+- suppress duplicates
+- emit partial and final text updates
 
-**Observed by:** `RecognizerService` (stops inference thread on shutdown), `SessionManager` (closes all sessions on shutdown), `SoundPreProcessor` and `SpeechEndRouter` per session (stop on shutdown).
+It publishes to `WsResultSender`, which is the server-side bridge from synchronous pipeline code to async websocket sends.
 
-### ClientApplicationState
+### `WsResultSender`
 
-See [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md) for the `ClientApplicationState` documentation.
+Responsibilities:
+
+- accept sync-thread publish calls
+- enqueue encoded messages onto a bounded async send queue
+- run one async drain task per session
+- support `wait_for_drain()` / `flush()` for ordered session startup and graceful close
 
 ---
 
-## Data Flow with Types
+## Session Lifecycle
 
-### Pipeline Types (`src/types.py`)
+### Connect flow
 
-```python
-@dataclass
-class AudioSegment:
-    type: Literal['incremental']
-    data: npt.NDArray[np.float32]       # Speech audio samples
-    left_context: npt.NDArray[np.float32]
-    right_context: npt.NDArray[np.float32]  # Always empty from SoundPreProcessor
-    start_time: float
-    end_time: float
-    chunk_ids: list[int]
-    message_id: int | None = None        # Set by SpeechEndRouter
-    utterance_id: int = 0               # Set by SpeechEndRouter
+When a client connects:
 
-@dataclass
-class RecognitionResult:
-    text: str
-    start_time: float
-    end_time: float
-    chunk_ids: list[int]
-    utterance_id: int = 0
-    confidence: float = 0.0
-    token_confidences: list[float]
-    audio_rms: float = 0.0
-    confidence_variance: float = 0.0
-```
+1. `WsServer` accepts the connection
+2. `SessionManager.create_session()` creates a `ClientSession`
+3. `ClientSession.start()` registers the session with `RecognizerService` and starts its workers
+4. the server queues two welcome messages through the session's send queue:
+   - `session_created`
+   - `server_state`
+5. the send queue is flushed
+6. only after that is the session added to the active-session map
 
-Also: `SpeechEndSignal`, `RecognitionTextMessage(result, message_id)`, `RecognizerAck(message_id, ok, error)`, `RecognizerFreeSignal`.
+This ordering matters: it guarantees `session_created` is the first frame the client sees, and prevents `server_state` broadcasts from interleaving ahead of the connect-time welcome pair.
 
-### Wire Protocol Types (`src/network/types.py`)
+### Audio acceptance
 
-See [Network Protocol (v1)](#network-protocol-v1) above. Key types: `WsAudioFrame`, `WsControlCommand`, `WsSessionCreated`, `WsRecognitionResult`, `WsSessionClosed`, `WsError`.
+`WsAudioReceiver` accepts audio only while the server is in `running`.
 
-### Server-Side Data Transformation
+If the server is in `starting`, `waiting_for_model`, or `shutdown`, audio is rejected with:
 
-```
-WsAudioReceiver (async)
-  ← binary WsAudioFrame
-  → dict {audio: ndarray, timestamp: float, chunk_id: int} → chunk_queue
+- `MODEL_NOT_READY`
 
-SoundPreProcessor
-  → RMS normalization + VAD → context buffering → speech buffering
-  → GrowingWindowAssembler.process_segment() [sync]
-      → AudioSegment (type='incremental', growing window) → speech_queue
-  → SpeechEndSignal → speech_queue (utterance boundary)
+If the binary frame contains the wrong `session_id`, the error is:
 
-SpeechEndRouter
-  → AudioSegment: assigns message_id, puts on RecognizerService.input_queue
-  → SpeechEndSignal: held until matching RecognizerAck received
+- `SESSION_ID_MISMATCH`
 
-RecognizerService
-  → recognize_window(segment) → optional RecognitionResult
-  → RecognitionTextMessage + RecognizerAck → session recognizer_output_queue
+If `chunk_queue` is full, the error is:
 
-SpeechEndRouter (from recognizer_output_queue)
-  → RecognitionResult → matcher_queue
-  → SpeechEndSignal released → matcher_queue
-  → RecognizerFreeSignal → control_queue (unblocks SoundPreProcessor)
+- `BACKPRESSURE_DROP`
 
-IncrementalTextMatcher
-  → overlap resolution, duplicate detection
-  → WsResultSender.publish_partial_update(result)
-  → WsResultSender.publish_finalization(result)
+### Graceful close
 
-WsResultSender
-  → encode as WsRecognitionResult JSON
-  → asyncio.Queue(20) → websocket.send() → client
-```
+Client-initiated close uses:
 
-### Client-Side Data Transformation
+- `control_command(command="close_session")`
 
-See [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md) for the client-side data flow.
+The graceful close path:
+
+1. stops new ingress from `SoundPreProcessor`
+2. waits for pending recognizer work via `RecognizerService.flush_session(...)`
+3. waits for matcher and sender queues to drain
+4. sends `session_closed`
+5. stops session workers and unregisters the session
+
+Server-side error handling reuses the same graceful close path with `reason="error"`.
+
+### Shutdown flow
+
+When `ServerApp.stop()` transitions `ApplicationState` to `shutdown`:
+
+- `SessionManager` fans out `server_state=shutdown`
+- `SessionManager.close_all_sessions()` closes active sessions gracefully
+- each session attempts to send `session_closed(reason="error", message="server shutdown")`
+- `WsServer` then stops serving
 
 ---
 
-## Component Details
+## Protocol Surface
 
-### Hardware Acceleration Architecture
+Protocol dataclasses live in `src/network/types.py`. Codec logic lives in `src/network/codec.py`.
 
-Uses **Strategy Pattern** for hardware-specific ONNX Runtime optimizations.
+### Client -> Server
 
-**Components:**
-- **ExecutionProviderManager**: DXGI-based GPU detection (discrete > integrated priority)
-- **SessionOptionsFactory**: Creates hardware-specific strategy
-- **SessionOptionsStrategy**: Configures session options per hardware type
+- binary `audio_chunk` via `WsAudioFrame`
+- JSON `control_command` via `WsControlCommand`
 
-**Hardware Configurations:**
-- **Integrated GPU** (UMA): Zero-copy shared memory, disable CPU arena
-- **Discrete GPU** (PCIe): Staging buffer with CPU arena
-- **CPU**: Multi-threaded execution (auto-detect cores)
+Supported control commands:
 
-**Configuration:** `recognition.inference = "auto" | "directml" | "cpu"` with DirectML GPU → CPU fallback
+- `close_session`
+- `list_models`
+- `download_model`
 
----
+### Server -> Client
 
-### ServerApp
+- `session_created`
+- `server_state`
+- `recognition_result`
+- `session_closed`
+- `error`
+- `model_list`
+- `model_status`
+- `download_progress`
 
-**File:** `src/server/ServerApp.py`
+### Server state values
 
-**Responsibility:** Top-level server orchestrator. Creates `WsServer` and `RecognizerService`, manages server lifecycle, exposes `start()` / `stop()`.
+- `starting`
+- `waiting_for_model`
+- `running`
+- `shutdown`
 
----
+### Error codes currently used
 
-### WsServer
-
-**File:** `src/server/WsServer.py`
-
-**Responsibility:** WebSocket server lifecycle. Runs `websockets.serve()` on a dedicated asyncio event loop daemon thread. On each new connection, delegates to `SessionManager.handle_connection()`.
-
----
-
-### SessionManager
-
-**File:** `src/server/SessionManager.py`
-
-**Responsibility:** Session allocation and lifecycle management.
-
-**Behavior:**
-- Maintains a 1-based atomic `session_index` counter (protected by `threading.Lock`).
-- On connect: creates `ClientSession`, calls `session.start()`, sends `WsSessionCreated` JSON frame.
-- On disconnect or shutdown command: calls `session.close()`.
-- Observes `ServerApplicationState`: on `shutdown` closes all active sessions.
+- `INVALID_AUDIO_FRAME`
+- `UNKNOWN_MESSAGE_TYPE`
+- `SESSION_ID_MISMATCH`
+- `BACKPRESSURE_DROP`
+- `INTERNAL_ERROR`
+- `MODEL_NOT_READY`
+- `DOWNLOAD_IN_PROGRESS`
+- `INVALID_MODEL_NAME`
 
 ---
 
-### ClientSession
+## Server-Controlled Model Download Flow
 
-**File:** `src/server/ClientSession.py`
+Model download is part of the live protocol, not just startup bootstrapping.
 
-**Responsibility:** Owns and orchestrates all per-client pipeline components and queues.
+### Request handling
 
-**Queues (all `maxsize=100`):** `chunk_queue`, `speech_queue`, `recognizer_output_queue`, `matcher_queue`, `control_queue`.
+`CommandController` handles:
 
-**`start()` order:** register with `RecognizerService` → `WsResultSender.start()` → `SoundPreProcessor.start()` → `SpeechEndRouter.start()` → `IncrementalTextMatcher.start()`.
+- `list_models`
+- `download_model`
+- `close_session`
 
-**`close()` order:** `SoundPreProcessor.stop()` → `SpeechEndRouter.stop()` + join → `IncrementalTextMatcher.stop()` + join → `WsResultSender.stop()` → unregister from `RecognizerService`.
+For `download_model`:
 
----
+- if the model is already present, it returns `model_status(status="ready")`
+- if a new download starts, it returns `model_status(status="downloading")`
+- if another download is already in progress, it returns `DOWNLOAD_IN_PROGRESS`
+- if the name is invalid, it returns `INVALID_MODEL_NAME`
 
-### RecognizerService
+If a model is already present but the recognizer is not attached yet, the command path also triggers `ensure_model_ready(...)` so the server can still recover to `running`.
 
-**File:** `src/server/RecognizerService.py`
+### Progress and completion
 
-**Responsibility:** Single shared ASR inference thread; session-prefixed result routing.
+`DownloadWorker` runs on a worker thread outside the websocket loop. `DownloadProgressNotifier` receives worker-thread callbacks and publishes `download_progress` events through `IServerMessageBroadcaster`, which is implemented by `SessionManager`.
 
-**Thread loop:**
-1. `input_queue.get(timeout=0.1)` — blocks until `AudioSegment` arrives.
-2. `recognizer.recognize_window(segment)` — the long blocking inference call.
-3. `session_index = segment.message_id // 10_000_000`
-4. Routes `RecognitionTextMessage` (if result non-None) + `RecognizerAck` (always) to `session_output_queues[session_index].put_nowait()`. Drops and logs if session is no longer registered.
+Broadcast delivery follows the same server send path as normal session messages:
 
-Observes `ServerApplicationState`; stops inference thread on `shutdown`.
+1. `DownloadProgressNotifier` emits a server message through `IServerMessageBroadcaster`
+2. `SessionManager.broadcast(...)` snapshots active sessions and fans out the encoded frame
+3. `ClientSession.send_encoded(...)` forwards the frame to `WsResultSender`
+4. `WsResultSender._enqueue(...)` performs the thread-safety handoff into the per-session async send queue
 
----
+Progress behavior:
 
-### WsAudioReceiver
+- intermediate `download_progress(status="downloading")` updates are throttled
+- final `complete` and `error` updates are always emitted
+- broadcasts iterate active sessions and enqueue frames onto each session's existing send queue
 
-**File:** `src/server/WsAudioReceiver.py`
+### Attach-on-download success
 
-**Responsibility:** Async coroutine; bridges WebSocket binary frames to the synchronous `chunk_queue`.
+On successful download:
 
-**Behavior:**
-- Iterates the WebSocket for binary frames; decodes each as `WsAudioFrame` using `decode_audio_frame()`.
-- Puts `{audio, timestamp, chunk_id}` dict onto `ClientSession.chunk_queue` via `put_nowait()`.
-- If `chunk_queue` is full: sends `WsError(BACKPRESSURE_DROP)` and continues (non-fatal).
-- Text frames decoded as `WsControlCommand`; `"shutdown"` command triggers session close.
-- `ConnectionClosed`: exits cleanly.
-
----
-
-### WsResultSender
-
-**File:** `src/server/WsResultSender.py`
-
-**Responsibility:** Sync-to-async bridge; implements `RecognitionResultPublisher` protocol.
-
-**Design:** Holds a bounded `asyncio.Queue(maxsize=20)`. A single async drain task (`_drain_loop`) calls `await websocket.send(encoded)`. Sync callers (`publish_partial_update`, `publish_finalization`) use `loop.call_soon_threadsafe(queue.put_nowait, encoded)`. If queue is full, the item is dropped and logged (backpressure; no priority discrimination).
+1. `ServerApp` attempts to attach the recognizer
+2. if attachment succeeds:
+   - broadcast `download_progress(status="complete")`
+   - if the server was `waiting_for_model`, transition to `running`
+3. if attachment fails:
+   - broadcast `download_progress(status="error")`
+   - remain out of `running`
 
 ---
 
-### RecognitionResultPublisher (Protocol)
+## State Broadcasting
 
-**File:** `src/RecognitionResultPublisher.py`
+The server has two main broadcast flows:
 
-**Responsibility:** Structural protocol defining the publisher interface. Any object with `publish_partial_update()` and `publish_finalization()` satisfies it.
+### `SessionManager`
 
-```python
-@runtime_checkable
-class RecognitionResultPublisher(Protocol):
-    def publish_partial_update(self, result: RecognitionResult) -> None: ...
-    def publish_finalization(self, result: RecognitionResult) -> None: ...
-```
+- observes `ApplicationState`
+- encodes `server_state`
+- snapshots its active session map
+- implements `IServerMessageBroadcaster`
+- exposes `broadcast(...)` as the shared fanout path
+- enqueues the encoded frame onto each session's send queue
 
-**Implementations:**
-- `WsResultSender` (server): encodes results as JSON and sends over WebSocket.
-- `RecognitionResultFanOut` (client): fans out to local subscribers — see [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md).
+### `DownloadProgressNotifier`
 
----
+- receives threaded download callbacks
+- throttles progress updates per model
+- publishes through `IServerMessageBroadcaster`
+- relies on `SessionManager.broadcast(...)` and `ClientSession.send_encoded(...)` for fanout
+- relies on `WsResultSender._enqueue(...)` for thread-safe queue handoff
 
-### SoundPreProcessor
-
-**File:** `src/sound/SoundPreProcessor.py`
-
-**Responsibility:** VAD processing, RMS normalization, context-aware speech buffering, windower orchestration. **Server-side only** — one instance per `ClientSession`.
-
-**Input:** Audio dicts from `chunk_queue` (fed by `WsAudioReceiver`).
-**Output:** `AudioSegment` + `SpeechEndSignal` → `speech_queue`.
-
-**Key Features:**
-- RMS normalization with temporal AGC before VAD.
-- 20-chunk circular context buffer (640ms) for left context.
-- 3-chunk consecutive speech confirmation prevents false positives.
-- Intelligent breakpoint splitting on max duration reached.
-- Observer behavior: on pause → flush pending segments.
+The design intentionally avoids a separate global broadcast queue. Per-session ordering is preserved by reusing each `ClientSession`'s existing outbound queue.
 
 ---
 
-### GrowingWindowAssembler
+## Threading and Concurrency
 
-**File:** `src/sound/GrowingWindowAssembler.py`
+### Server threads and tasks
 
-**Responsibility:** Assemble speech segments into growing recognition windows. **Server-side only** — one instance per `ClientSession`. **No thread** — called synchronously by `SoundPreProcessor`.
+- `WsServer`
+  - dedicated daemon thread
+  - owns the asyncio event loop
 
-**Strategy:** Each segment extends the current window (emits as `type='incremental'`). Windows grow up to `max_window_duration`; oldest segments dropped when exceeded. Flush emits remaining segments with right context.
+- websocket connection handlers
+  - coroutines on the `WsServer` loop
 
----
+- `WsResultSender._drain_loop`
+  - async task per session on the `WsServer` loop
 
-### Recognizer
+- `RecognizerService`
+  - one daemon inference thread for the whole server
 
-**File:** `src/asr/Recognizer.py`
+- `SoundPreProcessor`
+  - one thread per session
 
-**Responsibility:** Convert audio to text using hardware-accelerated STT model. In server mode, `RecognizerService` calls **only** `recognize_window()` — the Recognizer's own thread, input queue, and `app_state` observer are **not used**.
+- `SpeechEndRouter`
+  - one thread per session
 
-**Model:** Parakeet ONNX (`nemo-parakeet-tdt-0.6b-v3`, FP16) with `TimestampedResultsAsrAdapter`.
+- `IncrementalTextMatcher`
+  - one thread per session
 
-**Hardware Acceleration:** DirectML GPU (auto-select) → CPU fallback.
+- `DownloadWorker`
+  - worker thread used by model download handling
 
-**Context-Aware Recognition:**
-- Concatenates `left_context + data` for better acoustic modeling.
-- Filters tokens by timestamp to exclude context hallucinations.
-- 0.37s tolerance for VAD warm-up delay.
+### Important thread-safe bridges
 
----
-
-### IncrementalTextMatcher
-
-**File:** `src/postprocessing/IncrementalTextMatcher.py`
-
-**Responsibility:** Handle overlapping text from sliding windows; publish results via `RecognitionResultPublisher`. **Server-side only** — one per `ClientSession`. Output goes to `WsResultSender`.
-
-**Key Features:**
-- Overlap resolution using normalized text matching and longest common subsequence.
-- Duplicate detection (0.6s time threshold, normalized text comparison).
-- Routes by message type: `RecognitionResult` for overlap handling; `SpeechEndSignal` for boundary finalization.
+- pipeline threads -> per-session async websocket send queue (`WsResultSender`)
+- download worker thread -> `DownloadProgressNotifier` -> `IServerMessageBroadcaster` -> `SessionManager.broadcast(...)` -> `ClientSession.send_encoded(...)` -> `WsResultSender._enqueue(...)`
+- `ApplicationState` observers -> synchronous notifications outside the state lock
 
 ---
 
-## Design Principles
+## System Boundary
 
-### 1. Single Responsibility Principle (SRP)
+The Python server is authoritative for:
 
-Each component has one clear responsibility:
-- **SoundPreProcessor**: VAD, normalization, speech buffering (server-side, per session)
-- **GrowingWindowAssembler**: Growing window assembly (server-side, sync, per session)
-- **RecognizerService**: Shared ASR inference + session routing (server-side, global)
-- **IncrementalTextMatcher**: Text overlap resolution and result publishing (server-side, per session)
-- **RecognitionResultPublisher**: Protocol interface for result delivery
-- **WsResultSender**: Sync-to-async bridge to client WebSocket (server-side)
-- Client-side components: see [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md)
+- readiness to accept audio
+- model availability state
+- recognition lifecycle
+- graceful session close behavior
+- session teardown and shutdown ordering
 
-### 2. Open/Closed Principle (OCP)
+The Tauri client is authoritative for:
 
-Extension without modification: add new `RecognitionResultPublisher` implementations (e.g., a logging adapter) or new `TextRecognitionSubscriber` instances without changing existing code.
+- local audio capture
+- client UI and desktop behavior
+- rendering transcript and model-download state
+- local quick-entry and insertion features
 
-### 3. Dependency Inversion Principle (DIP)
-
-Components depend on abstractions: `RecognitionResultPublisher` Protocol (not concrete class), `TextRecognitionSubscriber` Protocol, windower interface. `IncrementalTextMatcher` accepts any object satisfying the protocol.
-
-### 4. Type Safety
-
-Strongly-typed dataclasses with discriminated unions enable static checking. Wire types in `src/network/types.py` are separate from internal pipeline types in `src/types.py`.
-
-### 5. Hardware Abstraction
-
-Strategy Pattern isolates ONNX Runtime hardware optimizations (`IntegratedGPUStrategy`, `DiscreteGPUStrategy`, `CPUStrategy`) from the recognition pipeline.
-
-### 6. Observer Pattern for State Management
-
-`ServerApplicationState` notifies component observers only (no GUI). Thread-safe: mutations locked, notifications outside lock. Client-side observer behavior (GUI scheduling, pause/resume) is documented in [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md).
-
-### 7. Observer Pattern → Protocol for Result Distribution
-
-`RecognitionResultPublisher` is a structural `Protocol` (not a concrete class). `WsResultSender` implements it server-side (sends over WebSocket). Client-side implementation (`RecognitionResultFanOut`) is documented in [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md).
-
-### 8. Process Isolation and Network Protocol
-
-The server owns all ASR inference (GPU stays in the server process). The client owns all GUI and keyboard simulation. The boundary is a local WebSocket with a versioned binary + JSON protocol (`src/network/`). Isolation means future non-Tk clients (CLI, web) can connect without any server changes.
+Client-specific details live in `src/client/tauri/ARCHITECTURE.md`.
 
 ---
 
-## Conclusion
+## Appendix: Server Code Entity Catalogue by Layer
 
-### Key Innovations
+A cross-reference of server entities grouped by architectural roles.
+Client code, tests, and build scripts are excluded.
 
-**Context Buffer Strategy:**
-- 20-chunk circular buffer (640ms) captures pre-speech audio.
-- Left context snapshot immune to buffer wraparound.
-- Enables better STT for short words (<100ms) without hallucinations.
+### Layer 1 — System / Infrastructure
 
-**Hard-Cut Splitting:**
-- Max duration triggers a hard cut: full buffer emitted, reset, stays in `ACTIVE_SPEECH`.
-- No silence search; `right_context` is always empty from `SoundPreProcessor`.
+*Direct interaction with OS, filesystem, network, Inference Runtime, logging, CLI.*
 
-**Timestamped Token Filtering:**
-- Context concatenation: `left_context + data`.
-- Token-level timestamp alignment from `TimestampedResultsAsrAdapter`.
-- 0.37s tolerance for VAD warm-up delay.
-- Removes context hallucinations from silence padding.
+Shared:
+- [src/PathResolver.py](src/PathResolver.py) — `PathResolver`, `ResolvedPaths`, `DistributionMode`; MSIX/portable/development path resolution
+- [src/LoggingSetup.py](src/LoggingSetup.py) — `setup_logging()` (file rotation + console)
+- [src/StartupArgs.py](src/StartupArgs.py) — `StartupArgs` dataclass, `from_argv()` (CLI parsing)
+- [src/LicenseCollector.py](src/LicenseCollector.py) — `LicenseCollector`
 
-**Consecutive Speech Logic:**
-- 3-chunk confirmation prevents false positives.
-- Reduces transient noise triggering while preserving responsiveness.
+Server I/O (see *Server Runtime Topology* for roles):
+- [src/server/WsServer.py](src/server/WsServer.py) — `WsServer`
+- [src/server/WsAudioReceiver.py](src/server/WsAudioReceiver.py) — `handle_audio_frame()`
+- [src/server/WsResultSender.py](src/server/WsResultSender.py) — `WsResultSender`, `_SupportsAsyncSend` protocol
+- [src/server/qr_display.py](src/server/qr_display.py) — `print_qr_code()`, `_build_matrix()`, `_render()` (terminal QR output)
 
-**Observer-Based State Management:**
-- Lock-protected mutations; notifications outside lock to prevent deadlocks.
-- `ServerApplicationState`: component observers only. Client-side observer behavior (GUI scheduling, pause/resume) is in [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md).
+ASR infrastructure:
+- [src/asr/ModelLoader.py](src/asr/ModelLoader.py) — `load_model()`, `ModelLoadError` (ONNX load + exception translation)
+- [src/asr/VoiceActivityDetector.py](src/asr/VoiceActivityDetector.py) — `VoiceActivityDetector` (Silero VAD ONNX session)
+- [src/asr/ExecutionProviderManager.py](src/asr/ExecutionProviderManager.py) — `ExecutionProviderManager` (DirectML/CPU detection & fallback)
 
-**Protocol-Based Result Distribution:**
-- `RecognitionResultPublisher` is a structural Protocol — enables `WsResultSender` (server) and `RecognitionResultFanOut` (client) to satisfy the same interface.
+Model download I/O:
+- [src/downloader/ModelDownloader.py](src/downloader/ModelDownloader.py) — `ModelDownloader` (CDN HTTP fetch, atomic manifest write, partial-file cleanup)
+- [src/downloader/ModelDownloadCliDialog.py](src/downloader/ModelDownloadCliDialog.py) — `ModelDownloadCliDialog` (terminal yes/no prompt used by `StartupController` in `--server-only` mode)
 
-**Session-Prefixed Message ID Routing:**
-- `session_index * 10_000_000 + local_id` partitions the ID space.
-- `RecognizerService` routes results by pure arithmetic (`message_id // 10_000_000`) — no routing table lock on the hot path.
-- Capacity: ~57 hours of speech before rollover per session.
+### Layer 2 — Protocol / Wire
 
-**Sync-to-Async Bridges:**
-- `WsResultSender` (server → client): sync callers cross the thread boundary via `loop.call_soon_threadsafe(queue.put_nowait, item)`; an async drain task delivers items without ever blocking the sync caller. Bounded queue (maxsize=20) with drop-and-log backpressure.
-- `WsClientTransport` (client → server): same pattern — see [`src/client/tk/ARCHITECTURE.md`](src/client/tk/ARCHITECTURE.md).
+*Message types and codecs. See also* **Protocol Surface** *above.*
 
-**Two-Process Model:**
-- Server handles GPU inference; client handles GUI and mic capture.
-- Subprocess watcher in `main.py` ensures co-lifecycle: client exit stops server; server exit stops client via `ConnectionClosed`.
-- `--server-only` mode enables headless/MSIX deployment with external WebSocket clients.
+- [src/network/types.py](src/network/types.py) — `WsAudioFrame`, `WsControlCommand`, `WsSessionCreated`, `WsRecognitionResult`, `WsSessionClosed`, `WsServerState`, `WsError`, `WsModelInfo`, `WsModelList`, `WsModelStatus`, `WsDownloadProgress`; `ClientTextMessage`/`ServerMessage` unions
+- [src/network/codec.py](src/network/codec.py) — `SessionIdMismatchError`, `decode_audio_frame()`, `encode_server_message()`, `decode_client_message()`
+- [src/server/protocols.py](src/server/protocols.py) — `IModelCommandHandler`, `IDownloadProgressEvents`, `IModelReadinessCoordinator`, `IServerMessageBroadcaster` protocols
+- [src/server/WsMessageRouter.py](src/server/WsMessageRouter.py) — `RoutedAudioMessage`, `RoutedCommandMessage`, `RoutedProtocolError`; `route_incoming_message()`
+- [src/server/broadcast.py](src/server/broadcast.py) — `_SHUTDOWN` sentinel
+
+### Layer 3 — Model / Domain
+
+*Pure logic: algorithms, DTOs, protocol/interface definitions.*
+
+Shared DTOs & interfaces:
+- [src/types.py](src/types.py) — `AudioSegment`, `SpeechEndSignal`, `RecognitionResult`, `RecognitionTextMessage`, `RecognizerAck`, `RecognizerFreeSignal`, `DisplayInstructions`; queue-item aliases `ChunkQueueItem`, `SpeechQueueItem`, `RecognizerOutputItem`, `MatcherQueueItem`, `RouterControlItem`
+- [src/protocols.py](src/protocols.py) — `TextRecognitionSubscriber` protocol
+- [src/RecognitionResultPublisher.py](src/RecognitionResultPublisher.py) — `RecognitionResultPublisher` protocol
+
+Audio / ASR domain logic (see *Session and Audio Pipeline* for responsibilities):
+- [src/sound/SoundPreProcessor.py](src/sound/SoundPreProcessor.py) — `ProcessingStatesEnum`, `AudioProcessingState`, `SoundPreProcessor`¹
+- [src/sound/GrowingWindowAssembler.py](src/sound/GrowingWindowAssembler.py) — `GrowingWindowAssembler`
+- [src/asr/Recognizer.py](src/asr/Recognizer.py) — `Recognizer` (inference + confidence extraction)¹
+- [src/asr/ModelDefinitions.py](src/asr/ModelDefinitions.py) — `IModelDefinition`, `ModelStatus`, `BaseModelDefinition`, `ParakeetAsrModel`, `SileroVadModel`
+
+Post-recognition text logic:
+- [src/postprocessing/IncrementalTextMatcher.py](src/postprocessing/IncrementalTextMatcher.py) — `IncrementalTextMatcher`¹ (see *Session and Audio Pipeline*)
+- [src/postprocessing/TextNormalizer.py](src/postprocessing/TextNormalizer.py) — `TextNormalizer` (case / punctuation / Unicode normalization for duplicate detection)
+- [src/postprocessing/PostRecognitionFilter.py](src/postprocessing/PostRecognitionFilter.py) — `PostRecognitionFilter` (filler-word and confidence-gated word filtering)
+
+¹ *`SoundPreProcessor`, `Recognizer`, and `IncrementalTextMatcher` each own a worker thread; the signal-processing or text-matching algorithm is their reason-to-exist.*
+
+### Layer 4 — Service / Orchestration
+
+*Composes domain objects, owns lifecycle, coordinates threads/tasks, wires queues.*
+
+Shared / top-level:
+- [src/ApplicationState.py](src/ApplicationState.py) — `ApplicationState` (see *Server Runtime Topology*)
+- [src/SpeechEndRouter.py](src/SpeechEndRouter.py) — `SpeechEndRouter` (see *Session and Audio Pipeline*)
+
+Server services (see *Server Runtime Topology*):
+- [src/server/SessionManager.py](src/server/SessionManager.py) — `SessionManager`
+- [src/server/ClientSession.py](src/server/ClientSession.py) — `ClientSession`
+- [src/server/RecognizerService.py](src/server/RecognizerService.py) — `RecognizerService`, `_SessionDrainState`, `_RecognizerInputQueue`
+- [src/server/RecognizerReadinessCoordinator.py](src/server/RecognizerReadinessCoordinator.py) — `RecognizerReadinessCoordinator` (deferred recognizer attach and post-download readiness)
+- [src/server/CommandController.py](src/server/CommandController.py) — `CommandController` (see *Server-Controlled Model Download Flow*)
+- [src/server/ModelCommandHandler.py](src/server/ModelCommandHandler.py) — `ModelCommandHandler`
+- [src/server/DownloadProgressNotifier.py](src/server/DownloadProgressNotifier.py) — `DownloadProgressNotifier`
+
+ASR services:
+- [src/asr/ModelRegistry.py](src/asr/ModelRegistry.py) — `ModelRegistry`
+- [src/asr/ModelManager.py](src/asr/ModelManager.py) — `ModelManager`
+- [src/asr/RecognizerFactory.py](src/asr/RecognizerFactory.py) — `RecognizerFactory`, `IRecognizerFactory` protocol
+- [src/asr/SessionOptionsFactory.py](src/asr/SessionOptionsFactory.py) — `SessionOptionsFactory`
+- [src/asr/SessionOptionsStrategy.py](src/asr/SessionOptionsStrategy.py) — `SessionOptionsStrategy` ABC, `IntegratedGPUStrategy`, `DiscreteGPUStrategy`, `CPUStrategy`
+
+Download orchestration:
+- [src/downloader/DownloadWorker.py](src/downloader/DownloadWorker.py) — `DownloadWorker` (see *Server-Controlled Model Download Flow*)
+
+### Layer 5 — Entry-Point / Application
+
+*Top-level composition roots (see* **Startup and Deployment** *above).*
+
+- [main.py](main.py) — entry point
+- [src/StartupController.py](src/StartupController.py) ¹ — `StartupController`, `StartupDecisions`; `TauriBinaryNotFoundError`, `MissingModelsError`, `DownloadCancelledError`
+- [src/server/ServerApp.py](src/server/ServerApp.py) — `ServerApp`
+
+`StartupController` is application bootstrap, and `ServerApp` is managing websocket server.
+
+
+### Classifying new entities
+
+When a new module is added, classify it with these litmus questions:
+- Touches OS, device, socket, subprocess, or ONNX? → **System**
+- Wire-format type or codec? → **Protocol**
+- Pure logic / DTO / interface? → **Model / Domain**
+- Owns a pipeline, thread, or lifecycle? → **Service**
+- Wires every other layer together? → **Entry-Point**

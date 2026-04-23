@@ -2,6 +2,7 @@
 import pytest
 import numpy as np
 import torch
+import shutil
 from pathlib import Path
 import sys
 import os
@@ -15,6 +16,38 @@ if sys.platform == 'win32' and not os.environ.get('TCL_LIBRARY'):
     os.environ['TK_LIBRARY'] = os.path.join(python_root, 'tcl', 'tk8.6')
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures"
+PYTEST_ARTIFACT_DIRS = (".pytest_cache", ".pytest_tmp")
+
+
+def cleanup_test_artifact_dirs(root_path: Path) -> None:
+    """Remove repo-local pytest artifact directories after a test session.
+
+    Args:
+        root_path: Repository root path used by pytest.
+
+    Returns:
+        None
+    """
+    root = root_path.resolve()
+    for artifact_name in PYTEST_ARTIFACT_DIRS:
+        artifact_dir = (root / artifact_name).resolve()
+        if artifact_dir.parent != root:
+            continue
+        shutil.rmtree(artifact_dir, ignore_errors=True)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    """Clean stale pytest artifact directories before pytest exits.
+
+    Args:
+        session: Active pytest session.
+        exitstatus: Pytest exit status.
+
+    Returns:
+        None
+    """
+    cleanup_test_artifact_dirs(Path(session.config.rootpath))
 
 @pytest.fixture(scope="session")
 def download_test_audio():
@@ -175,8 +208,10 @@ def real_vad(config):
     """
     from pathlib import Path
     from src.asr.VoiceActivityDetector import VoiceActivityDetector
-    model_path = Path('./models/silero_vad/silero_vad.onnx')
-    return VoiceActivityDetector(config=config, model_path=model_path, verbose=False)
+    from src.asr.ModelDefinitions import SileroVadModel
+
+    vad_model = SileroVadModel(Path('./models'))
+    return VoiceActivityDetector(config=config, model=vad_model, verbose=False)
 
 
 @pytest.fixture

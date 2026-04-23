@@ -57,7 +57,7 @@ fn encode_roundtrip_header_is_valid_json() {
 
 #[test]
 fn decode_session_created() {
-    let json = r#"{"type":"session_created","session_id":"s1","protocol_version":"1.0","server_time":123.4}"#;
+    let json = r#"{"type":"session_created","session_id":"s1","protocol_version":"v1","server_time":123.4}"#;
     let msg = ServerMessageDecoder::decode(json).unwrap();
 
     match msg {
@@ -67,7 +67,7 @@ fn decode_session_created() {
             server_time,
         } => {
             assert_eq!(session_id, "s1");
-            assert_eq!(protocol_version, "1.0");
+            assert_eq!(protocol_version, "v1");
             assert!((server_time - 123.4).abs() < 1e-9);
         }
         other => panic!("expected SessionCreated, got {:?}", other),
@@ -131,7 +131,7 @@ fn decode_recognition_result_final_with_all_fields() {
 
 #[test]
 fn decode_session_closed() {
-    let json = r#"{"type":"session_closed","session_id":"s4","reason":"done","message":"bye"}"#;
+    let json = r#"{"type":"session_closed","session_id":"s4","reason":"close_session","message":"bye"}"#;
     let msg = ServerMessageDecoder::decode(json).unwrap();
 
     match msg {
@@ -141,7 +141,7 @@ fn decode_session_closed() {
             message,
         } => {
             assert_eq!(session_id, "s4");
-            assert_eq!(reason, "done");
+            assert_eq!(reason, "close_session");
             assert_eq!(message, Some("bye".to_string()));
         }
         other => panic!("expected SessionClosed, got {:?}", other),
@@ -168,7 +168,8 @@ fn decode_error_message() {
         "session_id": "s6",
         "error_code": "RATE_LIMIT",
         "message": "slow down",
-        "fatal": true
+        "fatal": true,
+        "request_id": "req-error-1"
     }"#;
     let msg = ServerMessageDecoder::decode(json).unwrap();
 
@@ -177,11 +178,13 @@ fn decode_error_message() {
             error_code,
             message,
             fatal,
+            request_id,
             ..
         } => {
             assert_eq!(error_code, "RATE_LIMIT");
             assert_eq!(message, "slow down");
             assert!(fatal);
+            assert_eq!(request_id.as_deref(), Some("req-error-1"));
         }
         other => panic!("expected Error, got {:?}", other),
     }
@@ -193,8 +196,11 @@ fn decode_error_message_fatal_defaults_to_false() {
     let msg = ServerMessageDecoder::decode(json).unwrap();
 
     match msg {
-        ServerMessage::Error { fatal, .. } => {
+        ServerMessage::Error {
+            fatal, request_id, ..
+        } => {
             assert!(!fatal);
+            assert_eq!(request_id, None);
         }
         other => panic!("expected Error, got {:?}", other),
     }
@@ -206,6 +212,81 @@ fn decode_ping_message() {
     let msg = ServerMessageDecoder::decode(json).unwrap();
 
     assert!(matches!(msg, ServerMessage::Ping {}));
+}
+
+#[test]
+fn decode_server_state_message() {
+    let json = r#"{"type":"server_state","state":"waiting_for_model"}"#;
+    let msg = ServerMessageDecoder::decode(json).unwrap();
+
+    match msg {
+        ServerMessage::ServerState { state } => assert_eq!(state, "waiting_for_model"),
+        other => panic!("expected ServerState, got {:?}", other),
+    }
+}
+
+#[test]
+fn decode_model_list_message() {
+    let json = r#"{
+        "type":"model_list",
+        "models":[{"name":"parakeet","display_name":"Parakeet","size_description":"1.25 GB","status":"missing"}],
+        "request_id":"req-1"
+    }"#;
+    let msg = ServerMessageDecoder::decode(json).unwrap();
+
+    match msg {
+        ServerMessage::ModelList { models, request_id } => {
+            assert_eq!(models.len(), 1);
+            assert_eq!(models[0].name, "parakeet");
+            assert_eq!(request_id.as_deref(), Some("req-1"));
+        }
+        other => panic!("expected ModelList, got {:?}", other),
+    }
+}
+
+#[test]
+fn decode_model_status_message() {
+    let json = r#"{"type":"model_status","status":"downloading","request_id":"req-2"}"#;
+    let msg = ServerMessageDecoder::decode(json).unwrap();
+
+    match msg {
+        ServerMessage::ModelStatus { status, request_id } => {
+            assert_eq!(status, "downloading");
+            assert_eq!(request_id.as_deref(), Some("req-2"));
+        }
+        other => panic!("expected ModelStatus, got {:?}", other),
+    }
+}
+
+#[test]
+fn decode_download_progress_message() {
+    let json = r#"{
+        "type":"download_progress",
+        "model_name":"parakeet",
+        "status":"downloading",
+        "progress":0.5,
+        "downloaded_bytes":512,
+        "total_bytes":1024
+    }"#;
+    let msg = ServerMessageDecoder::decode(json).unwrap();
+
+    match msg {
+        ServerMessage::DownloadProgress {
+            model_name,
+            status,
+            progress,
+            downloaded_bytes,
+            total_bytes,
+            ..
+        } => {
+            assert_eq!(model_name, "parakeet");
+            assert_eq!(status, "downloading");
+            assert_eq!(progress, Some(0.5));
+            assert_eq!(downloaded_bytes, Some(512));
+            assert_eq!(total_bytes, Some(1024));
+        }
+        other => panic!("expected DownloadProgress, got {:?}", other),
+    }
 }
 
 // ---------------------------------------------------------------------------

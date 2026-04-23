@@ -1,4 +1,7 @@
 {
+  "server": {
+    "host": "127.0.0.1"
+  },
   "audio": {
     "sample_rate": 16000,
     "chunk_duration": 0.032,

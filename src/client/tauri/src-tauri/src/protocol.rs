@@ -8,6 +8,14 @@ use crate::recognition::{RecognitionResult, RecognitionStatus};
 use serde::Deserialize;
 use serde_json::json;
 
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ModelInfo {
+    pub name: String,
+    pub display_name: String,
+    pub size_description: String,
+    pub status: String,
+}
+
 /// Tagged enum representing all possible server-to-client messages.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -35,12 +43,33 @@ pub enum ServerMessage {
         reason: String,
         message: Option<String>,
     },
+    ServerState {
+        state: String,
+    },
     Error {
         session_id: String,
         error_code: String,
         message: String,
         #[serde(default)]
         fatal: bool,
+        #[serde(default)]
+        request_id: Option<String>,
+    },
+    ModelList {
+        models: Vec<ModelInfo>,
+        request_id: Option<String>,
+    },
+    ModelStatus {
+        status: String,
+        request_id: Option<String>,
+    },
+    DownloadProgress {
+        model_name: String,
+        status: String,
+        progress: Option<f64>,
+        downloaded_bytes: Option<u64>,
+        total_bytes: Option<u64>,
+        error_message: Option<String>,
     },
     Ping {},
 }

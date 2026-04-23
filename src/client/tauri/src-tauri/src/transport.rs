@@ -133,7 +133,7 @@ impl WsClientTransport {
 
     /// Stops the transport gracefully.
     ///
-    /// If `server_initiated` is false, sends a shutdown control command
+    /// If `server_initiated` is false, sends a close_session control command
     /// before closing.
     pub async fn stop(&self, server_initiated: bool) {
         if !server_initiated {
@@ -143,29 +143,67 @@ impl WsClientTransport {
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs_f64();
-                let shutdown_json = Self::build_shutdown_json(&session_id, now);
-                let _ = self.send_text(shutdown_json);
+                let close_json = Self::build_close_session_json(&session_id, now);
+                let _ = self.send_text(close_json);
             }
         }
         self.stop_notify.notify_waiters();
         *self.connected.lock().await = false;
     }
 
-    /// Builds the JSON string for a shutdown control command.
+    /// Builds the JSON string for a close_session control command.
     ///
     /// Args:
     ///   session_id: Current session identifier.
     ///   timestamp: Epoch seconds.
     ///
     /// Returns: Serialized JSON string.
-    pub fn build_shutdown_json(session_id: &str, timestamp: f64) -> String {
+    pub fn build_close_session_json(session_id: &str, timestamp: f64) -> String {
         json!({
             "type": "control_command",
-            "command": "shutdown",
+            "command": "close_session",
             "session_id": session_id,
             "timestamp": timestamp,
         })
         .to_string()
+    }
+
+    /// Builds the JSON string for a list_models control command.
+    pub fn build_list_models_json(
+        session_id: &str,
+        timestamp: f64,
+        request_id: Option<&str>,
+    ) -> String {
+        let mut payload = json!({
+            "type": "control_command",
+            "command": "list_models",
+            "session_id": session_id,
+            "timestamp": timestamp,
+        });
+        if let Some(request_id) = request_id {
+            payload["request_id"] = request_id.into();
+        }
+        payload.to_string()
+    }
+
+    /// Builds the JSON string for a download_model control command.
+    pub fn build_download_model_json(
+        session_id: &str,
+        timestamp: f64,
+        model_name: &str,
+        request_id: Option<&str>,
+    ) -> String {
+        let mut payload = json!({
+            "type": "control_command",
+            "command": "download_model",
+            "session_id": session_id,
+            "timestamp": timestamp,
+            "model_name": model_name,
+        });
+        if let Some(request_id) = request_id {
+            payload["request_id"] = request_id.into();
+        }
+        payload.to_string()
     }
 
     /// Spawns the drain loop that reads audio frames from the mpsc channel

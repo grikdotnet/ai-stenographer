@@ -51,6 +51,41 @@ pub struct InsertionStateChanged {
     pub enabled: bool,
 }
 
+#[derive(Clone, Serialize, Debug)]
+pub struct ServerStateUpdate {
+    pub state: String,
+}
+
+#[derive(Clone, Serialize, Debug)]
+pub struct ModelInfoUpdate {
+    pub name: String,
+    pub display_name: String,
+    pub size_description: String,
+    pub status: String,
+}
+
+#[derive(Clone, Serialize, Debug)]
+pub struct ModelListUpdate {
+    pub models: Vec<ModelInfoUpdate>,
+    pub request_id: Option<String>,
+}
+
+#[derive(Clone, Serialize, Debug)]
+pub struct ModelStatusUpdate {
+    pub status: String,
+    pub request_id: Option<String>,
+}
+
+#[derive(Clone, Serialize, Debug)]
+pub struct DownloadProgressUpdate {
+    pub model_name: String,
+    pub status: String,
+    pub progress: Option<f64>,
+    pub downloaded_bytes: Option<u64>,
+    pub total_bytes: Option<u64>,
+    pub error_message: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // User-friendly error messages
 // ---------------------------------------------------------------------------
@@ -102,6 +137,79 @@ pub fn emit_event(emitter: &dyn EventEmitter, event: &str, payload: &impl Serial
     if let Ok(json) = serde_json::to_string(payload) {
         emitter.emit_serialized(event, &json);
     }
+}
+
+fn emit_connection_status(
+    connection_status: &Arc<Mutex<ConnectionStatus>>,
+    emitter: &Arc<dyn EventEmitter>,
+    connected: bool,
+    error: Option<String>,
+) {
+    if let Ok(mut status) = connection_status.lock() {
+        *status = ConnectionStatus {
+            connected,
+            error: error.clone(),
+        };
+    }
+    emit_event(
+        emitter.as_ref(),
+        "stt://connection-status",
+        &ConnectionStatus { connected, error },
+    );
+}
+
+fn target_state_for_server_state(state_manager: &Arc<AppStateManager>, state: &str) -> AppState {
+    match state {
+        "running" => {
+            if state_manager.current_state() == AppState::Paused {
+                AppState::Paused
+            } else {
+                AppState::Running
+            }
+        }
+        "shutdown" => AppState::Shutdown,
+        "waiting_for_model" | "starting" => AppState::WaitingForServer,
+        _ => AppState::WaitingForServer,
+    }
+}
+
+fn set_state_if_needed(
+    state_manager: &Arc<AppStateManager>,
+    target: AppState,
+) -> Result<(), AppError> {
+    if state_manager.current_state() == target {
+        return Ok(());
+    }
+    state_manager.set_state(target)
+}
+
+fn set_state_if_needed_or_log(
+    state_manager: &Arc<AppStateManager>,
+    target: AppState,
+    reason: &str,
+) {
+    let current = state_manager.current_state();
+    if current == target {
+        tracing::trace!(
+            "Skipping duplicate client state transition after {reason}: {current} -> {target}"
+        );
+        return;
+    }
+    if let Err(err) = state_manager.set_state(target) {
+        tracing::warn!(
+            "Failed client state transition after {reason}: {current} -> {target}: {err}"
+        );
+    }
+}
+
+fn should_surface_server_error_as_connection_error(error_code: &str, fatal: bool) -> bool {
+    if fatal {
+        return true;
+    }
+    !matches!(
+        error_code,
+        "MODEL_NOT_READY" | "DOWNLOAD_IN_PROGRESS" | "INVALID_MODEL_NAME"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -277,9 +385,26 @@ impl ClientOrchestrator {
                         } => {
                             tracing::info!("SessionCreated received: session_id={session_id}");
                             if protocol_version != EXPECTED_PROTOCOL_VERSION {
+                                let error_message =
+                                    format!("Unsupported protocol version: {protocol_version}");
                                 tracing::error!(
-                                    "Unsupported protocol version: {protocol_version}"
+                                    "{error_message}"
                                 );
+                                emit_connection_status(
+                                    &connection_status,
+                                    &emitter,
+                                    false,
+                                    Some(error_message),
+                                );
+                                set_state_if_needed_or_log(
+                                    &state_manager,
+                                    AppState::Shutdown,
+                                    "protocol version mismatch",
+                                );
+                                let transport_for_stop = Arc::clone(&transport_for_handler);
+                                tokio::spawn(async move {
+                                    transport_for_stop.lock().await.stop(true).await;
+                                });
                                 return;
                             }
                             if let Ok(transport) = transport_for_handler.try_lock() {
@@ -288,20 +413,16 @@ impl ClientOrchestrator {
                             } else {
                                 tracing::error!("transport try_lock failed — session_id NOT set");
                             }
-                            let _ = state_manager.set_state(AppState::Running);
-                            if let Ok(mut status) = connection_status.lock() {
-                                *status = ConnectionStatus {
-                                    connected: true,
-                                    error: None,
-                                };
-                            }
-                            emit_event(
-                                emitter.as_ref(),
-                                "stt://connection-status",
-                                &ConnectionStatus {
-                                    connected: true,
-                                    error: None,
-                                },
+                            set_state_if_needed_or_log(
+                                &state_manager,
+                                AppState::WaitingForServer,
+                                "session_created",
+                            );
+                            emit_connection_status(
+                                &connection_status,
+                                &emitter,
+                                true,
+                                None,
                             );
                         }
                         ServerMessage::RecognitionResult {
@@ -339,24 +460,94 @@ impl ClientOrchestrator {
                         ServerMessage::Ping {} => {
                             tracing::trace!("Received ping from server");
                         }
-                        ServerMessage::SessionClosed { reason, .. } => {
-                            tracing::info!("Session closed by server: {reason}");
-                            let _ = state_manager.set_state(AppState::Shutdown);
-                        }
-                        ServerMessage::Error { message, .. } => {
-                            tracing::error!("Server error: {message}");
-                            if let Ok(mut status) = connection_status.lock() {
-                                *status = ConnectionStatus {
-                                    connected: false,
-                                    error: Some(message.clone()),
-                                };
-                            }
+                        ServerMessage::ServerState { state } => {
                             emit_event(
                                 emitter.as_ref(),
-                                "stt://connection-status",
-                                &ConnectionStatus {
-                                    connected: false,
-                                    error: Some(message),
+                                "stt://server-state",
+                                &ServerStateUpdate {
+                                    state: state.clone(),
+                                },
+                            );
+                            let target_state = target_state_for_server_state(&state_manager, &state);
+                            set_state_if_needed_or_log(
+                                &state_manager,
+                                target_state,
+                                "server_state update",
+                            );
+                        }
+                        ServerMessage::SessionClosed { reason, .. } => {
+                            tracing::info!("Session closed by server: {reason}");
+                            set_state_if_needed_or_log(
+                                &state_manager,
+                                AppState::Shutdown,
+                                "session_closed",
+                            );
+                        }
+                        ServerMessage::Error {
+                            error_code,
+                            message,
+                            fatal,
+                            ..
+                        } => {
+                            if should_surface_server_error_as_connection_error(&error_code, fatal) {
+                                tracing::error!(
+                                    "Server error: code={error_code} fatal={fatal} message={message}"
+                                );
+                                emit_connection_status(
+                                    &connection_status,
+                                    &emitter,
+                                    false,
+                                    Some(message),
+                                );
+                            } else {
+                                tracing::debug!(
+                                    "Nonfatal server command/readiness error ignored for connection status: code={error_code} message={message}"
+                                );
+                            }
+                        }
+                        ServerMessage::ModelList { models, request_id } => {
+                            emit_event(
+                                emitter.as_ref(),
+                                "stt://model-list",
+                                &ModelListUpdate {
+                                    models: models
+                                        .into_iter()
+                                        .map(|model| ModelInfoUpdate {
+                                            name: model.name,
+                                            display_name: model.display_name,
+                                            size_description: model.size_description,
+                                            status: model.status,
+                                        })
+                                        .collect(),
+                                    request_id,
+                                },
+                            );
+                        }
+                        ServerMessage::ModelStatus { status, request_id } => {
+                            emit_event(
+                                emitter.as_ref(),
+                                "stt://model-status",
+                                &ModelStatusUpdate { status, request_id },
+                            );
+                        }
+                        ServerMessage::DownloadProgress {
+                            model_name,
+                            status,
+                            progress,
+                            downloaded_bytes,
+                            total_bytes,
+                            error_message,
+                        } => {
+                            emit_event(
+                                emitter.as_ref(),
+                                "stt://download-progress",
+                                &DownloadProgressUpdate {
+                                    model_name,
+                                    status,
+                                    progress,
+                                    downloaded_bytes,
+                                    total_bytes,
+                                    error_message,
                                 },
                             );
                         }
@@ -369,19 +560,11 @@ impl ClientOrchestrator {
         if let Err(e) = transport.connect(CONNECT_TIMEOUT).await {
             tracing::error!("Connection failed (raw): {e}");
             let error_message = friendly_connect_error(&e);
-            if let Ok(mut status) = self.connection_status.lock() {
-                *status = ConnectionStatus {
-                    connected: false,
-                    error: Some(error_message.clone()),
-                };
-            }
-            emit_event(
-                self.emitter.as_ref(),
-                "stt://connection-status",
-                &ConnectionStatus {
-                    connected: false,
-                    error: Some(error_message),
-                },
+            emit_connection_status(
+                &self.connection_status,
+                &self.emitter,
+                false,
+                Some(error_message),
             );
             return Err(e);
         }
@@ -475,6 +658,53 @@ impl ClientOrchestrator {
         self.formatter.clear();
     }
 
+    /// Requests the current server model list.
+    pub fn request_model_list(&self) -> Result<(), AppError> {
+        let transport = self
+            .transport
+            .try_lock()
+            .map_err(|_| AppError::ConnectionFailed("transport busy".into()))?;
+        let session_id = transport
+            .session_id
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .ok_or_else(|| AppError::ConnectionFailed("session not established".into()))?;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        transport.send_text(WsClientTransport::build_list_models_json(
+            &session_id,
+            timestamp,
+            None,
+        ))
+    }
+
+    /// Requests download of a specific model by name.
+    pub fn request_model_download(&self, model_name: &str) -> Result<(), AppError> {
+        let transport = self
+            .transport
+            .try_lock()
+            .map_err(|_| AppError::ConnectionFailed("transport busy".into()))?;
+        let session_id = transport
+            .session_id
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .ok_or_else(|| AppError::ConnectionFailed("session not established".into()))?;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        transport.send_text(WsClientTransport::build_download_model_json(
+            &session_id,
+            timestamp,
+            model_name,
+            None,
+        ))
+    }
+
     /// Stops the orchestrator gracefully.
     ///
     /// Stops audio capture, transport, and transitions to Shutdown.
@@ -502,11 +732,19 @@ impl ClientOrchestrator {
                 ..
             } => {
                 if protocol_version != EXPECTED_PROTOCOL_VERSION {
+                    let message = format!("Unsupported protocol version: {protocol_version}");
+                    emit_connection_status(
+                        &self.connection_status,
+                        &self.emitter,
+                        false,
+                        Some(message.clone()),
+                    );
+                    set_state_if_needed(&self.state_manager, AppState::Shutdown)?;
                     return Err(AppError::ProtocolError(format!(
                         "unsupported protocol version: {protocol_version}"
                     )));
                 }
-                self.state_manager.set_state(AppState::Running)?;
+                set_state_if_needed(&self.state_manager, AppState::WaitingForServer)?;
                 Ok(())
             }
             ServerMessage::RecognitionResult {
@@ -542,13 +780,92 @@ impl ClientOrchestrator {
                 Ok(())
             }
             ServerMessage::Ping {} => Ok(()),
-            ServerMessage::SessionClosed { reason, .. } => {
-                tracing::info!("Session closed: {reason}");
-                self.state_manager.set_state(AppState::Shutdown)?;
+            ServerMessage::ServerState { state } => {
+                emit_event(
+                    self.emitter.as_ref(),
+                    "stt://server-state",
+                    &ServerStateUpdate {
+                        state: state.clone(),
+                    },
+                );
+                let target_state = target_state_for_server_state(&self.state_manager, &state);
+                set_state_if_needed(&self.state_manager, target_state)?;
                 Ok(())
             }
-            ServerMessage::Error { message, .. } => {
-                Err(AppError::ProtocolError(format!("server error: {message}")))
+            ServerMessage::SessionClosed { reason, .. } => {
+                tracing::info!("Session closed: {reason}");
+                set_state_if_needed(&self.state_manager, AppState::Shutdown)?;
+                Ok(())
+            }
+            ServerMessage::Error {
+                error_code,
+                message,
+                fatal,
+                ..
+            } => {
+                if should_surface_server_error_as_connection_error(&error_code, fatal) {
+                    emit_connection_status(
+                        &self.connection_status,
+                        &self.emitter,
+                        false,
+                        Some(message.clone()),
+                    );
+                    Err(AppError::ProtocolError(format!("server error: {message}")))
+                } else {
+                    tracing::debug!(
+                        "Nonfatal server command/readiness error ignored for connection status: code={error_code} message={message}"
+                    );
+                    Ok(())
+                }
+            }
+            ServerMessage::ModelList { models, request_id } => {
+                emit_event(
+                    self.emitter.as_ref(),
+                    "stt://model-list",
+                    &ModelListUpdate {
+                        models: models
+                            .into_iter()
+                            .map(|model| ModelInfoUpdate {
+                                name: model.name,
+                                display_name: model.display_name,
+                                size_description: model.size_description,
+                                status: model.status,
+                            })
+                            .collect(),
+                        request_id,
+                    },
+                );
+                Ok(())
+            }
+            ServerMessage::ModelStatus { status, request_id } => {
+                emit_event(
+                    self.emitter.as_ref(),
+                    "stt://model-status",
+                    &ModelStatusUpdate { status, request_id },
+                );
+                Ok(())
+            }
+            ServerMessage::DownloadProgress {
+                model_name,
+                status,
+                progress,
+                downloaded_bytes,
+                total_bytes,
+                error_message,
+            } => {
+                emit_event(
+                    self.emitter.as_ref(),
+                    "stt://download-progress",
+                    &DownloadProgressUpdate {
+                        model_name,
+                        status,
+                        progress,
+                        downloaded_bytes,
+                        total_bytes,
+                        error_message,
+                    },
+                );
+                Ok(())
             }
         }
     }

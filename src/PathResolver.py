@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from src.asr.ModelDefinitions import SileroVadModel
+
 DistributionMode = Literal["msix", "portable", "development"]
 
 
@@ -148,29 +150,30 @@ class PathResolver:
         if self._mode != "msix":
             return
 
-        target_silero = self._paths.models_dir / "silero_vad" / "silero_vad.onnx"
+        vad_model = SileroVadModel(self._paths.models_dir)
+        target_silero = vad_model.get_model_path()
         if target_silero.exists():
             return  # Already copied or downloaded
 
         # Locate bundled Silero in app directory
         # _internal/app/../models/silero_vad = _internal/models/silero_vad
-        bundled_silero = self._paths.app_dir.parent / "models" / "silero_vad"
+        bundled_silero = self._paths.app_dir.parent / "models" / vad_model.relative_path.parent
 
         if not bundled_silero.exists():
             logging.warning("Bundled Silero VAD not found in app directory")
             return  # ModelManager will handle download fallback
 
         # Copy bundled Silero to AppData
-        target_dir = self._paths.models_dir / "silero_vad"
+        target_dir = target_silero.parent
         target_dir.mkdir(parents=True, exist_ok=True)
 
         try:
             for file in bundled_silero.iterdir():
                 if file.is_file():
                     shutil.copy2(file, target_dir / file.name)
-            logging.info(f"Copied bundled Silero VAD to {target_dir}")
-        except Exception as e:
-            logging.error(f"Failed to copy bundled Silero: {e}")
+            logging.info("Copied bundled Silero VAD to %s", target_dir)
+        except Exception as exc:
+            logging.error("Failed to copy bundled Silero: %s", exc)
 
     def ensure_local_dir_structure(self) -> None:
         """
@@ -190,7 +193,7 @@ class PathResolver:
                         target = self._paths.config_dir / bundled_config.name
                         if not target.exists():
                             shutil.copy2(bundled_config, target)
-                            logging.info(f"Copied bundled config: {bundled_config.name}")
+                            logging.info("Copied bundled config: %s", bundled_config.name)
 
             # Copy bundled Silero VAD to AppData (MSIX only)
             self._copy_bundled_silero_if_needed()

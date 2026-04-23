@@ -37,12 +37,18 @@ function buildFormattedNodes(utterances: FinalizedUtterance[]): ReactNode[] {
  */
 const EMPTY_STATE_MESSAGES: Record<HeaderStatus, string> = {
   connecting: "Connecting to recognition service…",
+  waiting: "Model download required before recognition can start.",
   listening: "Start speaking — transcript will appear here.",
   paused: "Recognition paused.",
   error: "Transcript will appear here once recognition is connected.",
 };
 
-export function TranscriptPanel({ utterances, preliminaryText, status, connectionError }: TranscriptPanelProps): ReactElement {
+export function TranscriptPanel({
+  utterances,
+  preliminaryText,
+  status,
+  connectionError,
+}: TranscriptPanelProps): ReactElement {
   const hasText = utterances.length > 0 || preliminaryText.trim().length > 0;
   const nodes = buildFormattedNodes(utterances);
 

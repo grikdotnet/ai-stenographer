@@ -36,6 +36,11 @@ describe("TranscriptPanel", () => {
     expect(screen.getByText("Recognition paused.")).toBeInTheDocument();
   });
 
+  it("shows waiting message when model download is required", () => {
+    render(<TranscriptPanel utterances={[]} preliminaryText="" status="waiting" />);
+    expect(screen.getByText("Model download required before recognition can start.")).toBeInTheDocument();
+  });
+
   it("renders preliminary text in gray italic style", () => {
     render(
       <TranscriptPanel

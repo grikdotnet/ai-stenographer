@@ -12,6 +12,7 @@ use crate::error::AppError;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum AppState {
     Starting,
+    WaitingForServer,
     Running,
     Paused,
     Shutdown,
@@ -21,6 +22,7 @@ impl fmt::Display for AppState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
             AppState::Starting => "Starting",
+            AppState::WaitingForServer => "WaitingForServer",
             AppState::Running => "Running",
             AppState::Paused => "Paused",
             AppState::Shutdown => "Shutdown",
@@ -112,11 +114,15 @@ impl AppStateManager {
     fn is_valid_transition(from: AppState, to: AppState) -> bool {
         matches!(
             (from, to),
-            (AppState::Starting, AppState::Running)
+            (AppState::Starting, AppState::WaitingForServer)
                 | (AppState::Starting, AppState::Shutdown)
+                | (AppState::WaitingForServer, AppState::Running)
+                | (AppState::WaitingForServer, AppState::Shutdown)
                 | (AppState::Running, AppState::Paused)
+                | (AppState::Running, AppState::WaitingForServer)
                 | (AppState::Running, AppState::Shutdown)
                 | (AppState::Paused, AppState::Running)
+                | (AppState::Paused, AppState::WaitingForServer)
                 | (AppState::Paused, AppState::Shutdown)
         )
     }

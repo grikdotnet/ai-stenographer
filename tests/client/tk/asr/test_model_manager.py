@@ -15,7 +15,7 @@ class TestModelManager:
 
     def test_get_missing_models_delegates_to_registry(self) -> None:
         with patch(
-            'src.client.tk.asr.ModelManager.ModelRegistry.get_missing_models',
+            'src.client.tk.asr.ModelManager.ModelRegistry.get_missing_models_for_dir',
             return_value=['parakeet'],
         ) as mock_registry:
             assert ModelManager.get_missing_models(_MODELS_DIR) == ['parakeet']
@@ -35,7 +35,7 @@ class TestModelManager:
 
         with (
             patch(
-                'src.client.tk.asr.ModelManager.ModelRegistry.get_missing_models',
+                'src.client.tk.asr.ModelManager.ModelRegistry.get_missing_models_for_dir',
                 return_value=['parakeet'],
             ),
             patch('src.client.tk.asr.ModelManager.ModelDownloader') as downloader_cls,
@@ -63,7 +63,7 @@ class TestModelManager:
     def test_download_failure_cleanup(self) -> None:
         with (
             patch(
-                'src.client.tk.asr.ModelManager.ModelRegistry.get_missing_models',
+                'src.client.tk.asr.ModelManager.ModelRegistry.get_missing_models_for_dir',
                 return_value=['parakeet'],
             ),
             patch('src.client.tk.asr.ModelManager.ModelDownloader') as downloader_cls,

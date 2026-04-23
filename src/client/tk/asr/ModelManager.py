@@ -9,7 +9,7 @@ from typing import Callable, List, Optional
 import requests
 
 from src.downloader.ModelDownloader import ModelDownloader
-from src.downloader.ModelRegistry import ModelRegistry
+from src.asr.ModelRegistry import ModelRegistry
 
 
 MODEL_DIR = Path("./models")
@@ -41,7 +41,7 @@ class ModelManager:
         Returns:
             List of missing model names.
         """
-        return ModelRegistry.get_missing_models(model_dir or MODEL_DIR)
+        return ModelRegistry.get_missing_models_for_dir(model_dir or MODEL_DIR)
 
     @staticmethod
     def download_models(

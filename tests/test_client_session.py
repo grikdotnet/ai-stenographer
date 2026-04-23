@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from src.ApplicationState import ApplicationState
+from src.asr.ModelDefinitions import SileroVadModel
 from src.server.ClientSession import ClientSession
 from src.server.RecognizerService import RecognizerService
 
@@ -43,7 +44,7 @@ _CONFIG = {
     },
 }
 
-_VAD_MODEL_PATH = Path("/fake/silero_vad.onnx")
+_VAD_MODEL = SileroVadModel(Path("/fake/models"))
 
 
 def _make_mock_vad() -> MagicMock:
@@ -100,9 +101,8 @@ def _make_session(
             websocket=ws,
             loop=loop,
             recognizer_service=recognizer_service,
-            app_state=app_state,
             config=_CONFIG,
-            vad_model_path=_VAD_MODEL_PATH,
+            vad_model=_VAD_MODEL,
         )
 
     return session, app_state, recognizer_service, loop
@@ -225,5 +225,34 @@ class TestMessageIdPartitioning:
 
         loop1.close()
         loop2.close()
+        recognizer_service.stop()
+        recognizer_service.join()
+
+
+class TestVadModelWiring:
+    def test_client_session_passes_vad_model_to_detector(self) -> None:
+        app_state = ApplicationState()
+        app_state.set_state("running")
+        recognizer_service = _make_recognizer_service(app_state)
+        loop = asyncio.new_event_loop()
+        ws = _make_mock_websocket()
+
+        with (
+            patch("src.server.ClientSession.VoiceActivityDetector", return_value=_make_mock_vad()) as vad_cls,
+            patch("src.server.ClientSession.GrowingWindowAssembler", return_value=_make_mock_windower()),
+        ):
+            ClientSession(
+                session_id="test-session",
+                session_index=1,
+                websocket=ws,
+                loop=loop,
+                recognizer_service=recognizer_service,
+                config=_CONFIG,
+                vad_model=_VAD_MODEL,
+            )
+
+        assert vad_cls.call_args.kwargs["model"] is _VAD_MODEL
+
+        loop.close()
         recognizer_service.stop()
         recognizer_service.join()

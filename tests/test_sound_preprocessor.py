@@ -4,6 +4,7 @@ import queue
 import numpy as np
 import time
 from unittest.mock import Mock
+from src.ApplicationState import ApplicationState
 from src.sound.SoundPreProcessor import SoundPreProcessor, CONTEXT_BUFFER_SIZE
 
 
@@ -907,126 +908,71 @@ class TestSoundPreProcessor:
             f"Expected chunk_ids [0-14], got {segment.chunk_ids}"
 
 
-def test_pause_state_flushes_segments():
-    """Test that pausing triggers flush() to finalize pending segments.
+def test_constructor_rejects_app_state_keyword() -> None:
+    """SoundPreProcessor no longer accepts per-session ApplicationState wiring."""
+    kwargs = {"app_state": Mock()}
 
-    Logic: state changes to 'paused' → flush() called → pending segments emitted.
-    """
-    from unittest.mock import Mock
-    import queue
+    with pytest.raises(TypeError):
+        SoundPreProcessor(
+            chunk_queue=queue.Queue(),
+            speech_queue=queue.Queue(),
+            vad=Mock(),
+            windower=Mock(),
+            config={
+                "audio": {
+                    "sample_rate": 16000,
+                    "chunk_duration": 0.032,
+                    "silence_energy_threshold": 1.5,
+                    "rms_normalization": {
+                        "target_rms": 0.05,
+                        "silence_threshold": 0.001,
+                        "gain_smoothing": 0.8,
+                    },
+                },
+                "vad": {
+                    "frame_duration_ms": 32,
+                    "threshold": 0.5,
+                },
+                "windowing": {
+                    "max_speech_duration_ms": 3000,
+                },
+            },
+            control_queue=queue.Queue(),
+            **kwargs,
+        )
 
-    # Setup
-    chunk_queue = queue.Queue()
-    speech_queue = queue.Queue()
-    mock_vad = Mock()
-    mock_vad.process_frame.return_value = {'speech_probability': 0.9, 'is_speech': True}
-    mock_windower = Mock()
-    mock_app_state = Mock()
 
-    config = {
-        'audio': {
-            'sample_rate': 16000,
-            'chunk_duration': 0.032,
-            'silence_energy_threshold': 1.5,
-            'rms_normalization': {
-                'target_rms': 0.05,
-                'silence_threshold': 0.001,
-                'gain_smoothing': 0.8
-            }
+def test_construction_does_not_register_application_state_observer() -> None:
+    """Constructing SoundPreProcessor must not grow ApplicationState observers."""
+    app_state = ApplicationState()
+    initial_observer_count = len(app_state._observers)
+
+    SoundPreProcessor(
+        chunk_queue=queue.Queue(),
+        speech_queue=queue.Queue(),
+        vad=Mock(),
+        windower=Mock(),
+        config={
+            "audio": {
+                "sample_rate": 16000,
+                "chunk_duration": 0.032,
+                "silence_energy_threshold": 1.5,
+                "rms_normalization": {
+                    "target_rms": 0.05,
+                    "silence_threshold": 0.001,
+                    "gain_smoothing": 0.8,
+                },
+            },
+            "vad": {
+                "frame_duration_ms": 32,
+                "threshold": 0.5,
+            },
+            "windowing": {
+                "max_speech_duration_ms": 3000,
+            },
         },
-        'vad': {
-            'frame_duration_ms': 32,
-            'threshold': 0.5
-        },
-        'windowing': {
-            'max_speech_duration_ms': 3000
-        }
-    }
-
-    preprocessor = SoundPreProcessor(
-        chunk_queue=chunk_queue,
-        speech_queue=speech_queue,
-        vad=mock_vad,
-        windower=mock_windower,
-        config=config,
         control_queue=queue.Queue(),
-        app_state=mock_app_state,
-        verbose=False
+        verbose=False,
     )
 
-    # Add some speech chunks to create a pending segment
-    for i in range(5):
-        chunk = {
-            'audio': np.random.randn(512).astype(np.float32) * 0.1,
-            'timestamp': float(i * 0.032)
-        }
-        preprocessor._process_chunk(chunk)
-
-    # Simulate state change to paused
-    preprocessor.on_state_change('running', 'paused')
-
-    # flush() passes segment to windower.flush()
-    assert mock_windower.flush.called, "flush() should call windower.flush()"
-
-
-def test_sound_preprocessor_shutdown_calls_flush():
-    """Test that shutdown via observer calls flush() to emit pending segments.
-
-    Logic: on_state_change(_, 'shutdown') should call stop(), which calls flush()
-           to ensure pending segments are emitted before shutdown.
-    """
-    from unittest.mock import Mock
-    import queue
-
-    chunk_queue = queue.Queue()
-    speech_queue = queue.Queue()
-    mock_vad = Mock()
-    mock_vad.process_frame.return_value = {'speech_probability': 0.9, 'is_speech': True}
-    mock_windower = Mock()
-    mock_app_state = Mock()
-
-    config = {
-        'audio': {
-            'sample_rate': 16000,
-            'chunk_duration': 0.032,
-            'silence_energy_threshold': 1.5,
-            'rms_normalization': {
-                'target_rms': 0.05,
-                'silence_threshold': 0.001,
-                'gain_smoothing': 0.8
-            }
-        },
-        'vad': {
-            'frame_duration_ms': 32,
-            'threshold': 0.5
-        },
-        'windowing': {
-            'max_speech_duration_ms': 3000
-        }
-    }
-
-    preprocessor = SoundPreProcessor(
-        chunk_queue=chunk_queue,
-        speech_queue=speech_queue,
-        vad=mock_vad,
-        windower=mock_windower,
-        config=config,
-        control_queue=queue.Queue(),
-        app_state=mock_app_state,
-        verbose=False
-    )
-    preprocessor.is_running = True
-
-    # Add some speech chunks to create a pending segment
-    for i in range(5):
-        chunk = {
-            'audio': np.random.randn(512).astype(np.float32) * 0.1,
-            'timestamp': float(i * 0.032)
-        }
-        preprocessor._process_chunk(chunk)
-
-    preprocessor.on_state_change('running', 'shutdown')
-
-    # flush() passes segment to windower.flush()
-    assert mock_windower.flush.called, "stop() should call flush() which calls windower.flush()"
-    assert preprocessor.is_running == False
+    assert len(app_state._observers) == initial_observer_count

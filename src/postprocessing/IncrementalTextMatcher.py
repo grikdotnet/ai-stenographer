@@ -2,14 +2,11 @@
 import queue
 import threading
 import logging
-from typing import Optional, TYPE_CHECKING
+from typing import Optional
 from .TextNormalizer import TextNormalizer
 from ..types import MatcherQueueItem, RecognitionResult, SpeechEndSignal
 from ..RecognitionResultPublisher import RecognitionResultPublisher
 from dataclasses import replace
-
-if TYPE_CHECKING:
-    from src.ApplicationState import ApplicationState
 
 
 def _format_chunk_ids(chunk_ids: list) -> str:
@@ -23,22 +20,16 @@ class IncrementalTextMatcher:
     growing windows. Uses word overlap detection to identify stable (finalized)
     vs unstable (preliminary) regions.
 
-    Observer Pattern:
-    - Subscribes to ApplicationState for shutdown events
-    - Publishes recognition results via RecognitionResultPublisher
-
     Args:
         text_queue: Queue to read recognition results from
         publisher: RecognitionResultPublisher for distributing results to subscribers
         text_normalizer: Optional text normalizer for overlap detection
-        app_state: ApplicationState for observer pattern (REQUIRED)
         verbose: Enable verbose logging
     """
 
     def __init__(self, text_queue: queue.Queue,
                  publisher: RecognitionResultPublisher,
                  text_normalizer: Optional[TextNormalizer] = None,
-                 app_state: 'ApplicationState' = None,
                  verbose: bool = False
                  ) -> None:
         self.text_queue: queue.Queue = text_queue
@@ -46,7 +37,6 @@ class IncrementalTextMatcher:
         self.is_running: bool = False
         self.thread: Optional[threading.Thread] = None
         self.verbose: bool = verbose
-        self.app_state: 'ApplicationState' = app_state
 
         # Text normalization for overlap detection
         self.text_normalizer: TextNormalizer = text_normalizer if text_normalizer is not None else TextNormalizer()
@@ -55,9 +45,6 @@ class IncrementalTextMatcher:
         self.previous_result: Optional[RecognitionResult] = None
         self._prev_normalized_words: Optional[list[str]] = None
         self.prev_finalized_words: int = 0 # Number of words in previous_result that were finalized
-
-        # Register as component observer
-        self.app_state.register_component_observer(self.on_state_change)
 
     def _split_and_normalize(self, text: str) -> list[str]:
         """Split text into words and normalize each for overlap comparison.
@@ -302,21 +289,3 @@ class IncrementalTextMatcher:
             return
 
         self.is_running = False
-
-    def on_state_change(self, old_state: str, new_state: str) -> None:
-        """Observes ApplicationState and reacts to shutdown."""
-        if new_state == 'shutdown':
-            self.stop()
-            # Finalize any pending preliminary text before shutdown.
-            if self.previous_result and self.prev_finalized_words < len(self.previous_result.text.split()):
-                words = self.previous_result.text.split()
-                remaining_words = words[self.prev_finalized_words:]
-                if remaining_words:
-                    remaining_text = ' '.join(remaining_words)
-                    finalized_result = replace(self.previous_result, text=remaining_text)
-                    self.publisher.publish_finalization(finalized_result)
-
-            # Reset state to avoid leaking pending text across sessions.
-            self.previous_result = None
-            self._prev_normalized_words = None
-            self.prev_finalized_words = 0

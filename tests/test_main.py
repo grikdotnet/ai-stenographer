@@ -4,8 +4,9 @@ Behavioral coverage has moved to test_startup_args.py and test_startup_controlle
 These tests verify that _main() correctly wires StartupArgs and StartupController.
 """
 
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
 
 from main import _main
 from src.StartupController import TauriBinaryNotFoundError, MissingModelsError, DownloadCancelledError
@@ -38,7 +39,33 @@ class TestMainWiring:
             _main(["main.py"])
         call_args = mock_controller_cls.call_args
         assert call_args[0][0] is fake_args
-        assert call_args[0][1] is mock_resolver
+        assert call_args[0][1] is mock_resolver.paths
+
+    def test_model_manager_receives_resolved_paths(self) -> None:
+        with (
+            patch("main.StartupArgs.from_argv", return_value=MagicMock()),
+            patch("main.ModelRegistry") as mock_registry_cls,
+            patch("main.ModelManager") as mock_model_manager_cls,
+            patch("main.path_resolver") as mock_resolver,
+            patch("main.StartupController") as mock_controller_cls,
+        ):
+            mock_controller_cls.return_value.run.return_value = None
+            _main(["main.py"])
+
+        mock_registry_cls.assert_called_once_with(mock_resolver.paths)
+        mock_model_manager_cls.assert_called_once_with(mock_registry_cls.return_value)
+
+    def test_ensures_local_dir_structure_before_startup(self) -> None:
+        with (
+            patch("main.StartupArgs.from_argv", return_value=MagicMock()),
+            patch("main.ModelManager"),
+            patch("main.StartupController") as mock_controller_cls,
+            patch("main.path_resolver") as mock_resolver,
+        ):
+            mock_controller_cls.return_value.run.return_value = None
+            _main(["main.py"])
+
+        mock_resolver.ensure_local_dir_structure.assert_called_once_with()
 
     def test_calls_run_on_controller(self) -> None:
         with (

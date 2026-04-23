@@ -9,6 +9,8 @@ from src.asr.SessionOptionsStrategy import (
     CPUStrategy
 )
 from src.asr.ExecutionProviderManager import ExecutionProviderManager
+from src.asr.ModelDefinitions import IModelDefinition, ParakeetAsrModel, SileroVadModel
+from src.asr.ModelRegistry import ModelRegistry
 
 __all__ = [
     'Recognizer',
@@ -19,4 +21,8 @@ __all__ = [
     'DiscreteGPUStrategy',
     'CPUStrategy',
     'ExecutionProviderManager',
+    'IModelDefinition',
+    'ParakeetAsrModel',
+    'SileroVadModel',
+    'ModelRegistry',
 ]

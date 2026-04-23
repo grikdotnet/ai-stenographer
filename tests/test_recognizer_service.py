@@ -340,3 +340,59 @@ class TestAttachRecognizer:
         service.join()
 
         recognizer.recognize_window.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# flush_session
+# ---------------------------------------------------------------------------
+
+class TestFlushSession:
+    def test_flush_session_returns_immediately_when_idle(self) -> None:
+        recognizer = _make_recognizer(None)
+        app_state = ApplicationState()
+        app_state.set_state("running")
+        service = RecognizerService(app_state=app_state)
+        service.attach_recognizer(recognizer)
+
+        out: queue.Queue = queue.Queue()
+        service.register_session(1, out)
+        service.start()
+
+        service.flush_session(1, timeout=1.0)
+
+        service.stop()
+        service.join()
+
+    def test_flush_session_waits_for_in_flight_segment(self) -> None:
+        recognizer = MagicMock()
+        release = threading.Event()
+        recognizer.recognize_window.side_effect = lambda _segment: release.wait(timeout=2.0) or _make_recognition_result()
+
+        app_state = ApplicationState()
+        app_state.set_state("running")
+        service = RecognizerService(app_state=app_state)
+        service.attach_recognizer(recognizer)
+
+        out: queue.Queue = queue.Queue()
+        service.register_session(1, out)
+        service.start()
+        service.input_queue.put(_make_segment(message_id=10_000_001))
+
+        result_holder: list[str] = []
+
+        def wait_for_flush() -> None:
+            service.flush_session(1, timeout=2.0)
+            result_holder.append("done")
+
+        waiter = threading.Thread(target=wait_for_flush, daemon=True)
+        waiter.start()
+
+        time.sleep(0.1)
+        assert result_holder == []
+
+        release.set()
+        waiter.join(timeout=2.0)
+
+        assert result_holder == ["done"]
+        service.stop()
+        service.join()

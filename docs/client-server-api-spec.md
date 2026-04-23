@@ -7,12 +7,6 @@ This document defines the wire protocol between:
 - STT client process (audio capture, GUI, text insertion, voice agent)
 - STT server process (VAD, preprocessing, recognizer, matcher)
 
-Protocol goals:
-
-- low-latency streaming audio upload
-- structured recognition results
-- deterministic validation and error handling
-
 ## Transport
 
 - Protocol: WebSocket
@@ -26,11 +20,25 @@ Protocol goals:
 
 1. Client connects to WebSocket endpoint.
 2. Server creates session and sends `session_created`.
-3. Client verifies `protocol_version` matches expected value; disconnects if not.
-4. Client starts sending `audio_chunk` frames.
-5. Server streams `recognition_result` messages.
-6. Either side can initiate shutdown (`control_command: shutdown` or socket close).
-7. For server-initiated graceful shutdown paths, server sends `session_closed` before closing the WebSocket connection.
+3. Server sends `server_state` snapshot (current server lifecycle state).
+4. Client verifies `protocol_version` matches expected value; disconnects if not.
+5. If `server_state=running`, client MAY send `audio_chunk` frames. Client MUST NOT send audio in any other state.
+6. If `server_state=waiting_for_model`, client MAY send `list_models` to inspect available models, and optionally issue `download_model` command. The server will broadcast `server_state=running` when it becomes ready.
+7. Server streams `recognition_result` messages.
+8. Client may close its session gracefully with `control_command: close_session`, or disconnect by closing the socket. The server process is not affected.
+9. For server-initiated graceful shutdown paths, server sends `session_closed` before closing the WebSocket connection.
+
+Note: clients may receive broadcast messages (`server_state`, `download_progress`) at any time. The client MUST stop sending audio immediately if `server_state` transitions away from `running`.
+
+
+## Server-Scoped vs Session-Scoped Messages
+
+**Session-scoped messages** are delivered only to the connection that issued the request:
+- `session_created`, `recognition_result`, `session_closed`, `error`, `model_list`
+
+**Server-scoped messages** describe server-wide state and have no `session_id` field:
+- `server_state` — connect-time snapshot + broadcast on every state change
+- `download_progress` — broadcast to all active connections during a download
 
 ## Frame Types
 
@@ -42,7 +50,7 @@ Binary envelope:
 - bytes `[4..(4 + header_len - 1)]`: UTF-8 JSON header
 - bytes `[4 + header_len..end]`: raw PCM bytes payload
 
-Note: The JSON header is intentionally human-readable for debuggability. The per-frame overhead is ~80 bytes at 31 frames/sec (~2.5 KB/sec), negligible for local WebSocket. Binary optimization is deferred to v2.
+The JSON header is human-readable.
 
 Header JSON schema:
 
@@ -73,7 +81,8 @@ Schema:
 {
   "type": "control_command",
   "session_id": "uuid-string",
-  "command": "shutdown",
+  "command": "close_session | list_models | download_model",
+  "model_name": "parakeet",
   "request_id": "optional-correlation-id",
   "timestamp": 1735689601.001
 }
@@ -81,14 +90,40 @@ Schema:
 
 Field constraints:
 
-- `command` enum: `shutdown`
-- `request_id` optional but recommended for tracing
+- `command` enum
+- `model_name` required when `command=download_model`; omitted otherwise
+- `request_id` optional; meaningful for `list_models` and `download_model`; ignored for `close_session`
 
-Server response:
+Per-command server response:
 
-- `error` for invalid command/session
+`close_session`: Drains session (see below); no direct response
 
-Shutdown drain semantics: when `command=shutdown`, the server stops accepting new audio chunks, drains all in-flight recognition (up to `max_window_duration`, typically 7 seconds), sends any remaining `recognition_result` messages, sends `session_closed`, then closes the WebSocket.
+Server stops accepting new audio chunks for this session, drains in-flight recognition (up to `max_window_duration`), sends any remaining `recognition_result` messages, sends `session_closed`, then closes the WebSocket connection. The server process and other active sessions are not affected.
+
+`list_models`: Unicast `model_list` (echoes `request_id`)
+
+`download_model` responses (exactly one):
+
+Model already downloaded:
+```json
+{ "type": "model_status", "status": "ready", "request_id": "correlation-id" }
+```
+
+Download accepted and started (subsequent progress via `download_progress` broadcasts):
+```json
+{ "type": "model_status", "status": "downloading", "request_id": "correlation-id" }
+```
+
+Another download already running:
+```json
+{ "type": "error", "session_id": "uuid-string", "error_code": "DOWNLOAD_IN_PROGRESS", "message": "...", "fatal": false, "request_id": "correlation-id" }
+```
+
+Wrong model name:
+```json
+{ "type": "error", "session_id": "uuid-string", "error_code": "INVALID_MODEL_NAME", "message": "...", "fatal": false, "request_id": "correlation-id" }
+```
+
 
 ## 3) Server -> Client: `session_created` (JSON text frame)
 
@@ -123,10 +158,7 @@ Schema:
   "end_time": 13.888,
   "chunk_ids": [40, 41, 42],
   "utterance_id": 3,
-  "confidence": 0.87,
-  "token_confidences": [0.91, 0.82, 0.88],
-  "audio_rms": 0.071,
-  "confidence_variance": 0.0023
+  "token_confidences": [0.91, 0.82, 0.88]
 }
 ```
 
@@ -134,8 +166,8 @@ Field constraints:
 
 - `status` enum: `partial | final`
 - `chunk_ids` list of non-negative integers
-- `utterance_id` non-negative integer; increments on each speech/silence boundary; constant within one utterance across all its partial results; optional field (omitted if unavailable)
-- confidence fields in range `[0.0, 1.0]` when present; all confidence fields are optional
+- `utterance_id` non-negative integer; increments on each speech/silence boundary; constant within one utterance across all its partial results
+- `token_confidences` per-token confidence scores in range `[0.0, 1.0]`; may be empty list
 
 Mapping to local subscriber API:
 
@@ -157,13 +189,13 @@ Schema:
 
 `reason` enum:
 
-- `shutdown` — explicit `control_command: shutdown` received
+- `close_session` — explicit `control_command: close_session` received
 - `timeout` — session idle timeout exceeded
 - `error` — fatal internal error forced session termination
 
 Semantics:
 
-- sent by the server before closing the WebSocket connection for server-initiated graceful shutdown paths (`shutdown`, `timeout`, `error`)
+- sent by the server before closing the WebSocket connection for graceful closure paths (`close_session`, `timeout`, `error`)
 - client should stop sending audio and close its side of the connection upon receipt
 - distinguishes graceful shutdown from unexpected connection drops
 
@@ -175,13 +207,18 @@ Schema:
 {
   "type": "error",
   "session_id": "uuid-string",
-  "error_code": "INVALID_AUDIO_FRAME",
+  "error_code": "error code",
   "message": "audio payload bytes is not a multiple of 4",
-  "fatal": false
+  "fatal": false,
+  "request_id": "optional-correlation-id"
 }
 ```
 
-`error_code` enum (v1):
+Field constraints:
+
+- `request_id` present only when the error is a direct response to a client command that included `request_id`; absent on server-initiated errors and errors not triggered by a command
+
+`error_code` enum:
 
 - `INVALID_AUDIO_FRAME`
 - `UNKNOWN_MESSAGE_TYPE`
@@ -189,11 +226,90 @@ Schema:
 - `BACKPRESSURE_DROP`
 - `PROTOCOL_VIOLATION`
 - `INTERNAL_ERROR`
+- `MODEL_NOT_READY` — audio received when `server_state` is not `running`; client must stop sending audio
+- `DOWNLOAD_IN_PROGRESS` — `download_model` command received while another download is already running
+- `INVALID_MODEL_NAME` — wrong model name provided in `download_model`
 
 Fatal handling:
 
 - if `fatal=true`, the server closes the WebSocket connection immediately after sending the error
 - the session is destroyed server-side; the client must create a new connection to start a new session
+
+## 7) Server -> Client: `server_state` (JSON text frame)
+
+Schema:
+
+```json
+{
+  "type": "server_state",
+  "state": "starting|waiting_for_model|running|shutdown"
+}
+```
+
+Field constraints:
+
+- `state` enum: `starting | waiting_for_model | running | shutdown`
+
+State meanings:
+
+- `starting` — server process is initialising
+- `waiting_for_model` — server is alive, but not accepting audio; waiting for a command to download a model 
+- `running` — server process is up and ready to process audio
+- `shutdown` — server is shutting down, closing all sessions 
+
+Delivery: connect-time snapshot sent during session setup, after `session_created` + broadcast to all active connections on every state transition. No `request_id`.
+
+## 8) Server -> Client: `model_list` (JSON text frame)
+
+Schema:
+
+```json
+{
+  "type": "model_list",
+  "request_id": "optional-correlation-id",
+  "models": [
+    {
+      "name": "parakeet",
+      "display_name": "Parakeet TDT 0.6B v3",
+      "size_description": "1.25 GB",
+      "status": "downloaded"
+    }
+  ]
+}
+```
+
+Field constraints:
+
+- `request_id` echoed from the triggering `list_models` command; absent if the command carried no `request_id`
+- model `status` enum: `downloaded | missing | downloading`
+
+Delivery: unicast response to a `list_models` command; never broadcast.
+
+## 9) Server -> Client: `download_progress` (JSON text frame)
+
+Schema:
+
+```json
+{
+  "type": "download_progress",
+  "model_name": "parakeet",
+  "progress": 0.45,
+  "status": "downloading",
+  "downloaded_bytes": 567000000,
+  "total_bytes": 1250000000,
+  "error_message": "optional — present only when status=error"
+}
+```
+
+Field constraints:
+
+- `status` enum: `downloading | complete | error`
+- `progress` float in `[0.0, 1.0]`
+- `error_message` present only when `status="error"`; this is the sole signal for async download failure — there is no separate error code for download failures
+
+Delivery: broadcast to all active connections during a download; no `request_id`. The `error` message type is not used for async download failures; only `download_progress` with `status="error"` signals that a download job failed.
+
+---
 
 ## Optional App-Level Keepalive
 
@@ -216,7 +332,6 @@ Pong echoes the original ping `timestamp` unchanged; client can compute RTT as `
   - server may drop partial results first
   - final results should be prioritized where possible
 
-## Versioning
+## Versioning and Compatibility
 
-- This is protocol version `v1`.
-- Backward-incompatible changes must bump version and be documented.
+This is protocol version `v1`. Message types added in this revision: `server_state`, `model_list`, `download_progress`, and the new `list_models`/`download_model` command values.

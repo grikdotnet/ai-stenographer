@@ -1,51 +1,43 @@
-"""
-ModelManager handles model validation for STT pipeline.
-"""
-from pathlib import Path
+"""Model manager facade for shared registry-backed model access."""
 
-from src.downloader.ModelRegistry import ModelRegistry
+from src.asr.ModelDefinitions import IModelDefinition, ParakeetAsrModel, SileroVadModel
+from src.asr.ModelRegistry import ModelRegistry
 
 
 class ModelManager:
+    """Expose the server startup model queries needed by higher layers.
+
+    Responsibilities:
+    - Ask the registry whether the primary ASR model is ready.
+    - Delegate per-model validation to the registry.
+    - Expose the shared registry and well-known model objects to callers
+      that need richer model behavior.
     """
-    Manages model validation for STT pipeline.
 
-    Supports both development mode (./models/) and distribution mode
-    (_internal/models/) by accepting models_dir at construction time.
+    def __init__(self, model_registry: ModelRegistry) -> None:
+        self._model_registry = model_registry
 
-    Args:
-        models_dir: Directory containing model subdirectories.
-    """
+    @property
+    def model_registry(self) -> ModelRegistry:
+        """Return the backing shared model registry."""
+        return self._model_registry
 
-    def __init__(self, models_dir: Path) -> None:
-        """
-        Args:
-            models_dir: Directory containing model subdirectories.
-        """
-        self._models_dir = models_dir
+    def get_asr_model(self) -> ParakeetAsrModel:
+        """Return the concrete ASR model definition."""
+        return self._model_registry.get_asr_model()
+
+    def get_vad_model(self) -> SileroVadModel:
+        """Return the concrete VAD model definition."""
+        return self._model_registry.get_vad_model()
+
+    def get_model(self, model_name: str) -> IModelDefinition:
+        """Return a model definition by stable name."""
+        return self._model_registry.get_model(model_name)
 
     def model_exists(self) -> bool:
-        """
-        Returns whether the parakeet model is available.
-
-        Returns:
-            True if the parakeet installation validates successfully.
-        """
-        return self.validate_model('parakeet')
+        """Return whether the primary ASR model is ready for inference."""
+        return self.get_asr_model().is_ready()
 
     def validate_model(self, model_name: str) -> bool:
-        """
-        Checks whether a model's primary file exists and is non-empty.
-
-        Args:
-            model_name: Name of the model ('parakeet' or 'silero_vad')
-
-        Returns:
-            True if model file exists and has non-zero size, False otherwise
-        """
-        if model_name == 'parakeet':
-            return ModelRegistry.validate_model(model_name, self._models_dir)
-        if model_name == 'silero_vad':
-            model_path = self._models_dir / "silero_vad" / "silero_vad.onnx"
-            return model_path.exists() and model_path.stat().st_size > 0
-        return False
+        """Validate the requested model through the shared registry."""
+        return self.get_model(model_name).validate()

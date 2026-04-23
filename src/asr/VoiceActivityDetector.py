@@ -1,8 +1,9 @@
 # src/asr/VoiceActivityDetector.py
 import onnxruntime
 import numpy as np
-from typing import Dict, Any, Optional
-from pathlib import Path
+from typing import Any, Dict
+
+from src.asr.ModelDefinitions import IModelDefinition
 
 
 class VoiceActivityDetector:
@@ -14,15 +15,21 @@ class VoiceActivityDetector:
 
     Args:
         config: Configuration dictionary containing VAD and audio parameters
-        model_path: Absolute path to the Silero VAD ONNX model file
+        model: Shared Silero VAD model definition
         verbose: Enable detailed logging for debugging (default: False)
     """
 
-    def __init__(self, config: Dict[str, Any], model_path: Path, verbose: bool = False):
+    def __init__(
+        self,
+        config: Dict[str, Any],
+        model: IModelDefinition,
+        verbose: bool = False,
+    ) -> None:
         self.config = config
         self.vad_config = config['vad']
         self.audio_config = config['audio']
-        self.model_path = model_path
+        self.model_definition = model
+        self.model_path = model.get_model_path()
         self.verbose = verbose
 
         self.sample_rate: int = self.audio_config['sample_rate']
@@ -44,7 +51,7 @@ class VoiceActivityDetector:
     def _load_model(self) -> None:
         """Load Silero VAD ONNX model from local path.
 
-        Loads the model from the absolute path provided during initialization.
+        Loads the model from the shared model definition provided during initialization.
         Initializes the model state tensor for stateful inference.
         Applies optimizations for reduced CPU usage in streaming mode.
         """

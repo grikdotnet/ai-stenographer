@@ -55,7 +55,6 @@ def test_emits_boundary_when_utterance_ends() -> None:
         windower=windower,
         config=_config(),
         control_queue=queue.Queue(),
-        app_state=Mock(),
     )
 
     timestamps = [0.0, 0.032, 0.064, 0.096, 0.128]
@@ -76,7 +75,6 @@ def test_flush_without_open_utterance_does_not_emit_boundary() -> None:
         windower=Mock(flush=Mock(), process_segment=Mock()),
         config=_config(),
         control_queue=queue.Queue(),
-        app_state=Mock(),
     )
     spp.flush()
     assert spp.speech_queue.empty()

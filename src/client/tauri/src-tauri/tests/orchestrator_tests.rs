@@ -5,12 +5,12 @@
 /// access, audio source selection logic, connection failure paths, and
 /// message-handler dispatch.
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use stt_tauri_client::audio::AudioSource;
 use stt_tauri_client::error::AppError;
 use stt_tauri_client::orchestrator::{
-    ClientOrchestrator, ConnectionStatus, TranscriptUpdate, StateChanged,
+    ClientOrchestrator, ConnectionStatus, EventEmitter, StateChanged, TranscriptUpdate,
     friendly_connect_error,
 };
 use stt_tauri_client::protocol::ServerMessageDecoder;
@@ -35,6 +35,31 @@ impl AudioSource for SpyAudioSource {
     fn stop(&mut self) -> Result<(), AppError> {
         self.stopped.store(true, Ordering::SeqCst);
         Ok(())
+    }
+}
+
+struct RecordingEmitter {
+    events: Arc<Mutex<Vec<(String, String)>>>,
+}
+
+impl RecordingEmitter {
+    fn new() -> (Self, Arc<Mutex<Vec<(String, String)>>>) {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                events: Arc::clone(&events),
+            },
+            events,
+        )
+    }
+}
+
+impl EventEmitter for RecordingEmitter {
+    fn emit_serialized(&self, event: &str, payload: &str) {
+        self.events
+            .lock()
+            .unwrap()
+            .push((event.to_string(), payload.to_string()));
     }
 }
 
@@ -146,6 +171,7 @@ fn clear_resets_formatter_state() {
 #[test]
 fn pause_audio_transitions_from_running_to_paused() {
     let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
     sm.set_state(AppState::Running).unwrap();
     let mut orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
 
@@ -156,6 +182,7 @@ fn pause_audio_transitions_from_running_to_paused() {
 #[test]
 fn pause_audio_stops_audio_source() {
     let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
     sm.set_state(AppState::Running).unwrap();
     let mut orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
 
@@ -170,6 +197,7 @@ fn pause_audio_stops_audio_source() {
 #[test]
 fn resume_audio_transitions_from_paused_to_running() {
     let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
     sm.set_state(AppState::Running).unwrap();
     sm.set_state(AppState::Paused).unwrap();
     let mut orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
@@ -231,7 +259,7 @@ async fn failed_connect_updates_connection_status_snapshot() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn handle_session_created_sets_session_id_and_transitions_to_running() {
+fn handle_session_created_sets_waiting_for_server_state() {
     let sm = Arc::new(AppStateManager::new());
     let orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
 
@@ -240,25 +268,48 @@ fn handle_session_created_sets_session_id_and_transitions_to_running() {
 
     let handler_result = orch.handle_server_message(msg);
     assert!(handler_result.is_ok());
-    assert_eq!(sm.current_state(), AppState::Running);
+    assert_eq!(sm.current_state(), AppState::WaitingForServer);
+}
+
+#[test]
+fn handle_session_created_is_noop_when_already_waiting_for_server() {
+    let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
+    let orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
+
+    let json = r#"{"type":"session_created","session_id":"abc-123","protocol_version":"v1","server_time":1.0}"#;
+    let msg = ServerMessageDecoder::decode(json).unwrap();
+
+    let handler_result = orch.handle_server_message(msg);
+    assert!(handler_result.is_ok());
+    assert_eq!(sm.current_state(), AppState::WaitingForServer);
 }
 
 #[test]
 fn handle_session_created_rejects_wrong_protocol_version() {
     let sm = Arc::new(AppStateManager::new());
-    let orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
+    let mut orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
+    let (emitter, events) = RecordingEmitter::new();
+    orch.set_emitter(Arc::new(emitter));
 
     let json = r#"{"type":"session_created","session_id":"abc","protocol_version":"v99","server_time":1.0}"#;
     let msg = ServerMessageDecoder::decode(json).unwrap();
 
     let result = orch.handle_server_message(msg);
     assert!(result.is_err());
-    assert_eq!(sm.current_state(), AppState::Starting);
+    assert_eq!(sm.current_state(), AppState::Shutdown);
+    let events = events.lock().unwrap();
+    assert!(events.iter().any(|(event, payload)| {
+        event == "stt://connection-status"
+            && payload.contains("\"connected\":false")
+            && payload.contains("Unsupported protocol version")
+    }));
 }
 
 #[test]
 fn handle_recognition_result_dispatches_partial_through_fan_out() {
     let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
     sm.set_state(AppState::Running).unwrap();
     let orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm);
 
@@ -273,6 +324,7 @@ fn handle_recognition_result_dispatches_partial_through_fan_out() {
 #[test]
 fn handle_recognition_result_dispatches_final_through_fan_out() {
     let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
     sm.set_state(AppState::Running).unwrap();
     let orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm);
 
@@ -289,10 +341,11 @@ fn handle_recognition_result_dispatches_final_through_fan_out() {
 #[test]
 fn handle_session_closed_transitions_to_shutdown() {
     let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
     sm.set_state(AppState::Running).unwrap();
     let orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
 
-    let json = r#"{"type":"session_closed","session_id":"s1","reason":"normal","message":null}"#;
+    let json = r#"{"type":"session_closed","session_id":"s1","reason":"close_session","message":null}"#;
     let msg = ServerMessageDecoder::decode(json).unwrap();
 
     let result = orch.handle_server_message(msg);
@@ -301,10 +354,106 @@ fn handle_session_closed_transitions_to_shutdown() {
 }
 
 #[test]
+fn handle_server_state_running_transitions_to_running() {
+    let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
+    let orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
+
+    let json = r#"{"type":"server_state","state":"running"}"#;
+    let msg = ServerMessageDecoder::decode(json).unwrap();
+
+    let result = orch.handle_server_message(msg);
+    assert!(result.is_ok());
+    assert_eq!(sm.current_state(), AppState::Running);
+}
+
+#[test]
+fn handle_server_state_running_preserves_paused_state_without_error() {
+    let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
+    sm.set_state(AppState::Running).unwrap();
+    sm.set_state(AppState::Paused).unwrap();
+    let orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
+
+    let json = r#"{"type":"server_state","state":"running"}"#;
+    let msg = ServerMessageDecoder::decode(json).unwrap();
+
+    let result = orch.handle_server_message(msg);
+    assert!(result.is_ok());
+    assert_eq!(sm.current_state(), AppState::Paused);
+}
+
+#[test]
+fn handle_server_state_waiting_for_model_transitions_away_from_running() {
+    let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
+    sm.set_state(AppState::Running).unwrap();
+    let orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
+
+    let json = r#"{"type":"server_state","state":"waiting_for_model"}"#;
+    let msg = ServerMessageDecoder::decode(json).unwrap();
+
+    let result = orch.handle_server_message(msg);
+    assert!(result.is_ok());
+    assert_eq!(sm.current_state(), AppState::WaitingForServer);
+}
+
+#[test]
+fn handle_server_state_waiting_for_model_is_noop_when_already_waiting() {
+    let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
+    let orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
+
+    let json = r#"{"type":"server_state","state":"waiting_for_model"}"#;
+    let msg = ServerMessageDecoder::decode(json).unwrap();
+
+    let result = orch.handle_server_message(msg);
+    assert!(result.is_ok());
+    assert_eq!(sm.current_state(), AppState::WaitingForServer);
+}
+
+#[test]
+fn handle_server_state_shutdown_transitions_to_shutdown() {
+    let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
+    let orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
+
+    let json = r#"{"type":"server_state","state":"shutdown"}"#;
+    let msg = ServerMessageDecoder::decode(json).unwrap();
+
+    let result = orch.handle_server_message(msg);
+    assert!(result.is_ok());
+    assert_eq!(sm.current_state(), AppState::Shutdown);
+}
+
+#[test]
+fn handle_model_status_emits_model_status_event() {
+    let sm = Arc::new(AppStateManager::new());
+    let mut orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm);
+    let (emitter, events) = RecordingEmitter::new();
+    orch.set_emitter(Arc::new(emitter));
+
+    let json = r#"{"type":"model_status","status":"downloading","request_id":"req-2"}"#;
+    let msg = ServerMessageDecoder::decode(json).unwrap();
+
+    let result = orch.handle_server_message(msg);
+    assert!(result.is_ok());
+    let events = events.lock().unwrap();
+    assert!(events.iter().any(|(event, payload)| {
+        event == "stt://model-status"
+            && payload.contains("\"status\":\"downloading\"")
+            && payload.contains("\"request_id\":\"req-2\"")
+    }));
+}
+
+#[test]
 fn handle_error_message_returns_protocol_error() {
     let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
     sm.set_state(AppState::Running).unwrap();
-    let orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm);
+    let mut orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm);
+    let (emitter, events) = RecordingEmitter::new();
+    orch.set_emitter(Arc::new(emitter));
 
     let json = r#"{"type":"error","session_id":"s1","error_code":"BAD","message":"something broke","fatal":true}"#;
     let msg = ServerMessageDecoder::decode(json).unwrap();
@@ -314,6 +463,62 @@ fn handle_error_message_returns_protocol_error() {
         Err(AppError::ProtocolError(msg)) => assert!(msg.contains("something broke")),
         other => panic!("expected ProtocolError, got {other:?}"),
     }
+    let events = events.lock().unwrap();
+    assert!(events.iter().any(|(event, payload)| {
+        event == "stt://connection-status"
+            && payload.contains("\"connected\":false")
+            && payload.contains("something broke")
+    }));
+}
+
+#[test]
+fn handle_nonfatal_model_not_ready_does_not_emit_connection_error() {
+    let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
+    let mut orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
+    let (emitter, events) = RecordingEmitter::new();
+    orch.set_emitter(Arc::new(emitter));
+
+    let json = r#"{"type":"error","session_id":"s1","error_code":"MODEL_NOT_READY","message":"model is not ready","fatal":false}"#;
+    let msg = ServerMessageDecoder::decode(json).unwrap();
+
+    let result = orch.handle_server_message(msg);
+
+    assert!(result.is_ok());
+    assert_eq!(sm.current_state(), AppState::WaitingForServer);
+    let status = orch.current_connection_status();
+    assert!(status.error.is_none());
+    let events = events.lock().unwrap();
+    assert!(!events
+        .iter()
+        .any(|(event, payload)| event == "stt://connection-status"
+            && payload.contains("\"connected\":false")
+            && payload.contains("model is not ready")));
+}
+
+#[test]
+fn handle_nonfatal_download_in_progress_does_not_mark_connection_failed() {
+    let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
+    sm.set_state(AppState::Running).unwrap();
+    let mut orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
+    let (emitter, events) = RecordingEmitter::new();
+    orch.set_emitter(Arc::new(emitter));
+
+    let json = r#"{"type":"error","session_id":"s1","error_code":"DOWNLOAD_IN_PROGRESS","message":"download already running","fatal":false}"#;
+    let msg = ServerMessageDecoder::decode(json).unwrap();
+
+    let result = orch.handle_server_message(msg);
+
+    assert!(result.is_ok());
+    assert_eq!(sm.current_state(), AppState::Running);
+    assert!(orch.current_connection_status().error.is_none());
+    let events = events.lock().unwrap();
+    assert!(!events
+        .iter()
+        .any(|(event, payload)| event == "stt://connection-status"
+            && payload.contains("\"connected\":false")
+            && payload.contains("download already running")));
 }
 
 #[test]
@@ -394,6 +599,7 @@ fn state_changed_serializes_correctly() {
 #[tokio::test]
 async fn stop_transitions_to_shutdown_from_running() {
     let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
     sm.set_state(AppState::Running).unwrap();
     let mut orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
 
@@ -404,6 +610,7 @@ async fn stop_transitions_to_shutdown_from_running() {
 #[tokio::test]
 async fn stop_is_idempotent() {
     let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
     sm.set_state(AppState::Running).unwrap();
     let mut orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
 

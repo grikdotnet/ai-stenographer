@@ -20,18 +20,46 @@ async fn channel_full_drops_new_frame() {
 }
 
 // ---------------------------------------------------------------------------
-// Shutdown command JSON format
+// Control command JSON format
 // ---------------------------------------------------------------------------
 
 #[test]
-fn shutdown_command_json_has_correct_structure() {
-    let json = WsClientTransport::build_shutdown_json("sess-42", 1700000000.0);
+fn close_session_command_json_has_correct_structure() {
+    let json = WsClientTransport::build_close_session_json("sess-42", 1700000000.0);
     let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
 
     assert_eq!(parsed["type"], "control_command");
-    assert_eq!(parsed["command"], "shutdown");
+    assert_eq!(parsed["command"], "close_session");
     assert_eq!(parsed["session_id"], "sess-42");
     assert!((parsed["timestamp"].as_f64().unwrap() - 1700000000.0).abs() < 1e-3);
+}
+
+#[test]
+fn list_models_command_json_has_correct_structure() {
+    let json = WsClientTransport::build_list_models_json("sess-42", 1700000000.0, Some("req-1"));
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(parsed["type"], "control_command");
+    assert_eq!(parsed["command"], "list_models");
+    assert_eq!(parsed["session_id"], "sess-42");
+    assert_eq!(parsed["request_id"], "req-1");
+}
+
+#[test]
+fn download_model_command_json_has_correct_structure() {
+    let json = WsClientTransport::build_download_model_json(
+        "sess-42",
+        1700000000.0,
+        "parakeet",
+        Some("req-2"),
+    );
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(parsed["type"], "control_command");
+    assert_eq!(parsed["command"], "download_model");
+    assert_eq!(parsed["session_id"], "sess-42");
+    assert_eq!(parsed["model_name"], "parakeet");
+    assert_eq!(parsed["request_id"], "req-2");
 }
 
 // ---------------------------------------------------------------------------

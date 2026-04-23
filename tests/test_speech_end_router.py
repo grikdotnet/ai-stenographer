@@ -2,6 +2,9 @@ import queue
 import time
 
 import numpy as np
+import pytest
+
+from src.ApplicationState import ApplicationState
 
 from src.SpeechEndRouter import SpeechEndRouter
 from src.types import (
@@ -12,14 +15,6 @@ from src.types import (
     RecognizerFreeSignal,
     SpeechEndSignal,
 )
-
-
-class _FakeAppState:
-    def __init__(self) -> None:
-        self._observers = []
-
-    def register_component_observer(self, observer) -> None:
-        self._observers.append(observer)
 
 
 def _segment(chunk_id: int, utterance_id: int = 1) -> AudioSegment:
@@ -62,7 +57,6 @@ def _build_router(
         recognizer_queue=recognizer_queue,
         recognizer_output_queue=output_queue,
         matcher_queue=matcher_queue,
-        app_state=_FakeAppState(),
         control_queue=control_queue,
     )
     return router, speech_queue, recognizer_queue, output_queue, matcher_queue, control_queue

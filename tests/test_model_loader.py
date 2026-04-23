@@ -14,9 +14,11 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.asr.ModelLoader import ModelLoadError, load_model
+from src.asr.ModelDefinitions import ParakeetAsrModel
 
 
 _MODELS_DIR = Path("/fake/models")
+_ASR_MODEL = ParakeetAsrModel(_MODELS_DIR)
 _PROVIDERS = ["CPUExecutionProvider"]
 
 
@@ -40,7 +42,7 @@ class TestLoadModelSuccess:
         base.with_timestamps.return_value = timestamped
 
         with _patch_load(return_value=base):
-            result = load_model(_MODELS_DIR, _PROVIDERS, _make_sess_options())
+            result = load_model(_ASR_MODEL, _PROVIDERS, _make_sess_options())
 
         assert result is timestamped
 
@@ -55,12 +57,12 @@ class TestLoadModelNotSupportedError:
     def test_raises_model_load_error(self) -> None:
         with _patch_load(side_effect=self._make_exc()):
             with pytest.raises(ModelLoadError):
-                load_model(_MODELS_DIR, _PROVIDERS, _make_sess_options())
+                load_model(_ASR_MODEL, _PROVIDERS, _make_sess_options())
 
     def test_error_message_contains_model_name(self) -> None:
         with _patch_load(side_effect=self._make_exc()):
             with pytest.raises(ModelLoadError, match="nemo-parakeet"):
-                load_model(_MODELS_DIR, _PROVIDERS, _make_sess_options())
+                load_model(_ASR_MODEL, _PROVIDERS, _make_sess_options())
 
 
 class TestLoadModelPathNotDirectoryError:
@@ -73,12 +75,12 @@ class TestLoadModelPathNotDirectoryError:
     def test_raises_model_load_error(self) -> None:
         with _patch_load(side_effect=self._make_exc()):
             with pytest.raises(ModelLoadError):
-                load_model(_MODELS_DIR, _PROVIDERS, _make_sess_options())
+                load_model(_ASR_MODEL, _PROVIDERS, _make_sess_options())
 
     def test_error_message_contains_re_download_hint(self) -> None:
         with _patch_load(side_effect=self._make_exc()):
             with pytest.raises(ModelLoadError, match="(?i)re-download|download"):
-                load_model(_MODELS_DIR, _PROVIDERS, _make_sess_options())
+                load_model(_ASR_MODEL, _PROVIDERS, _make_sess_options())
 
 
 class TestLoadModelFileNotFoundError:
@@ -91,12 +93,12 @@ class TestLoadModelFileNotFoundError:
     def test_raises_model_load_error(self) -> None:
         with _patch_load(side_effect=self._make_exc()):
             with pytest.raises(ModelLoadError):
-                load_model(_MODELS_DIR, _PROVIDERS, _make_sess_options())
+                load_model(_ASR_MODEL, _PROVIDERS, _make_sess_options())
 
     def test_error_message_contains_re_download_hint(self) -> None:
         with _patch_load(side_effect=self._make_exc()):
             with pytest.raises(ModelLoadError, match="(?i)re-download|download"):
-                load_model(_MODELS_DIR, _PROVIDERS, _make_sess_options())
+                load_model(_ASR_MODEL, _PROVIDERS, _make_sess_options())
 
 
 class TestLoadModelMoreThanOneFileError:
@@ -109,12 +111,12 @@ class TestLoadModelMoreThanOneFileError:
     def test_raises_model_load_error(self) -> None:
         with _patch_load(side_effect=self._make_exc()):
             with pytest.raises(ModelLoadError):
-                load_model(_MODELS_DIR, _PROVIDERS, _make_sess_options())
+                load_model(_ASR_MODEL, _PROVIDERS, _make_sess_options())
 
     def test_error_message_contains_duplicate_hint(self) -> None:
         with _patch_load(side_effect=self._make_exc()):
             with pytest.raises(ModelLoadError, match="(?i)duplicate|ambiguous|more than one"):
-                load_model(_MODELS_DIR, _PROVIDERS, _make_sess_options())
+                load_model(_ASR_MODEL, _PROVIDERS, _make_sess_options())
 
 
 class TestLoadModelInvalidModelTypeError:
@@ -127,7 +129,7 @@ class TestLoadModelInvalidModelTypeError:
     def test_raises_model_load_error(self) -> None:
         with _patch_load(side_effect=self._make_exc()):
             with pytest.raises(ModelLoadError):
-                load_model(_MODELS_DIR, _PROVIDERS, _make_sess_options())
+                load_model(_ASR_MODEL, _PROVIDERS, _make_sess_options())
 
 
 class TestLoadModelJsonDecodeError:
@@ -139,12 +141,12 @@ class TestLoadModelJsonDecodeError:
     def test_raises_model_load_error(self) -> None:
         with _patch_load(side_effect=self._make_exc()):
             with pytest.raises(ModelLoadError):
-                load_model(_MODELS_DIR, _PROVIDERS, _make_sess_options())
+                load_model(_ASR_MODEL, _PROVIDERS, _make_sess_options())
 
     def test_error_message_contains_config_hint(self) -> None:
         with _patch_load(side_effect=self._make_exc()):
             with pytest.raises(ModelLoadError, match="(?i)config"):
-                load_model(_MODELS_DIR, _PROVIDERS, _make_sess_options())
+                load_model(_ASR_MODEL, _PROVIDERS, _make_sess_options())
 
 
 class TestLoadModelOsError:
@@ -153,12 +155,12 @@ class TestLoadModelOsError:
     def test_raises_model_load_error(self) -> None:
         with _patch_load(side_effect=OSError("permission denied")):
             with pytest.raises(ModelLoadError):
-                load_model(_MODELS_DIR, _PROVIDERS, _make_sess_options())
+                load_model(_ASR_MODEL, _PROVIDERS, _make_sess_options())
 
     def test_error_message_contains_disk_hint(self) -> None:
         with _patch_load(side_effect=OSError("no space left")):
             with pytest.raises(ModelLoadError, match="(?i)disk|permission|OS error"):
-                load_model(_MODELS_DIR, _PROVIDERS, _make_sess_options())
+                load_model(_ASR_MODEL, _PROVIDERS, _make_sess_options())
 
 
 class TestLoadModelUnexpectedException:
@@ -167,9 +169,9 @@ class TestLoadModelUnexpectedException:
     def test_raises_model_load_error(self) -> None:
         with _patch_load(side_effect=RuntimeError("onnxruntime internal")):
             with pytest.raises(ModelLoadError):
-                load_model(_MODELS_DIR, _PROVIDERS, _make_sess_options())
+                load_model(_ASR_MODEL, _PROVIDERS, _make_sess_options())
 
     def test_error_message_contains_exception_type(self) -> None:
         with _patch_load(side_effect=RuntimeError("onnxruntime internal")):
             with pytest.raises(ModelLoadError, match="RuntimeError"):
-                load_model(_MODELS_DIR, _PROVIDERS, _make_sess_options())
+                load_model(_ASR_MODEL, _PROVIDERS, _make_sess_options())

@@ -2,28 +2,23 @@
 
 import json
 import logging
-import queue as _queue
 import subprocess
 import sys
+import threading
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
-import onnxruntime as rt
-
 from src.ApplicationState import ApplicationState
-from src.downloader.ModelDownloader import ModelDownloader
 from src.downloader.ModelDownloadCliDialog import ModelDownloadCliDialog
-from src.asr.ExecutionProviderManager import ExecutionProviderManager
-from src.asr.ModelLoader import load_model as load_asr_model
 from src.asr.ModelManager import ModelManager
-from src.asr.Recognizer import Recognizer
-from src.asr.SessionOptionsFactory import SessionOptionsFactory
+from src.asr.RecognizerFactory import IRecognizerFactory, RecognizerFactory
 from src.LoggingSetup import setup_logging
-from src.PathResolver import PathResolver
+from src.PathResolver import ResolvedPaths
 from src.server.qr_display import print_qr_code
 from src.server.ServerApp import ServerApp
+from src.server.WsServer import DEFAULT_SERVER_HOST
 from src.StartupArgs import StartupArgs
-
 
 class TauriBinaryNotFoundError(RuntimeError):
     """Raised when the Tauri client binary is absent in default (non-server-only) mode."""
@@ -37,6 +32,17 @@ class DownloadCancelledError(Exception):
     """Raised when model provisioning is declined or cancelled by the user."""
 
 
+@dataclass(frozen=True)
+class StartupDecisions:
+    """Resolved startup actions for the current args + model availability."""
+
+    run_cli_dialog: bool = False
+    auto_download_model: bool = False
+    create_recognizer: bool = False
+    set_waiting_for_model: bool = False
+    run_gui_client: bool = False
+
+
 class StartupController:
     """Orchestrates the full application startup sequence.
 
@@ -46,21 +52,23 @@ class StartupController:
 
     Args:
         args: Parsed and validated CLI arguments.
-        path_resolver: Resolved filesystem paths for current distribution mode.
+        paths: Resolved filesystem paths for current distribution mode.
         model_manager: ModelManager instance used to check for missing models.
     """
 
     def __init__(
         self,
         args: StartupArgs,
-        path_resolver: PathResolver,
+        paths: ResolvedPaths,
         model_manager: ModelManager,
     ) -> None:
         self._args = args
-        self._path_resolver = path_resolver
-        self._paths = path_resolver.paths
+        self._paths = paths
         self._model_manager = model_manager
-        self._model_downloader = ModelDownloader(self._paths.models_dir)
+        self._model_registry = model_manager.model_registry
+        self._asr_model = model_manager.get_asr_model()
+        self._app_state = ApplicationState()
+        self._recognizer_factory: IRecognizerFactory | None = None
 
     def run(self) -> None:
         """Execute the full startup sequence.
@@ -70,54 +78,122 @@ class StartupController:
             2. Set up logging.
             3. Ensure the Parakeet model is available.
             4. Load config.
-            5. Create and start ServerApp.
-            6. Create Recognizer from config.
-            7. Attach recognizer to server.
-            8. In default mode, spawn Tauri client.
-            9. Block on server lifecycle; stop server in finally.
+            5. Create the recognizer factory.
+            6. Create and start ServerApp.
+            7. Create a recognizer immediately when startup can run inference.
+            8. Attach recognizer to server.
+            9. In default mode, spawn Tauri client.
+            10. Block on server lifecycle; stop server in finally.
         """
         self._validate_environment()
         self._setup_logging()
 
-        # Startup owns the user dialog for missing models.
-        if not self._model_manager.model_exists():
-            if self._args.server_only:
-                if self._args.download_model:
-                    self._download_server_only_model()
-                # Only prompt when startup is attached to an interactive console.
-                elif sys.stdin.isatty() and sys.stdout.isatty():
-                    if not ModelDownloadCliDialog(["parakeet"]).confirm_download():
-                        raise DownloadCancelledError("Model download was cancelled.")
-                    self._download_server_only_model()
-                else:
-                    print(
-                        "Missing models: parakeet. Non-interactive mode cannot prompt. "
-                        "Re-run with --server-only --download-model to provision automatically.",
-                        file=sys.stderr,
-                    )
-                    raise MissingModelsError("Missing models: parakeet")
-            else:
-                self._download_missing_models_via_client()
-            if not self._model_manager.model_exists():
-                raise MissingModelsError("Download failed. model still missing: parakeet")
+        model_exists = self._model_manager.model_exists()
+        decisions = self._resolve_startup_decisions(model_exists)
 
-        config_path = self._path_resolver.get_config_path("server_config.json")
+        if decisions.set_waiting_for_model:
+            self._app_state.set_state("waiting_for_model")
+
+        if decisions.run_cli_dialog:
+            if not (sys.stdin.isatty() and sys.stdout.isatty()):
+                print(
+                    f"Missing models: {self._asr_model.name}. Non-interactive mode cannot prompt. "
+                    "Re-run with --server-only --download-model to provision automatically.",
+                    file=sys.stderr,
+                )
+                raise MissingModelsError(f"Missing models: {self._asr_model.name}")
+
+            if not ModelDownloadCliDialog([self._asr_model.name]).confirm_download():
+                raise DownloadCancelledError("Model download was cancelled.")
+
+        if decisions.auto_download_model:
+            self._auto_download_model()
+
+        if decisions.auto_download_model and not self._model_manager.model_exists():
+            raise MissingModelsError("Download failed. Model still missing")
+
+        config_path = self._paths.config_dir / "server_config.json"
         with open(config_path) as f:
             config = json.load(f)
 
-        server_app = self._create_and_start_server(config)
+        server_host = self._resolve_server_host(config)
+        server_url = f"ws://{server_host}:{self._args.port}"
+        recognizer_factory = RecognizerFactory(
+            config=config,
+            asr_model=self._asr_model,
+            app_state=self._app_state,
+            verbose=self._args.verbose,
+        )
+        self._recognizer_factory = recognizer_factory
+
+        server_app = self._create_and_start_server(config, server_host, recognizer_factory)
+        client_proc: subprocess.Popen[bytes] | None = None
         try:
-            recognizer = self._create_recognizer(config, server_app.app_state)
-            server_app.attach_recognizer(recognizer)
-            if not self._args.server_only:
-                self._spawn_tauri_client(f"ws://127.0.0.1:{server_app.port}")
-            self._run_lifecycle(server_app)
+            if decisions.create_recognizer:
+                server_app.attach_recognizer(recognizer_factory.create_recognizer())
+                self._app_state.set_state("running")
+
+            server_url = f"ws://{server_host}:{server_app.port}"
+
+            if decisions.run_gui_client:
+                client_proc = self._spawn_tauri_client(server_url)
+                self._start_client_exit_watcher(client_proc, server_app)
+
+            self._run_lifecycle(server_app, server_url)
         except KeyboardInterrupt:
             logging.info("Interrupted by user.")
         finally:
             server_app.stop()
 
-    def _download_server_only_model(self) -> None:
+    def _resolve_startup_decisions(self, model_exists: bool) -> StartupDecisions:
+        """Resolve startup actions from CLI args and model availability.
+
+        Args:
+            model_exists: Whether the required model is already available.
+
+        Returns:
+            StartupDecisions describing the actions to take in run().
+        """
+        if model_exists:
+            return StartupDecisions(
+                create_recognizer=True,
+                run_gui_client=not self._args.server_only,
+            )
+
+        if self._args.server_only:
+            if self._args.download_model:
+                return StartupDecisions(
+                    auto_download_model=True,
+                    create_recognizer=True,
+                    set_waiting_for_model=True,
+                )
+
+            return StartupDecisions(
+                run_cli_dialog=True,
+                auto_download_model=True,
+                create_recognizer=True,
+                set_waiting_for_model=True,
+            )
+
+        return StartupDecisions(
+            set_waiting_for_model=True,
+            run_gui_client=True,
+        )
+
+    def _resolve_server_host(self, config: dict) -> str:
+        """Resolve the WebSocket host from CLI args, config, or default.
+
+        Args:
+            config: Parsed server configuration.
+
+        Returns:
+            The resolved host name or IP address.
+        """
+        if self._args.host is not None:
+            return self._args.host
+        return config.get("server", {}).get("host", DEFAULT_SERVER_HOST)
+
+    def _auto_download_model(self) -> None:
         """Download the required server-only model in the current process.
 
         Raises:
@@ -125,25 +201,14 @@ class StartupController:
             MissingModelsError: If the download fails.
         """
         try:
-            self._model_downloader.download_parakeet(self._make_cli_progress_reporter())
+            self._asr_model.download(self._make_cli_progress_reporter())
         except KeyboardInterrupt as exc:
             print(file=sys.stderr)
-            self._model_downloader.cleanup_partial_files(self._paths.models_dir)
+            self._asr_model.cleanup_partial_files()
             raise DownloadCancelledError("Model download was cancelled.") from exc
         except Exception as exc:
-            self._model_downloader.cleanup_partial_files(self._paths.models_dir)
+            self._asr_model.cleanup_partial_files()
             raise MissingModelsError(f"Automatic download failed: {exc}") from exc
-
-    def _download_missing_models_via_client(self) -> None:
-        """Launch the download GUI client and wait for it to finish.
-
-        Raises:
-            DownloadCancelledError: If the download GUI exits with non-zero code.
-        """
-        proc = self._spawn_client_for_download()
-        proc.wait()
-        if proc.returncode != 0:
-            raise DownloadCancelledError("Model was not downloaded.")
 
     def _validate_environment(self) -> None:
         """Check Tauri binary exists in default (non-server-only) mode.
@@ -171,76 +236,45 @@ class StartupController:
         is_frozen = getattr(sys, "frozen", False)
         setup_logging(self._paths.logs_dir, verbose=self._args.verbose, is_frozen=is_frozen)
 
-    def _create_and_start_server(self, config: dict) -> ServerApp:
+    def _create_and_start_server(
+        self,
+        config: dict,
+        host: str,
+        recognizer_factory: IRecognizerFactory,
+    ) -> ServerApp:
         """Create and start ServerApp without a recognizer.
 
         Args:
             config: Parsed server_config.json dict.
+            host: WebSocket host to bind.
+            recognizer_factory: Factory used for eager or deferred recognizer creation.
 
         Returns:
             A started ServerApp instance.
         """
-        vad_model_path = self._paths.models_dir / "silero_vad" / "silero_vad.onnx"
-        app_state = ApplicationState()
         server_app = ServerApp(
             config=config,
-            vad_model_path=vad_model_path,
-            host="127.0.0.1",
+            model_registry=self._model_registry,
+            host=host,
             port=self._args.port,
-            app_state=app_state,
+            app_state=self._app_state,
+            recognizer_factory=recognizer_factory,
         )
         server_app.start()
         return server_app
 
-    def _create_recognizer(self, config: dict, app_state: ApplicationState) -> Recognizer:
-        """Build the ONNX session and create a Recognizer.
-
-        Args:
-            config: Parsed server_config.json dict.
-            app_state: Server ApplicationState to pass to Recognizer.
-
-        Returns:
-            A constructed (not started) Recognizer instance.
-
-        Raises:
-            ModelLoadError: If the ASR model file cannot be loaded.
-        """
-        exec_mgr = ExecutionProviderManager(config)
-        providers = exec_mgr.build_provider_list()
-
-        sess_options = rt.SessionOptions()
-        sess_options.graph_optimization_level = rt.GraphOptimizationLevel.ORT_ENABLE_ALL
-        gpu_type = exec_mgr.detect_gpu_type()
-        factory = SessionOptionsFactory(config)
-        factory.get_strategy(gpu_type).configure_session_options(sess_options)
-
-        model = load_asr_model(self._paths.models_dir, providers, sess_options)
-
-        return Recognizer(
-            model=model,
-            input_queue=_queue.Queue(),
-            output_queue=_queue.Queue(),
-            sample_rate=config["audio"]["sample_rate"],
-            app_state=app_state,
-            verbose=self._args.verbose,
-        )
-
-    def _run_lifecycle(self, server_app: ServerApp) -> None:
+    def _run_lifecycle(self, server_app: ServerApp, server_url: str) -> None:
         """Block until the server WsServer thread exits.
 
         In server-only mode, prints URL and QR code first.
         In both modes, blocks on the WsServer thread.
         """
-        server_url = f"ws://127.0.0.1:{server_app.port}"
         if self._args.server_only:
             print(f"Server listening on {server_url}", flush=True)
             print_qr_code(server_url)
             logging.info("Running in --server-only mode. Press Ctrl+C to stop.")
-        while (
-            server_app._ws_server._thread is not None
-            and server_app._ws_server._thread.is_alive()
-        ):
-            server_app._ws_server.join(timeout=0.5)
+        while server_app.is_running():
+            server_app.join(timeout=0.5)
 
     def _spawn_tauri_client(self, server_url: str) -> "subprocess.Popen[bytes]":
         """Spawn the Tauri desktop client binary.
@@ -257,14 +291,34 @@ class StartupController:
             cmd.append(f"--input-file={self._args.input_file}")
         return subprocess.Popen(cmd)
 
-    def _spawn_client_for_download(self) -> "subprocess.Popen[bytes]":
-        """Spawn download_models.py to show the model download GUI.
+    def _start_client_exit_watcher(
+        self,
+        client_proc: "subprocess.Popen[bytes]",
+        server_app: ServerApp,
+    ) -> None:
+        """Start a daemon thread that stops the server when the GUI client exits.
 
-        Returns:
-            Running subprocess handle.
+        Args:
+            client_proc: Spawned GUI client process.
+            server_app: Server instance to stop after client exit.
         """
-        script = self._paths.root_dir / "src" / "client" / "tk" / "download_models.py"
-        return subprocess.Popen([sys.executable, str(script)])
+
+        def watch_client_exit() -> None:
+            try:
+                client_proc.wait()
+            except Exception:
+                logging.exception("ClientExitWatcher: failed while waiting for GUI client exit")
+                return
+
+            logging.info("GUI client exited; stopping server")
+            server_app.stop()
+
+        watcher = threading.Thread(
+            target=watch_client_exit,
+            daemon=True,
+            name="ClientExitWatcher",
+        )
+        watcher.start()
 
     def _tauri_binary_path(self) -> Path:
         return (
@@ -277,24 +331,26 @@ class StartupController:
         """Create a coarse-grained terminal progress reporter for headless downloads.
 
         Returns:
-            Progress callback accepted by ModelDownloader.
+            Progress callback accepted by the shared model download flow.
         """
-        last_reported = {"percent": -10}
+        last_reported_percent = -10
+        model_name = self._asr_model.name
 
         def report(progress: float, downloaded_bytes: int, total_bytes: int) -> None:
+            nonlocal last_reported_percent
             percent = int(progress * 100)
-            if percent >= 100 and last_reported["percent"] < 100:
-                print("Downloading parakeet... 100%", flush=True)
-                last_reported["percent"] = 100
+            if percent >= 100 and last_reported_percent < 100:
+                print(f"Downloading {model_name}... 100%", flush=True)
+                last_reported_percent = 100
                 return
-            if percent - last_reported["percent"] < 10:
+            if percent - last_reported_percent < 10:
                 return
             downloaded_label = f"{downloaded_bytes / (1024 * 1024):.1f} MB"
             print(
-                f"Downloading parakeet... {percent}% "
+                f"Downloading {model_name}... {percent}% "
                 f"({downloaded_label} downloaded)",
                 flush=True,
             )
-            last_reported["percent"] = percent
+            last_reported_percent = percent
 
         return report

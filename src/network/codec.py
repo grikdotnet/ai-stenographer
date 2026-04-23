@@ -10,7 +10,6 @@ All other messages are UTF-8 JSON text frames.
 
 import json
 import struct
-from typing import Union
 
 import numpy as np
 
@@ -19,13 +18,21 @@ from src.network.types import (
     ServerMessage,
     WsAudioFrame,
     WsControlCommand,
+    WsDownloadProgress,
     WsError,
+    WsModelList,
+    WsModelStatus,
     WsRecognitionResult,
+    WsServerState,
     WsSessionClosed,
     WsSessionCreated,
 )
 
 _HEADER_PREFIX_LEN = 4  # bytes for the uint32 header_len field
+
+
+class SessionIdMismatchError(ValueError):
+    """Raised when an audio frame carries an unexpected session identifier."""
 
 
 # ---------------------------------------------------------------------------
@@ -49,7 +56,8 @@ def decode_audio_frame(raw: bytes, expected_session_id: str) -> WsAudioFrame:
         Decoded WsAudioFrame.
 
     Raises:
-        ValueError: On any validation failure with a descriptive message.
+        SessionIdMismatchError: If the frame carries a different session ID.
+        ValueError: On any other validation failure with a descriptive message.
     """
     if len(raw) < _HEADER_PREFIX_LEN:
         raise ValueError(f"Frame too short: {len(raw)} bytes, need at least {_HEADER_PREFIX_LEN}")
@@ -69,7 +77,7 @@ def decode_audio_frame(raw: bytes, expected_session_id: str) -> WsAudioFrame:
         raise ValueError(f"Expected type 'audio_chunk', got {header.get('type')!r}")
 
     if header.get("session_id") != expected_session_id:
-        raise ValueError(
+        raise SessionIdMismatchError(
             f"session_id mismatch: expected {expected_session_id!r}, got {header.get('session_id')!r}"
         )
 
@@ -91,7 +99,8 @@ def encode_server_message(msg: ServerMessage) -> str:
     """Encode a server-side message dataclass to a UTF-8 JSON string.
 
     Args:
-        msg: One of WsSessionCreated, WsRecognitionResult, WsSessionClosed, WsError.
+        msg: One of the supported server message dataclasses, including session,
+            recognition, error, and model-command responses.
 
     Returns:
         JSON string suitable for sending as a WebSocket text frame.
@@ -126,6 +135,11 @@ def encode_server_message(msg: ServerMessage) -> str:
         }
         if msg.message is not None:
             obj["message"] = msg.message
+    elif isinstance(msg, WsServerState):
+        obj = {
+            "type": "server_state",
+            "state": msg.state,
+        }
     elif isinstance(msg, WsError):
         obj = {
             "type": "error",
@@ -134,6 +148,44 @@ def encode_server_message(msg: ServerMessage) -> str:
             "message": msg.message,
             "fatal": msg.fatal,
         }
+        if msg.request_id is not None:
+            obj["request_id"] = msg.request_id
+    elif isinstance(msg, WsModelList):
+        obj = {
+            "type": "model_list",
+            "models": [
+                {
+                    "name": model.name,
+                    "display_name": model.display_name,
+                    "size_description": model.size_description,
+                    "status": model.status,
+                }
+                for model in msg.models
+            ],
+        }
+        if msg.request_id is not None:
+            obj["request_id"] = msg.request_id
+    elif isinstance(msg, WsModelStatus):
+        obj = {
+            "type": "model_status",
+            "status": msg.status,
+        }
+        if msg.request_id is not None:
+            obj["request_id"] = msg.request_id
+    elif isinstance(msg, WsDownloadProgress):
+        obj = {
+            "type": "download_progress",
+            "model_name": msg.model_name,
+            "status": msg.status,
+        }
+        if msg.progress is not None:
+            obj["progress"] = msg.progress
+        if msg.downloaded_bytes is not None:
+            obj["downloaded_bytes"] = msg.downloaded_bytes
+        if msg.total_bytes is not None:
+            obj["total_bytes"] = msg.total_bytes
+        if msg.error_message is not None:
+            obj["error_message"] = msg.error_message
     else:
         raise TypeError(f"Unknown server message type: {type(msg)}")
 
@@ -167,18 +219,26 @@ def decode_client_message(text: str) -> ClientTextMessage:
 
     if msg_type == "control_command":
         command = obj.get("command")
-        if command != "shutdown":
-            raise ValueError(f"Invalid command value: {command!r} (must be 'shutdown')")
+        valid_commands = {"close_session", "list_models", "download_model"}
+        if command not in valid_commands:
+            raise ValueError(
+                f"Invalid command value: {command!r} "
+                "(must be 'close_session', 'list_models', or 'download_model')"
+            )
         session_id = obj.get("session_id")
         if session_id is None:
             raise ValueError("control_command missing 'session_id' field")
         timestamp = obj.get("timestamp")
         if timestamp is None:
             raise ValueError("control_command missing 'timestamp' field")
+        model_name = obj.get("model_name")
+        if command == "download_model" and not model_name:
+            raise ValueError("control_command missing 'model_name' field for download_model")
         return WsControlCommand(
             session_id=session_id,
-            command="shutdown",
+            command=command,
             timestamp=timestamp,
+            model_name=model_name,
             request_id=obj.get("request_id"),
         )
 

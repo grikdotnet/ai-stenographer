@@ -1,4 +1,4 @@
-"""WebSocket wire protocol message types for the STT client-server protocol (v1)."""
+"""WebSocket wire protocol message types for the STT client-server protocol."""
 
 from dataclasses import dataclass, field
 from typing import Literal
@@ -8,14 +8,13 @@ import numpy.typing as npt
 
 
 # ---------------------------------------------------------------------------
-# Client → Server
+# Client -> Server
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class WsAudioFrame:
-    """Binary audio_chunk frame sent from client to server.
-    Carries one chunk of mono float32 PCM audio at 16 kHz.
-    """
+    """Binary audio_chunk frame sent from client to server."""
 
     session_id: str
     chunk_id: int
@@ -29,30 +28,27 @@ class WsControlCommand:
 
     Args:
         session_id: Active session identifier.
-        command: Command name; only ``"shutdown"`` is valid in v1.
+        command: Command name defined by the protocol.
         timestamp: Client wall-clock time when the command was issued.
-        request_id: Optional correlation identifier for tracing.
+        model_name: Target model name for ``download_model`` commands.
+        request_id: Optional correlation identifier echoed by server responses.
     """
 
     session_id: str
-    command: Literal["shutdown"]
+    command: Literal["close_session", "list_models", "download_model"]
     timestamp: float
+    model_name: str | None = None
     request_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
-# Server → Client
+# Server -> Client
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class WsSessionCreated:
-    """JSON session_created frame sent from server to client after connect.
-
-    Args:
-        session_id: UUID assigned to this session.
-        protocol_version: Wire protocol version string (``"v1"``).
-        server_time: Server wall-clock time at session creation.
-    """
+    """JSON session_created frame sent from server to client after connect."""
 
     session_id: str
     protocol_version: str
@@ -61,18 +57,7 @@ class WsSessionCreated:
 
 @dataclass
 class WsRecognitionResult:
-    """JSON recognition_result frame streamed from server to client.
-
-    Args:
-        session_id: Session this result belongs to.
-        status: ``"partial"`` for incremental updates; ``"final"`` for finalized utterances.
-        text: Recognised text.
-        start_time: Utterance audio start offset in seconds.
-        end_time: Utterance audio end offset in seconds.
-        chunk_ids: Audio chunk IDs that contributed to this result.
-        utterance_id: Monotonically increasing utterance counter.
-        token_confidences: Per-token confidence scores.
-    """
+    """JSON recognition_result frame streamed from server to client."""
 
     session_id: str
     status: Literal["partial", "final"]
@@ -86,29 +71,23 @@ class WsRecognitionResult:
 
 @dataclass
 class WsSessionClosed:
-    """JSON session_closed frame sent by server before graceful disconnect.
-
-    Args:
-        session_id: Session being closed.
-        reason: Closure reason: ``"shutdown"``, ``"timeout"``, or ``"error"``.
-        message: Optional human-readable detail.
-    """
+    """JSON session_closed frame sent by server before graceful disconnect."""
 
     session_id: str
-    reason: Literal["shutdown", "timeout", "error"]
+    reason: Literal["close_session", "timeout", "error"]
     message: str | None = None
 
 
 @dataclass
-class WsError:
-    """JSON error frame sent from server to client.
+class WsServerState:
+    """JSON server_state frame broadcast by the server."""
 
-    Args:
-        session_id: Session this error relates to.
-        error_code: Machine-readable error code (v1 enum).
-        message: Human-readable description.
-        fatal: If ``True``, the server closes the connection immediately after sending.
-    """
+    state: Literal["starting", "waiting_for_model", "running", "shutdown"]
+
+
+@dataclass
+class WsError:
+    """JSON error frame sent from server to client."""
 
     session_id: str
     error_code: Literal[
@@ -118,31 +97,66 @@ class WsError:
         "BACKPRESSURE_DROP",
         "PROTOCOL_VIOLATION",
         "INTERNAL_ERROR",
+        "MODEL_NOT_READY",
+        "DOWNLOAD_IN_PROGRESS",
+        "INVALID_MODEL_NAME",
     ]
     message: str
     fatal: bool = False
+    request_id: str | None = None
 
 
 @dataclass
 class WsModelInfo:
-    """Model metadata for download/status surfaces.
-
-    Args:
-        name: Stable model identifier.
-        display_name: Human-readable model name.
-        size_description: Human-readable download size.
-        status: Current availability state.
-    """
+    """Model metadata for download/status surfaces."""
 
     name: str
     display_name: str
     size_description: str
-    status: Literal["downloaded", "missing"]
+    status: Literal["downloaded", "missing", "downloading"]
+
+
+@dataclass
+class WsModelList:
+    """JSON model_list response sent to one client."""
+
+    models: list[WsModelInfo]
+    request_id: str | None = None
+
+
+@dataclass
+class WsModelStatus:
+    """JSON model_status response for download_model commands."""
+
+    status: Literal["ready", "downloading"]
+    request_id: str | None = None
+
+
+@dataclass
+class WsDownloadProgress:
+    """JSON download_progress frame broadcast during model downloads."""
+
+    model_name: str
+    status: Literal["downloading", "complete", "error"]
+    progress: float | None = None
+    downloaded_bytes: int | None = None
+    total_bytes: int | None = None
+    error_message: str | None = None
 
 
 # ---------------------------------------------------------------------------
 # Union types
 # ---------------------------------------------------------------------------
 
-ServerMessage = WsSessionCreated | WsRecognitionResult | WsSessionClosed | WsError
+
+ServerMessage = (
+    WsSessionCreated
+    | WsRecognitionResult
+    | WsSessionClosed
+    | WsServerState
+    | WsError
+    | WsModelList
+    | WsModelStatus
+    | WsDownloadProgress
+)
 ClientTextMessage = WsControlCommand

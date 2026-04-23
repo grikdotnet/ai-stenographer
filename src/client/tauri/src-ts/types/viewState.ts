@@ -1,4 +1,20 @@
-export type HeaderStatus = "connecting" | "listening" | "paused" | "error";
+export type HeaderStatus = "connecting" | "waiting" | "listening" | "paused" | "error";
+
+export interface ModelInfo {
+  name: string;
+  display_name: string;
+  size_description: string;
+  status: string;
+}
+
+export interface DownloadProgress {
+  model_name: string;
+  status: string;
+  progress?: number;
+  downloaded_bytes?: number;
+  total_bytes?: number;
+  error_message?: string;
+}
 
 export interface FinalizedUtterance {
   text: string;
@@ -14,4 +30,8 @@ export interface AppViewState {
   preliminaryText: string;
   isPaused: boolean;
   connectionError?: string;
+  serverState?: string;
+  models: ModelInfo[];
+  downloadProgress?: DownloadProgress;
+  downloadDialogDismissed?: boolean;
 }

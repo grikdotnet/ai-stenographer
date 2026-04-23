@@ -50,6 +50,31 @@ pub async fn clear(
     Ok(())
 }
 
+/// Requests the current downloadable model list from the server.
+#[tauri::command]
+pub async fn list_models(
+    orchestrator: State<'_, Arc<Mutex<ClientOrchestrator>>>,
+) -> Result<(), String> {
+    orchestrator
+        .lock()
+        .await
+        .request_model_list()
+        .map_err(|e| e.to_string())
+}
+
+/// Requests download of the named model from the server.
+#[tauri::command]
+pub async fn download_model(
+    model_name: String,
+    orchestrator: State<'_, Arc<Mutex<ClientOrchestrator>>>,
+) -> Result<(), String> {
+    orchestrator
+        .lock()
+        .await
+        .request_model_download(&model_name)
+        .map_err(|e| e.to_string())
+}
+
 /// Toggles keyboard insertion on/off and returns the new state.
 #[tauri::command]
 pub fn toggle_insertion(
