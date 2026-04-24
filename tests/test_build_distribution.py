@@ -846,6 +846,36 @@ class TestCopyApplicationCode:
         assert result is True
         assert (app_dir / "src" / "submodule" / "nested.py").exists()
 
+    def test_copy_application_code_excludes_sibling_client_tree(self, tmp_path):
+        """Should stage only src/ even when sibling client artifacts exist."""
+        from build_distribution import copy_application_code
+
+        src_dir = tmp_path / "src"
+        src_dir.mkdir()
+        (src_dir / "__init__.py").write_text("# server package")
+        (src_dir / "server_module.py").write_text("SERVER = True")
+
+        client_dir = tmp_path / "client" / "tauri"
+        (client_dir / "node_modules").mkdir(parents=True)
+        (client_dir / "node_modules" / "leftpad.js").write_text("module.exports = {}")
+        target_dir = client_dir / "src-tauri" / "target" / "debug"
+        target_dir.mkdir(parents=True)
+        (target_dir / "stt-tauri-client.exe").write_bytes(b"fake exe")
+
+        main_py = tmp_path / "main.py"
+        main_py.write_text("print('main')")
+
+        app_dir = tmp_path / "dist" / "_internal" / "app"
+        app_dir.mkdir(parents=True)
+
+        result = copy_application_code(src_dir, main_py, app_dir)
+
+        assert result is True
+        assert (app_dir / "src" / "__init__.py").exists()
+        assert (app_dir / "src" / "server_module.py").exists()
+        assert not (app_dir / "src" / "client").exists()
+        assert not (app_dir / "client").exists()
+
 
 class TestCompileToPyc:
     """Test compiling .py files to .pyc bytecode."""

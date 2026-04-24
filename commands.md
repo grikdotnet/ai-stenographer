@@ -66,7 +66,7 @@ python main.py --server-only -v
 
 ### Tauri Client
 
-Run from `src/client/tauri/`. Requires the server to already be running.
+Run from `client/tauri/`. Requires the server to already be running.
 
 Development (hot-reload):
 
@@ -89,14 +89,14 @@ PowerShell:
 
 ```powershell
 $env:STT_SERVER_URL="ws://127.0.0.1:<port>"
-$env:STT_INPUT_FILE="..\..\..\tests\fixtures\en.wav"
+$env:STT_INPUT_FILE="..\..\tests\fixtures\en.wav"
 npm run tauri:dev
 ```
 
 Bash:
 
 ```bash
-STT_SERVER_URL=ws://127.0.0.1:<port> STT_INPUT_FILE=../../../tests/fixtures/en.wav npm run tauri:dev
+STT_SERVER_URL=ws://127.0.0.1:<port> STT_INPUT_FILE=../../tests/fixtures/en.wav npm run tauri:dev
 ```
 
 Production build:
@@ -110,19 +110,19 @@ Headless Rust binary (no window, no Node):
 PowerShell:
 
 ```powershell
-cd src/client/tauri/src-tauri
+cd client/tauri/src-tauri
 cargo build
 .\target\debug\stt-tauri-client.exe --headless --server-url=ws://127.0.0.1:<port>
-.\target\debug\stt-tauri-client.exe --headless --server-url=ws://127.0.0.1:<port> --input-file=..\..\..\..\tests\fixtures\en.wav
+.\target\debug\stt-tauri-client.exe --headless --server-url=ws://127.0.0.1:<port> --input-file=..\..\..\tests\fixtures\en.wav
 ```
 
 Bash:
 
 ```bash
-cd src/client/tauri/src-tauri
+cd client/tauri/src-tauri
 cargo build
 ./target/debug/stt-tauri-client --headless --server-url=ws://127.0.0.1:<port>
-./target/debug/stt-tauri-client --headless --server-url=ws://127.0.0.1:<port> --input-file=../../../../tests/fixtures/en.wav
+./target/debug/stt-tauri-client --headless --server-url=ws://127.0.0.1:<port> --input-file=../../../tests/fixtures/en.wav
 ```
 
 ---
@@ -147,14 +147,14 @@ python -m pytest tests/ -q
 Tauri frontend tests (Vitest):
 
 ```
-cd src/client/tauri
+cd client/tauri
 npm test
 ```
 
 Tauri Rust tests:
 
 ```
-cd src/client/tauri/src-tauri
+cd client/tauri/src-tauri
 cargo test
 ```
 

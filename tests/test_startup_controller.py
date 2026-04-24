@@ -136,6 +136,22 @@ def _make_controller(
 class TestEnvironmentValidation:
     """Tauri binary check in default (non-server-only) mode."""
 
+    def test_tauri_binary_path_uses_top_level_client_tree(self) -> None:
+        controller = StartupController(
+            args=_make_args(server_only=False),
+            paths=_make_paths(root_dir=Path("/fake")),
+            model_manager=_make_model_manager(exists=True),
+        )
+
+        assert controller._tauri_binary_path().parts[-6:] == (
+            "client",
+            "tauri",
+            "src-tauri",
+            "target",
+            "release",
+            "stt-tauri-client.exe",
+        )
+
     def test_missing_tauri_binary_exits_1_in_default_mode(self, capsys) -> None:
         paths = _make_paths()
         controller = StartupController(
@@ -149,7 +165,9 @@ class TestEnvironmentValidation:
             pytest.raises(TauriBinaryNotFoundError),
         ):
             controller.run()
-        assert "stt-tauri-client.exe" in capsys.readouterr().err
+        stderr = capsys.readouterr().err
+        assert "stt-tauri-client.exe" in stderr
+        assert "cd client/tauri && npm run tauri:build" in stderr
 
     def test_missing_tauri_binary_skipped_in_server_only_mode(self) -> None:
         server_app_mock = _make_server_app_mock()
@@ -855,7 +873,15 @@ class TestRunLifecycleDefaultMode:
         proc_mock.wait.return_value = 0
         mock_popen = self._run_default(server_app_mock, proc_mock)
         popen_args = mock_popen.call_args[0][0]
-        assert any("stt-tauri-client.exe" in str(a) for a in popen_args)
+        assert any(
+            "client" in str(a)
+            and "tauri" in str(a)
+            and "src-tauri" in str(a)
+            and "target" in str(a)
+            and "release" in str(a)
+            and "stt-tauri-client.exe" in str(a)
+            for a in popen_args
+        )
 
     def test_default_mode_forwards_input_file(self) -> None:
         server_app_mock = _make_server_app_mock(port=9023)

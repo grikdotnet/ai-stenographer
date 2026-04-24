@@ -224,7 +224,7 @@ class StartupController:
             print(
                 f"Error: Tauri client binary not found at:\n {binary}\n\n"
                 "Build it first with:\n"
-                "  cd src/client/tauri && npm run tauri:build\n\n"
+                "  cd client/tauri && npm run tauri:build\n\n"
                 "Or run in server-only mode:\n"
                 f"  python main.py --server-only [--port={port_hint}]",
                 file=sys.stderr,
@@ -323,7 +323,7 @@ class StartupController:
     def _tauri_binary_path(self) -> Path:
         return (
             self._paths.root_dir
-            / "src" / "client" / "tauri" / "src-tauri"
+            / "client" / "tauri" / "src-tauri"
             / "target" / "release" / "stt-tauri-client.exe"
         )
 

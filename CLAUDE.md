@@ -115,7 +115,7 @@ The system uses a client-server design.
 Server-side **pipeline architecture** with threaded components communicating via queues.
 
 📖 **See [ARCHITECTURE.md](ARCHITECTURE.md) for the architecture documentation of the server application**.
-📖 **For the Tauri client documentation see [./src/client/tauri/CLAUDE.md](Tauri Client CLAUDE.md)**.
+📖 **For the Tauri client documentation see [./client/tauri/CLAUDE.md](Tauri Client CLAUDE.md)**.
 📖 **The client-server API specification is in [./docs/client-server-api-spec.md](client-server-api-spec.md)**.
 
 ## Architectural Dependency Rules

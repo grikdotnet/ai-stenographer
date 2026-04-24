@@ -1,6 +1,6 @@
 # STT Server and System Architecture
 
-Client-specific architecture is documented separately in `src/client/tauri/ARCHITECTURE.md`.
+Client-specific architecture is documented separately in `client/tauri/ARCHITECTURE.md`.
 
 ## Overview
 
@@ -9,7 +9,7 @@ The system is a two-process application:
 - the **Python server** owns model loading, audio preprocessing, VAD, window assembly, recognition, overlap resolution, and WebSocket session lifecycle
 - the **Tauri desktop client** owns capture, UI, quick entry, insertion, and client-side transport behavior
 
-This document describes the **server and system architecture**. For Tauri internals, see `src/client/tauri/ARCHITECTURE.md`.
+This document describes the **server and system architecture**. For Tauri internals, see `client/tauri/ARCHITECTURE.md`.
 
 ---
 
@@ -393,7 +393,7 @@ The Tauri client is authoritative for:
 - rendering transcript and model-download state
 - local quick-entry and insertion features
 
-Client-specific details live in `src/client/tauri/ARCHITECTURE.md`.
+Client-specific details live in `client/tauri/ARCHITECTURE.md`.
 
 ---
 

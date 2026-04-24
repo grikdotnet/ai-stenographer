@@ -85,7 +85,7 @@ Note: npm `--key=value` config flags do not work reliably for underscore-named k
 
 ```bash
 # Build
-cd src/client/tauri/src-tauri
+cd client/tauri/src-tauri
 cargo build
 
 # Run headless — no Node, no Vite, no window
