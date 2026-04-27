@@ -962,6 +962,18 @@ class TestBuildScriptConstants:
 
         assert "websockets" in build_distribution.CRITICAL_MODULES
 
+    def test_critical_modules_include_xxhash(self):
+        """Critical import checks should cover the model manifest hash dependency."""
+        import build_distribution
+
+        assert "xxhash" in build_distribution.CRITICAL_MODULES
+
+    def test_requirements_include_xxhash(self):
+        """Portable builds must install the direct model downloader hash dependency."""
+        requirements = Path("requirements.txt").read_text(encoding="utf-8")
+
+        assert "xxhash" in requirements
+
     def test_critical_modules_exclude_tkinter(self):
         """Build validation should no longer require the removed Tk client."""
         import build_distribution
@@ -1012,3 +1024,312 @@ class TestCreateReadme:
         assert result is True
         readme = (build_dir / "README.txt").read_text(encoding="utf-8")
         assert "Tk client" not in readme
+
+    def test_create_readme_has_no_shortcut_wording(self, tmp_path):
+        """README must not reference the removed .lnk shortcut launcher."""
+        from build_distribution import create_readme
+
+        build_dir = tmp_path / "AI-Stenographer"
+        build_dir.mkdir(parents=True)
+
+        assert create_readme(build_dir) is True
+        readme = (build_dir / "README.txt").read_text(encoding="utf-8")
+        assert ".lnk" not in readme
+        assert "AI - Stenographer.lnk" not in readme
+        assert "shortcut" not in readme.lower()
+
+    def test_create_readme_directs_user_to_exe(self, tmp_path):
+        """README quick-start should point at AI-Stenographer.exe."""
+        from build_distribution import create_readme
+
+        build_dir = tmp_path / "AI-Stenographer"
+        build_dir.mkdir(parents=True)
+
+        assert create_readme(build_dir) is True
+        readme = (build_dir / "README.txt").read_text(encoding="utf-8")
+        assert "AI-Stenographer.exe" in readme
+
+    def test_create_readme_describes_first_run_model_split(self, tmp_path):
+        """README must state Parakeet downloads on first run and Silero VAD is bundled."""
+        from build_distribution import create_readme
+
+        build_dir = tmp_path / "AI-Stenographer"
+        build_dir.mkdir(parents=True)
+
+        assert create_readme(build_dir) is True
+        readme = (build_dir / "README.txt").read_text(encoding="utf-8")
+        assert "Parakeet" in readme
+        assert "first run" in readme.lower()
+        assert "Silero" in readme
+        assert "bundled" in readme.lower()
+
+    def test_create_readme_keeps_portable_storage_paths(self, tmp_path):
+        """README must keep portable-local storage wording."""
+        from build_distribution import create_readme
+
+        build_dir = tmp_path / "AI-Stenographer"
+        build_dir.mkdir(parents=True)
+
+        assert create_readme(build_dir) is True
+        readme = (build_dir / "README.txt").read_text(encoding="utf-8")
+        assert "_internal\\models" in readme
+        assert "_internal\\app\\config" in readme
+        assert "logs" in readme
+
+
+class TestCheckBuildPrerequisites:
+    """Test build prerequisite detection."""
+
+    def test_returns_true_when_npm_and_cargo_present(self):
+        from build_distribution import check_build_prerequisites
+
+        def fake_which(name):
+            return f"/fake/{name}"
+
+        with patch("build_distribution.shutil.which", side_effect=fake_which):
+            assert check_build_prerequisites() is True
+
+    def test_returns_false_when_npm_missing(self):
+        from build_distribution import check_build_prerequisites
+
+        def fake_which(name):
+            return None if name == "npm.cmd" else "/fake/cargo"
+
+        with patch("build_distribution.shutil.which", side_effect=fake_which):
+            assert check_build_prerequisites() is False
+
+    def test_returns_false_when_cargo_missing(self):
+        from build_distribution import check_build_prerequisites
+
+        def fake_which(name):
+            return None if name == "cargo" else "/fake/npm.cmd"
+
+        with patch("build_distribution.shutil.which", side_effect=fake_which):
+            assert check_build_prerequisites() is False
+
+
+class TestBuildTauriFrontend:
+    """Test Tauri frontend build invocation."""
+
+    def test_runs_npm_ci_then_npm_run_build_in_tauri_dir(self, tmp_path):
+        from build_distribution import build_tauri_frontend
+
+        tauri_dir = tmp_path / "client" / "tauri"
+        tauri_dir.mkdir(parents=True)
+
+        with patch("build_distribution.subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=0)
+            result = build_tauri_frontend(tauri_dir)
+
+        assert result is True
+        assert mock_run.call_count == 2
+        first_args, first_kwargs = mock_run.call_args_list[0]
+        assert first_args[0] == ["npm.cmd", "ci"]
+        assert first_kwargs["cwd"] == str(tauri_dir)
+        assert first_kwargs["check"] is True
+        second_args, second_kwargs = mock_run.call_args_list[1]
+        assert second_args[0] == ["npm.cmd", "run", "build"]
+        assert second_kwargs["cwd"] == str(tauri_dir)
+
+    def test_returns_false_when_npm_fails(self, tmp_path):
+        import subprocess
+        from build_distribution import build_tauri_frontend
+
+        tauri_dir = tmp_path / "client" / "tauri"
+        tauri_dir.mkdir(parents=True)
+
+        with patch("build_distribution.subprocess.run") as mock_run:
+            mock_run.side_effect = subprocess.CalledProcessError(1, "npm.cmd")
+            result = build_tauri_frontend(tauri_dir)
+
+        assert result is False
+
+
+class TestBuildTauriRelease:
+    """Test Tauri Rust release build invocation."""
+
+    def test_runs_cargo_build_release_with_custom_protocol(self, tmp_path):
+        from build_distribution import build_tauri_release
+
+        src_tauri_dir = tmp_path / "client" / "tauri" / "src-tauri"
+        src_tauri_dir.mkdir(parents=True)
+
+        with patch("build_distribution.subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=0)
+            result = build_tauri_release(src_tauri_dir)
+
+        assert result is True
+        args, kwargs = mock_run.call_args
+        assert args[0] == [
+            "cargo",
+            "build",
+            "--release",
+            "--features",
+            "custom-protocol",
+        ]
+        assert kwargs["cwd"] == str(src_tauri_dir)
+        assert kwargs["check"] is True
+
+
+class TestCopyTauriExecutable:
+    """Test that the Tauri release exe is copied to the portable root as AI-Stenographer.exe."""
+
+    def test_copies_pinned_release_exe_to_build_dir(self, tmp_path):
+        from build_distribution import copy_tauri_executable
+
+        src_tauri_dir = tmp_path / "client" / "tauri" / "src-tauri"
+        release_dir = src_tauri_dir / "target" / "release"
+        release_dir.mkdir(parents=True)
+        src_exe = release_dir / "stt-tauri-client.exe"
+        src_exe.write_bytes(b"fake tauri exe")
+
+        build_dir = tmp_path / "dist" / "AI-Stenographer"
+        build_dir.mkdir(parents=True)
+
+        result = copy_tauri_executable(src_tauri_dir, build_dir)
+
+        assert result is True
+        dst = build_dir / "AI-Stenographer.exe"
+        assert dst.exists()
+        assert dst.read_bytes() == b"fake tauri exe"
+
+    def test_returns_false_when_release_exe_missing(self, tmp_path):
+        from build_distribution import copy_tauri_executable
+
+        src_tauri_dir = tmp_path / "client" / "tauri" / "src-tauri"
+        src_tauri_dir.mkdir(parents=True)
+        build_dir = tmp_path / "dist" / "AI-Stenographer"
+        build_dir.mkdir(parents=True)
+
+        assert copy_tauri_executable(src_tauri_dir, build_dir) is False
+
+
+class TestCreatePortableArchive:
+    """Test final portable ZIP archive creation."""
+
+    def test_archive_root_is_AI_Stenographer(self, tmp_path):
+        from build_distribution import create_portable_archive
+
+        dist_dir = tmp_path / "dist"
+        build_dir = dist_dir / "AI-Stenographer"
+        (build_dir / "_internal" / "app").mkdir(parents=True)
+        (build_dir / "_internal" / "runtime").mkdir(parents=True)
+        (build_dir / "_internal" / "models" / "silero_vad").mkdir(parents=True)
+        (build_dir / "AI-Stenographer.exe").write_bytes(b"exe")
+        (build_dir / "_internal" / "app" / "main.pyc").write_bytes(b"pyc")
+        (build_dir / "_internal" / "runtime" / "python.exe").write_bytes(b"py")
+        (build_dir / "_internal" / "models" / "silero_vad" / "silero_vad.onnx").write_bytes(b"onnx")
+
+        archive_path = create_portable_archive(dist_dir)
+
+        assert archive_path == dist_dir / "AI-Stenographer-portable.zip"
+        assert archive_path.exists()
+
+        with zipfile.ZipFile(archive_path) as zf:
+            names = zf.namelist()
+
+        assert any(n.startswith("AI-Stenographer/") for n in names)
+        assert "AI-Stenographer/AI-Stenographer.exe" in names
+        assert "AI-Stenographer/_internal/app/main.pyc" in names
+        assert "AI-Stenographer/_internal/runtime/python.exe" in names
+        assert "AI-Stenographer/_internal/models/silero_vad/silero_vad.onnx" in names
+        assert not any(n.startswith("dist/") for n in names)
+        assert not any("/parakeet" in n for n in names)
+
+
+class TestBuildOrder:
+    """Test the high-level orchestration order in main()."""
+
+    def test_main_runs_prereq_checks_before_packaging_and_archive_last(self, tmp_path, monkeypatch):
+        import build_distribution as bd
+
+        calls = []
+
+        def record(name, return_value=True):
+            def _stub(*args, **kwargs):
+                calls.append(name)
+                return return_value
+            return _stub
+
+        # Force build_dir cleanup to no-op by pointing dist into tmp_path.
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(bd, "Path", bd.Path)  # keep Path real
+
+        # Stub everything main() touches.
+        stubs = {
+            "check_build_prerequisites": record("prereq"),
+            "download_embedded_python": lambda v, c: tmp_path / "py.zip",
+            "create_directory_structure": lambda b: {
+                "runtime": tmp_path / "runtime",
+                "lib": tmp_path / "lib",
+                "app": tmp_path / "app",
+                "models": tmp_path / "models",
+            },
+            "extract_embedded_python": record("extract"),
+            "copy_signed_executables_from_system": record("signed_copy"),
+            "verify_signatures": record("verify_sig"),
+            "create_pth_file": record("pth"),
+            "enable_pip": record("pip"),
+            "verify_pip": record("verify_pip"),
+            "collect_third_party_licenses": record("licenses"),
+            "copy_legal_documents": record("legal"),
+            "install_dependencies": record("install"),
+            "remove_pip_from_distribution": record("rm_pip"),
+            "remove_tests_from_distribution": record("rm_tests"),
+            "verify_native_libraries": lambda lib: {"dummy": True},
+            "test_imports": lambda py, mods: {m: True for m in mods},
+            "copy_application_code": record("copy_app"),
+            "compile_to_pyc": record("compile_app"),
+            "compile_site_packages": record("compile_site"),
+            "zip_site_packages": record("zip_internal"),
+            "cleanup_package_metadata": record("cleanup"),
+            "copy_bundled_silero_vad": record("silero"),
+            "copy_assets_and_config": record("assets"),
+            "create_readme": record("readme"),
+            "build_tauri_frontend": record("tauri_fe"),
+            "build_tauri_release": record("tauri_rel"),
+            "copy_tauri_executable": record("tauri_copy"),
+            "create_portable_archive": lambda d: (calls.append("archive"), tmp_path / "x.zip")[1],
+        }
+        for name, fn in stubs.items():
+            monkeypatch.setattr(bd, name, fn)
+
+        # Avoid touching real filesystem cleanup
+        monkeypatch.setattr(bd.shutil, "rmtree", lambda *a, **k: None)
+
+        rc = bd.main()
+        assert rc == 0
+
+        assert calls[0] == "prereq"
+        order = {name: i for i, name in enumerate(calls)}
+        # Python packaging precedes Tauri build
+        assert order["zip_internal"] < order["tauri_fe"]
+        assert order["silero"] < order["tauri_fe"]
+        # Tauri build sequence: frontend → release → exe copy
+        assert order["tauri_fe"] < order["tauri_rel"]
+        assert order["tauri_rel"] < order["tauri_copy"]
+        # README generated AFTER Tauri exe copy (per PLAN.md)
+        assert order["tauri_copy"] < order["readme"]
+        # Final archive is last
+        assert order["readme"] < order["archive"]
+
+    def test_main_aborts_when_prerequisites_missing(self, tmp_path, monkeypatch):
+        import build_distribution as bd
+
+        calls = []
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(bd, "check_build_prerequisites", lambda: False)
+
+        # If anything else runs, record it.
+        for name in [
+            "download_embedded_python",
+            "build_tauri_frontend",
+            "build_tauri_release",
+            "copy_tauri_executable",
+            "create_portable_archive",
+        ]:
+            monkeypatch.setattr(bd, name, lambda *a, **k: calls.append(name))
+
+        rc = bd.main()
+        assert rc == 1
+        assert calls == []

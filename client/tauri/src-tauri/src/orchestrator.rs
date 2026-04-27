@@ -212,6 +212,17 @@ fn should_surface_server_error_as_connection_error(error_code: &str, fatal: bool
     )
 }
 
+fn run_connected_callback_if_session_ready(
+    session_id_set: bool,
+    connected_callback: &Option<Arc<dyn Fn() + Send + Sync>>,
+) {
+    if session_id_set {
+        if let Some(callback) = connected_callback.as_ref() {
+            callback();
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ClientOrchestrator
 // ---------------------------------------------------------------------------
@@ -231,6 +242,7 @@ pub struct ClientOrchestrator {
     formatter: Arc<TextFormatter>,
     fan_out: Arc<Mutex<RecognitionFanOut>>,
     emitter: Arc<dyn EventEmitter>,
+    connected_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     chunk_counter: Arc<AtomicI64>,
     audio_source: Option<Box<dyn AudioSource>>,
     connection_status: Arc<Mutex<ConnectionStatus>>,
@@ -263,6 +275,7 @@ impl ClientOrchestrator {
             formatter,
             fan_out: Arc::new(Mutex::new(fan_out)),
             emitter: Arc::new(NoopEmitter),
+            connected_callback: None,
             chunk_counter: Arc::new(AtomicI64::new(0)),
             audio_source: None,
             connection_status: Arc::new(Mutex::new(ConnectionStatus {
@@ -277,6 +290,11 @@ impl ClientOrchestrator {
         self.emitter = emitter;
     }
 
+    /// Sets a callback invoked after the protocol session handshake succeeds.
+    pub fn set_connected_callback(&mut self, callback: Arc<dyn Fn() + Send + Sync>) {
+        self.connected_callback = Some(callback);
+    }
+
     /// Installs a callback invoked on every text change, replacing the current
     /// formatter and fan-out subscriber.
     ///
@@ -288,7 +306,10 @@ impl ClientOrchestrator {
     ///
     /// Returns: `Arc<TextFormatter>` pointing to the newly installed formatter, so
     ///          callers can query text from the same instance the callback is wired to.
-    pub fn set_text_change_observer(&mut self, cb: Box<dyn Fn() + Send + Sync>) -> Arc<TextFormatter> {
+    pub fn set_text_change_observer(
+        &mut self,
+        cb: Box<dyn Fn() + Send + Sync>,
+    ) -> Arc<TextFormatter> {
         let formatter = Arc::new(TextFormatter::new(Some(cb)));
         let mut fan_out = RecognitionFanOut::new();
         fan_out.add_subscriber(Box::new(FormatterBridge(Arc::clone(&formatter))));
@@ -300,6 +321,12 @@ impl ClientOrchestrator {
     /// Returns the configured server URL.
     pub fn server_url(&self) -> &str {
         &self.server_url
+    }
+
+    /// Replaces the server URL and resets transport state before a reconnect.
+    pub fn replace_server_url(&mut self, server_url: String) {
+        self.server_url = server_url.clone();
+        self.transport = Arc::new(tokio::sync::Mutex::new(WsClientTransport::new(server_url)));
     }
 
     /// Returns the optional input file path.
@@ -335,6 +362,11 @@ impl ClientOrchestrator {
             })
     }
 
+    /// Records and emits a terminal connection error.
+    pub fn emit_connection_error(&self, error: String) {
+        emit_connection_status(&self.connection_status, &self.emitter, false, Some(error));
+    }
+
     /// Connects to the STT server over WebSocket.
     ///
     /// Algorithm:
@@ -357,6 +389,7 @@ impl ClientOrchestrator {
         let transport_for_handler = Arc::clone(&self.transport);
         let emitter = Arc::clone(&self.emitter);
         let connection_status = Arc::clone(&self.connection_status);
+        let connected_callback = self.connected_callback.clone();
 
         if let Ok(mut status) = self.connection_status.lock() {
             *status = ConnectionStatus {
@@ -407,12 +440,14 @@ impl ClientOrchestrator {
                                 });
                                 return;
                             }
-                            if let Ok(transport) = transport_for_handler.try_lock() {
+                            let session_id_set = if let Ok(transport) = transport_for_handler.try_lock() {
                                 transport.set_session_id(session_id.clone());
                                 tracing::info!("session_id set on transport");
+                                true
                             } else {
                                 tracing::error!("transport try_lock failed — session_id NOT set");
-                            }
+                                false
+                            };
                             set_state_if_needed_or_log(
                                 &state_manager,
                                 AppState::WaitingForServer,
@@ -423,6 +458,10 @@ impl ClientOrchestrator {
                                 &emitter,
                                 true,
                                 None,
+                            );
+                            run_connected_callback_if_session_ready(
+                                session_id_set,
+                                &connected_callback,
                             );
                         }
                         ServerMessage::RecognitionResult {
@@ -583,7 +622,8 @@ impl ClientOrchestrator {
     ///
     /// Must be called after `connect()` so the audio channel exists.
     pub fn start_audio(&mut self) -> Result<(), AppError> {
-        let transport_guard = self.transport
+        let transport_guard = self
+            .transport
             .try_lock()
             .map_err(|_| AppError::AudioError("transport locked during start_audio".into()))?;
         let audio_tx = transport_guard
@@ -904,5 +944,27 @@ impl RecognitionSubscriber for FormatterBridge {
 
     fn on_finalization(&self, result: &RecognitionResult) {
         self.0.on_finalization(result);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_connected_callback_if_session_ready;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    #[test]
+    fn connected_callback_runs_only_after_session_id_is_set() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_callback = Arc::clone(&calls);
+        let callback = Some(Arc::new(move || {
+            calls_for_callback.fetch_add(1, Ordering::SeqCst);
+        }) as Arc<dyn Fn() + Send + Sync>);
+
+        run_connected_callback_if_session_ready(false, &callback);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        run_connected_callback_if_session_ready(true, &callback);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }

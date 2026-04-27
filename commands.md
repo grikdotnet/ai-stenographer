@@ -17,9 +17,9 @@ python -m pytest tests/ -q
 
 ---
 
-### Server + Tauri Client (default)
+### Python Server
 
-Starts the Python server and attempts to spawn the built Tauri desktop client:
+Starts the headless Python WebSocket server. It prints a parseable `Server listening on ws://...` line and a QR code, then blocks until Ctrl+C.
 
 ```
 python main.py
@@ -31,56 +31,59 @@ Verbose (debug) mode:
 python main.py -v
 ```
 
-File input instead of microphone (for testing):
+Fixed port:
 
 ```
-python main.py --input-file=tests/fixtures/en_short.wav -v
+python main.py --port=62062
 ```
 
-If the built Tauri binary is not present, `python main.py` fails with the existing Tauri-binary-not-found startup error.
-
----
-
-### Server Only
-
-Starts the server without spawning a client. Prints the WebSocket URL and a QR code, then blocks until Ctrl+C.
+Provision the model before serving:
 
 ```
-python main.py --server-only --port=62062
+python main.py --download-model
 ```
 
-With a random port:
-
-```
-python main.py --server-only
-```
-
-
-Debug mode:
-
-```
-python main.py --server-only -v
-```
+`--server-only` is still accepted for compatibility but no longer changes behavior.
 
 ---
 
 ### Tauri Client
 
-Run from `client/tauri/`. Requires the server to already be running.
+Run from `client/tauri/`.
 
-Development (hot-reload):
+Development with a Tauri-owned Python server:
 
 PowerShell:
 
 ```powershell
-$env:STT_SERVER_URL="ws://127.0.0.1:<port>"
+cd client/tauri
 npm run tauri:dev
 ```
 
 Bash:
 
 ```bash
-STT_SERVER_URL=ws://127.0.0.1:<port> npm run tauri:dev
+cd client/tauri
+npm run tauri:dev
+```
+
+Development with an external Python server:
+
+PowerShell:
+
+```powershell
+python main.py --port=62062
+cd client/tauri
+$env:STT_SERVER_URL="ws://127.0.0.1:62062"
+npm run tauri:dev
+```
+
+Bash:
+
+```bash
+python main.py --port=62062
+cd client/tauri
+STT_SERVER_URL=ws://127.0.0.1:62062 npm run tauri:dev
 ```
 
 With file input instead of microphone:
@@ -88,7 +91,6 @@ With file input instead of microphone:
 PowerShell:
 
 ```powershell
-$env:STT_SERVER_URL="ws://127.0.0.1:<port>"
 $env:STT_INPUT_FILE="..\..\tests\fixtures\en.wav"
 npm run tauri:dev
 ```
@@ -96,7 +98,7 @@ npm run tauri:dev
 Bash:
 
 ```bash
-STT_SERVER_URL=ws://127.0.0.1:<port> STT_INPUT_FILE=../../tests/fixtures/en.wav npm run tauri:dev
+STT_INPUT_FILE=../../tests/fixtures/en.wav npm run tauri:dev
 ```
 
 Production build:
@@ -105,7 +107,27 @@ Production build:
 npm run tauri:build
 ```
 
-Headless Rust binary (no window, no Node):
+Headless Rust binary with a Tauri-owned Python server:
+
+PowerShell:
+
+```powershell
+cd client/tauri/src-tauri
+cargo build
+.\target\debug\stt-tauri-client.exe --headless
+.\target\debug\stt-tauri-client.exe --headless --input-file=..\..\..\tests\fixtures\en.wav
+```
+
+Bash:
+
+```bash
+cd client/tauri/src-tauri
+cargo build
+./target/debug/stt-tauri-client --headless
+./target/debug/stt-tauri-client --headless --input-file=../../../tests/fixtures/en.wav
+```
+
+Headless Rust binary with an external server:
 
 PowerShell:
 

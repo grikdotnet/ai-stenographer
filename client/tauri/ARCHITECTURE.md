@@ -7,6 +7,7 @@ The Tauri client is the active desktop client for this project.
 It is responsible for:
 
 - connecting to the Python STT server over WebSocket
+- starting and supervising a development-layout Python server when no external server URL is configured
 - capturing live microphone audio or streaming an input file
 - managing client lifecycle state
 - rendering transcript and model-download UI
@@ -19,19 +20,40 @@ The Python server remains responsible for VAD, windowing, ASR inference, overlap
 
 ## Startup Flow
 
-### External startup
+### Owned-server startup
 
-In normal desktop mode:
+In normal desktop mode without `--server-url` or `STT_SERVER_URL`:
 
-1. `python main.py` runs `StartupController`
-2. `StartupController` starts the Python server
-3. `StartupController` launches the built Tauri binary with `--server-url=ws://<host>:<port>`
-4. a watcher thread stops the server when the GUI client exits
+1. `src-tauri/src/main.rs` creates a `ServerSupervisor`
+2. `ServerSupervisor` starts `venv/Scripts/python.exe main.py --host=127.0.0.1`
+3. the supervisor reads stdout until `Server listening on ws://...`
+4. `ClientOrchestrator` connects to the parsed URL
+5. audio starts only after the client connects
+6. normal app shutdown terminates the owned Python child
+
+If the owned child exits unexpectedly, the supervisor allows one unstable
+restart. The crash counter resets only after the orchestrator marks the
+supervisor connected and the child remains stable for the reset window. The
+connection marker is fired after the `session_created` handshake stores the
+transport `session_id`; process spawn by itself is not treated as stability.
+
+For each owned-server process generation, `ServerSupervisor` retains a bounded
+in-memory tail of the last 50 combined stdout/stderr lines with stream labels.
+Startup failures before the `Server listening on ws://...` line and terminal
+runtime crashes include the process phase, exit status when available, and that
+recent output in the existing connection-error surface. The diagnostics are not
+persisted separately and are not uploaded automatically.
+
+### External-server startup
+
+With `--server-url` or `STT_SERVER_URL`, Tauri does not spawn Python. It keeps
+the direct external-server workflow and connects to the supplied URL.
 
 In direct Tauri execution:
 
 - `src-tauri/src/main.rs` parses CLI args
 - constructs `AppStateManager`
+- optionally starts `ServerSupervisor` when no external URL is configured
 - constructs `ClientOrchestrator`
 - wires Tauri event emission, frontend state updates, and optional quick-entry support
 - calls `connect()`
@@ -58,6 +80,18 @@ The orchestrator is the core client coordinator. It owns:
 - event emission to the frontend
 
 It is the main boundary between the Rust backend and both the WebSocket protocol and the Tauri UI event model.
+
+### `ServerSupervisor`
+
+`src-tauri/src/supervisor.rs`
+
+The supervisor owns the development Python child process when Tauri is the
+visible parent. It resolves the repository-local `venv/Scripts/python.exe`,
+starts `main.py --host=127.0.0.1`, parses the server URL from stdout, drains
+stdout/stderr, terminates the child on normal shutdown, and applies the
+restart-once policy for unstable crashes. It also keeps a bounded per-process
+stdout/stderr diagnostics buffer so owned-server startup and terminal runtime
+failures can be surfaced through the existing connection-error UI.
 
 ### `WsClientTransport`
 

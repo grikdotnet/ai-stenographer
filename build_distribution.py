@@ -1,11 +1,12 @@
 """
 Windows distribution builder for STT application.
 
-Creates portable Windows distribution using:
+Creates a portable Windows distribution using:
 - Python embeddable package (with signed executables from system Python)
 - Pre-compiled bytecode (.pyc files)
 - Pre-installed dependencies
-- Custom launcher with icon
+- Tauri release executable (AI-Stenographer.exe) as the root entry point;
+  Tauri owns the desktop window and spawns the bundled Python server.
 
 Code Signing Strategy:
 - Downloads embeddable Python package (unsigned executables)
@@ -15,7 +16,7 @@ Code Signing Strategy:
 
 Distribution structure:
 AI-Stenographer/
-├── AI - Stenographer.lnk
+├── AI-Stenographer.exe   # Tauri client; spawns the packaged Python server
 ├── README.txt
 ├── LICENSE.txt
 └── _internal/
@@ -30,7 +31,7 @@ AI-Stenographer/
     │   │   └── server/          # Server orchestration and session lifecycle
     │   ├── config/     # Configuration files
     │   └── assets/     # Static assets
-    └── models/         # Downloaded at runtime
+    └── models/         # Silero VAD bundled; Parakeet downloaded on first run
 """
 import sys
 import requests
@@ -55,6 +56,7 @@ CRITICAL_MODULES = [
     "onnx_asr",
     "pynput",
     "websockets",
+    "xxhash",
 ]
 
 
@@ -364,6 +366,12 @@ def main():
     cache_dir = project_root / ".cache"
     dist_dir = project_root / "dist"
     build_dir = dist_dir / "AI-Stenographer"
+    tauri_dir = project_root / "client" / "tauri"
+    src_tauri_dir = tauri_dir / "src-tauri"
+
+    # Step 0: Check build prerequisites before any packaging work
+    if not check_build_prerequisites():
+        return 1
 
     # Clean previous build
     if build_dir.exists():
@@ -527,21 +535,39 @@ def main():
         print("\nError: Failed to copy assets and configuration")
         return 1
 
-    # Step 23: Create README documentation
+    # Step 23: Build Tauri frontend (npm ci + npm run build)
+    if not build_tauri_frontend(tauri_dir):
+        print("\nError: Failed to build Tauri frontend")
+        return 1
+
+    # Step 24: Build Tauri Rust release binary
+    if not build_tauri_release(src_tauri_dir):
+        print("\nError: Failed to build Tauri release binary")
+        return 1
+
+    # Step 25: Copy Tauri executable into portable root as AI-Stenographer.exe
+    if not copy_tauri_executable(src_tauri_dir, build_dir):
+        print("\nError: Failed to copy Tauri executable")
+        return 1
+
+    # Step 26: Generate README after Tauri exe is in place
     if not create_readme(build_dir):
         print("\nError: Failed to create README")
         return 1
 
-    # Step 24: Create launcher shortcut
-    if not create_launcher(build_dir):
-        print("\nError: Failed to create launcher shortcut")
+    # Step 27: Create final portable ZIP archive
+    try:
+        archive_path = create_portable_archive(dist_dir)
+    except Exception as e:
+        print(f"\nError: Failed to create portable archive: {e}")
         return 1
 
     print("\n" + "=" * 60)
     print("Build completed successfully!")
     print(f"Build directory: {build_dir}")
+    print(f"Portable archive: {archive_path}")
     print(f"\nTo run the application:")
-    print(f'  Double-click: "{build_dir}\\AI - Stenographer.lnk"')
+    print(f'  Double-click: "{build_dir}\\AI-Stenographer.exe"')
     print("=" * 60)
 
     return 0
@@ -1416,8 +1442,8 @@ def create_readme(build_dir: Path) -> bool:
 
 QUICK START
 -----------
-1. Double-click "AI - Stenographer.lnk" to launch
-2. On first run, AI models will download automatically (~2GB)
+1. Double-click AI-Stenographer.exe to launch
+2. On first run, the Parakeet AI model will download automatically (~2GB)
 3. Grant microphone permission when prompted
 4. Start speaking - text appears in real-time!
 
@@ -1425,7 +1451,7 @@ REQUIREMENTS
 ------------
 - Windows 10/11 (64-bit)
 - Working microphone
-- Internet connection (first run only for model download)
+- Internet connection (first run only for Parakeet model download)
 - ~3GB free disk space (models + application)
 
 FEATURES
@@ -1438,15 +1464,17 @@ FEATURES
 
 USAGE
 -----
-- The desktop client shows transcribed text in real-time
-- Close the desktop window or stop the server process to exit
-- Models are downloaded once and reused on subsequent runs
-- Models are stored in: ./models/
+- AI-Stenographer.exe starts the desktop window and the bundled Python server
+- Close the desktop window to exit; the server shuts down automatically
+- The Parakeet recognition model downloads on first run; Silero VAD is bundled
+- Models are stored in: _internal\\models
+- Configuration is stored in: _internal\\app\\config
+- Logs are stored in: logs
 
 TROUBLESHOOTING
 ---------------
 "Models downloading..." on first launch
-  → Normal behavior. Wait for ~2GB download to complete
+  → Normal behavior. Wait for ~2GB Parakeet download to complete
   → Requires internet connection
 
 "Microphone not detected"
@@ -1467,23 +1495,23 @@ TROUBLESHOOTING
 
 ADVANCED OPTIONS
 ----------------
-Run from command line for verbose output:
+Run the bundled Python server directly for verbose output:
   _internal\\runtime\\python.exe _internal\\app\\main.pyc -v
 
-Run server only (skip desktop client launch):
+Run server only (no desktop window):
   _internal\\runtime\\python.exe _internal\\app\\main.pyc --server-only
 
 PRIVACY & DATA
 --------------
 - All processing happens on your computer
-- No internet connection required after initial model download
+- No internet connection required after the initial Parakeet model download
 - No audio or text is sent to external servers
-- Models are stored locally in ./models/
+- Models are stored locally in _internal\\models
 
 TECHNICAL DETAILS
 -----------------
-- AI Model: NVIDIA Parakeet TDT 0.6B (ONNX)
-- VAD: Silero Voice Activity Detector
+- AI Model: NVIDIA Parakeet TDT 0.6B (ONNX) - downloaded on first run
+- VAD: Silero Voice Activity Detector - bundled
 - Python: """ + PYTHON_VERSION + """ (embedded)
 - License: See LICENSE.txt
 
@@ -1665,63 +1693,101 @@ for zip_file in site_packages.glob('*.zip'):
         return False
 
 
-def create_launcher(build_dir: Path) -> bool:
+def check_build_prerequisites() -> bool:
     """
-    Creates Windows shortcut (.lnk) to launch the application.
-
-    The launcher:
-    - Sets working directory to build_dir (so ./models/ resolves correctly)
-    - Runs pythonw.exe (no console window)
-    - Executes _internal/app/main.pyc
-
-    Args:
-        build_dir: Build root directory (AI-Stenographer/)
+    Verifies build toolchain (npm, cargo) is available before any packaging work.
 
     Returns:
-        True if successful, False otherwise
+        True if both npm.cmd and cargo are on PATH; False otherwise.
     """
-    print("Creating launcher shortcut...")
+    print("Checking build prerequisites...")
+    npm = shutil.which("npm.cmd")
+    cargo = shutil.which("cargo")
+    missing = []
+    if npm is None:
+        missing.append("npm.cmd")
+    if cargo is None:
+        missing.append("cargo")
+    if missing:
+        print(f"  [ERROR] Missing required build tool(s): {', '.join(missing)}")
+        print(f"  Install Node.js (npm) and the Rust toolchain (cargo) before building.")
+        return False
+    print(f"  npm: {npm}")
+    print(f"  cargo: {cargo}")
+    return True
 
+
+def build_tauri_frontend(tauri_dir: Path) -> bool:
+    """
+    Installs frontend dependencies and builds the Tauri React frontend.
+
+    Runs `npm.cmd ci` then `npm.cmd run build` in the Tauri client directory.
+    """
+    print("Building Tauri frontend...")
     try:
-        import win32com.client
-
-        # Verify required files exist
-        python_exe = build_dir / "_internal" / "runtime" / "pythonw.exe"
-        main_pyc = build_dir / "_internal" / "app" / "main.pyc"
-
-        if not python_exe.exists():
-            print(f"  [ERROR] pythonw.exe not found: {python_exe}")
-            return False
-
-        if not main_pyc.exists():
-            print(f"  [ERROR] main.pyc not found: {main_pyc}")
-            return False
-
-        # Create shortcut
-        # Use cmd.exe for portable relative paths, start /B to detach process
-        # /C executes command and terminates
-        # Using pythonw.exe (not python.exe) ensures no console window appears
-        shortcut_path = build_dir / "AI - Stenographer.lnk"
-        shell = win32com.client.Dispatch("WScript.Shell")
-        shortcut = shell.CreateShortCut(str(shortcut_path))
-        shortcut.TargetPath = r"%windir%\system32\cmd.exe"
-        shortcut.Arguments = r'/C "start /B _internal\runtime\pythonw.exe _internal\app\main.pyc"'
-        shortcut.WorkingDirectory = ''
-        shortcut.IconLocation = r"%SystemRoot%\System32\imageres.dll,364"
-        shortcut.Description = "AI Stenographer - Real-time Speech-to-Text"
-        shortcut.WindowStyle = 1
-        shortcut.save()
-
-        print(f"  Created launcher: {shortcut_path.name}")
+        subprocess.run(["npm.cmd", "ci"], cwd=str(tauri_dir), check=True)
+        subprocess.run(["npm.cmd", "run", "build"], cwd=str(tauri_dir), check=True)
         return True
+    except subprocess.CalledProcessError as e:
+        print(f"  [ERROR] Tauri frontend build failed: {e}")
+        return False
 
-    except ImportError:
-        print(f"  [ERROR] pywin32 not installed")
-        print(f"  Run: pip install pywin32")
+
+def build_tauri_release(src_tauri_dir: Path) -> bool:
+    """
+    Builds the Tauri Rust binary in release mode with the custom-protocol feature.
+    """
+    print("Building Tauri release binary...")
+    try:
+        subprocess.run(
+            ["cargo", "build", "--release", "--features", "custom-protocol"],
+            cwd=str(src_tauri_dir),
+            check=True,
+        )
+        return True
+    except subprocess.CalledProcessError as e:
+        print(f"  [ERROR] Tauri release build failed: {e}")
         return False
+
+
+def copy_tauri_executable(src_tauri_dir: Path, build_dir: Path) -> bool:
+    """
+    Copies the Tauri release executable to the portable root as AI-Stenographer.exe.
+
+    Source is the pinned path `<src_tauri_dir>/target/release/stt-tauri-client.exe`.
+    """
+    print("Copying Tauri executable to portable root...")
+    src = src_tauri_dir / "target" / "release" / "stt-tauri-client.exe"
+    dst = build_dir / "AI-Stenographer.exe"
+    if not src.exists():
+        print(f"  [ERROR] Tauri release binary not found: {src}")
+        return False
+    try:
+        shutil.copy2(str(src), str(dst))
+        print(f"  Copied {src.name} -> {dst.name}")
+        return True
     except Exception as e:
-        print(f"  [ERROR] Failed to create launcher: {e}")
+        print(f"  [ERROR] Failed to copy Tauri executable: {e}")
         return False
+
+
+def create_portable_archive(dist_dir: Path) -> Path:
+    """
+    Creates the final portable ZIP archive at `dist/AI-Stenographer-portable.zip`.
+
+    The archive root is `AI-Stenographer/`, not `dist/AI-Stenographer/`.
+    """
+    print("Creating portable ZIP archive...")
+    base_name = str(dist_dir / "AI-Stenographer-portable")
+    archive_path = shutil.make_archive(
+        base_name,
+        "zip",
+        root_dir=str(dist_dir),
+        base_dir="AI-Stenographer",
+    )
+    result = Path(archive_path)
+    print(f"  Archive: {result}")
+    return result
 
 
 if __name__ == "__main__":

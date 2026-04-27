@@ -19,15 +19,16 @@ This document describes the **server and system architecture**. For Tauri intern
 
 `StartupController.run()` owns startup decisions:
 
-1. validates the environment (default mode verifies the Tauri binary exists; `--server-only` skips)
-2. sets up logging
-3. checks model availability and resolves `StartupDecisions` from CLI args
-4. in `--server-only` with a missing model, auto-downloads or prompts on the CLI
-5. starts web socket server manager `ServerApp`
-6. creates and attaches the recognizer if the model is present, transitions to `running`
-7. in default mode, launches the Tauri client with `--server-url=...` and watches for its exit
-8. in `--server-only` mode, prints the server URL and QR code and stays headless
-9. blocks on the web socker server lifecycle; stops the server
+1. sets up logging
+2. checks model availability and resolves `StartupDecisions` from CLI args
+3. starts web socket server manager `ServerApp`
+4. creates and attaches the recognizer if the model is present, transitions to `running`
+5. prints `Server listening on ws://...` and a QR code
+6. blocks on the web socket server lifecycle; stops the server
+
+The Python process is always headless. It no longer validates, launches, or
+watches a Tauri GUI binary during normal startup. `--server-only` remains
+accepted as an ignored compatibility flag.
 
 
 ### Model availability at startup
@@ -36,8 +37,8 @@ The startup path has two distinct behaviors:
 
 - if the model already exists, startup creates and attaches the recognizer immediately and the server can move to `running`
 - if the model is missing:
-  - in default mode, the server starts in `waiting_for_model` and the connected Tauri client drives model download over the protocol
-  - in server-only mode, startup can auto-download or prompt on the CLI, depending on flags and TTY availability
+  - with `--download-model`, startup downloads the model before attaching the recognizer
+  - without `--download-model`, the server starts in `waiting_for_model` and the connected Tauri client can drive model download over the protocol
 
 ---
 
@@ -425,7 +426,7 @@ ASR infrastructure:
 
 Model download I/O:
 - [src/downloader/ModelDownloader.py](src/downloader/ModelDownloader.py) — `ModelDownloader` (CDN HTTP fetch, atomic manifest write, partial-file cleanup)
-- [src/downloader/ModelDownloadCliDialog.py](src/downloader/ModelDownloadCliDialog.py) — `ModelDownloadCliDialog` (terminal yes/no prompt used by `StartupController` in `--server-only` mode)
+- [src/downloader/ModelDownloadCliDialog.py](src/downloader/ModelDownloadCliDialog.py) — `ModelDownloadCliDialog` (legacy terminal yes/no prompt; not used by normal startup)
 
 ### Layer 2 — Protocol / Wire
 
@@ -491,7 +492,7 @@ Download orchestration:
 *Top-level composition roots (see* **Startup and Deployment** *above).*
 
 - [main.py](main.py) — entry point
-- [src/StartupController.py](src/StartupController.py) ¹ — `StartupController`, `StartupDecisions`; `TauriBinaryNotFoundError`, `MissingModelsError`, `DownloadCancelledError`
+- [src/StartupController.py](src/StartupController.py) ¹ — `StartupController`, `StartupDecisions`; `MissingModelsError`, `DownloadCancelledError`
 - [src/server/ServerApp.py](src/server/ServerApp.py) — `ServerApp`
 
 `StartupController` is application bootstrap, and `ServerApp` is managing websocket server.

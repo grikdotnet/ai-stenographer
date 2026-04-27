@@ -106,10 +106,24 @@ describe("TranscriptPanel", () => {
 
     const alert = screen.getByRole("alert");
     expect(alert).toBeInTheDocument();
+    expect(alert).not.toHaveClass("transcript-panel__error--long");
     expect(alert).toHaveTextContent("Cannot connect to server");
     expect(
       screen.queryByText("Start speaking — transcript will appear here.")
     ).not.toBeInTheDocument();
+  });
+
+  it("uses long diagnostic layout for multiline connection errors", () => {
+    render(
+      <TranscriptPanel
+        utterances={[]}
+        preliminaryText=""
+        status="error"
+        connectionError={"Python server startup failed\nRecent server output:\n[stderr] Traceback"}
+      />
+    );
+
+    expect(screen.getByRole("alert")).toHaveClass("transcript-panel__error--long");
   });
 
   it("inserts paragraph break between utterances with gap over 2 seconds", () => {

@@ -42,6 +42,11 @@ const EMPTY_STATE_MESSAGES: Record<HeaderStatus, string> = {
   paused: "Recognition paused.",
   error: "Transcript will appear here once recognition is connected.",
 };
+const LONG_ERROR_TEXT_LENGTH = 160;
+
+function isLongConnectionError(message: string): boolean {
+  return message.length > LONG_ERROR_TEXT_LENGTH || message.includes("\n");
+}
 
 export function TranscriptPanel({
   utterances,
@@ -51,6 +56,10 @@ export function TranscriptPanel({
 }: TranscriptPanelProps): ReactElement {
   const hasText = utterances.length > 0 || preliminaryText.trim().length > 0;
   const nodes = buildFormattedNodes(utterances);
+  const errorClassName =
+    connectionError && isLongConnectionError(connectionError)
+      ? "transcript-panel__error transcript-panel__error--long"
+      : "transcript-panel__error";
 
   return (
     <section className="transcript-panel" aria-label="Transcript section">
@@ -59,7 +68,7 @@ export function TranscriptPanel({
       </div>
       <div className={`transcript-panel__surface${connectionError ? " transcript-panel__surface--error" : ""}`}>
         {connectionError ? (
-          <div className="transcript-panel__error" role="alert" aria-label={connectionError}>
+          <div className={errorClassName} role="alert" aria-label={connectionError}>
             <svg className="transcript-error__icon" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
               <path d="M12 9v4M12 17h.01" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
               <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" stroke="currentColor" strokeWidth="1.5" strokeLinejoin="round" />

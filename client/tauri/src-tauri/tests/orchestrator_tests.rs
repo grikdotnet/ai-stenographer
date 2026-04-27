@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use stt_tauri_client::audio::AudioSource;
 use stt_tauri_client::error::AppError;
 use stt_tauri_client::orchestrator::{
-    ClientOrchestrator, ConnectionStatus, EventEmitter, StateChanged, TranscriptUpdate,
-    friendly_connect_error,
+    friendly_connect_error, ClientOrchestrator, ConnectionStatus, EventEmitter, StateChanged,
+    TranscriptUpdate,
 };
 use stt_tauri_client::protocol::ServerMessageDecoder;
 use stt_tauri_client::recognition::{RecognitionResult, RecognitionStatus, RecognitionSubscriber};
@@ -78,13 +78,31 @@ fn new_creates_orchestrator_without_panic() {
 #[test]
 fn new_stores_server_url_and_input_file() {
     let sm = Arc::new(AppStateManager::new());
-    let orch = ClientOrchestrator::new(
-        "ws://host:1234".into(),
-        Some("audio.wav".into()),
-        sm,
-    );
+    let orch = ClientOrchestrator::new("ws://host:1234".into(), Some("audio.wav".into()), sm);
     assert_eq!(orch.server_url(), "ws://host:1234");
     assert_eq!(orch.input_file().as_deref(), Some("audio.wav"));
+}
+
+#[test]
+fn replace_server_url_updates_orchestrator_target() {
+    let sm = Arc::new(AppStateManager::new());
+    let mut orch = ClientOrchestrator::new("ws://old:1".into(), None, sm);
+
+    orch.replace_server_url("ws://new:2".into());
+
+    assert_eq!(orch.server_url(), "ws://new:2");
+}
+
+#[test]
+fn emit_connection_error_updates_status_snapshot() {
+    let sm = Arc::new(AppStateManager::new());
+    let orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm);
+
+    orch.emit_connection_error("terminal server failure".into());
+
+    let status = orch.current_connection_status();
+    assert!(!status.connected);
+    assert_eq!(status.error.as_deref(), Some("terminal server failure"));
 }
 
 // ---------------------------------------------------------------------------
@@ -191,7 +209,10 @@ fn pause_audio_stops_audio_source() {
 
     orch.pause_audio().unwrap();
 
-    assert!(stopped.load(Ordering::SeqCst), "audio source should have been stopped");
+    assert!(
+        stopped.load(Ordering::SeqCst),
+        "audio source should have been stopped"
+    );
 }
 
 #[test]
@@ -222,11 +243,7 @@ fn pause_audio_from_starting_fails() {
 #[tokio::test]
 async fn connect_returns_error_when_server_unreachable() {
     let sm = Arc::new(AppStateManager::new());
-    let mut orch = ClientOrchestrator::new(
-        "ws://127.0.0.1:19999".into(),
-        None,
-        sm,
-    );
+    let mut orch = ClientOrchestrator::new("ws://127.0.0.1:19999".into(), None, sm);
     let result = orch.connect().await;
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -238,11 +255,7 @@ async fn connect_returns_error_when_server_unreachable() {
 #[tokio::test]
 async fn failed_connect_updates_connection_status_snapshot() {
     let sm = Arc::new(AppStateManager::new());
-    let mut orch = ClientOrchestrator::new(
-        "ws://127.0.0.1:19999".into(),
-        None,
-        sm,
-    );
+    let mut orch = ClientOrchestrator::new("ws://127.0.0.1:19999".into(), None, sm);
 
     let _ = orch.connect().await;
     let status = orch.current_connection_status();
@@ -345,7 +358,8 @@ fn handle_session_closed_transitions_to_shutdown() {
     sm.set_state(AppState::Running).unwrap();
     let orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm.clone());
 
-    let json = r#"{"type":"session_closed","session_id":"s1","reason":"close_session","message":null}"#;
+    let json =
+        r#"{"type":"session_closed","session_id":"s1","reason":"close_session","message":null}"#;
     let msg = ServerMessageDecoder::decode(json).unwrap();
 
     let result = orch.handle_server_message(msg);
@@ -637,9 +651,7 @@ fn friendly_error_connection_refused_gives_server_not_running_hint() {
 
 #[test]
 fn friendly_error_connection_refused_linux_gives_server_not_running_hint() {
-    let err = AppError::ConnectionFailed(
-        "IO error: Connection refused (os error 111)".into()
-    );
+    let err = AppError::ConnectionFailed("IO error: Connection refused (os error 111)".into());
     let msg = friendly_connect_error(&err);
     assert!(
         msg.contains("server") || msg.contains("running"),
@@ -681,6 +693,12 @@ fn friendly_error_message_is_short_and_user_readable() {
     );
     let msg = friendly_connect_error(&err);
     assert!(msg.len() < 120, "message too long for UI: {msg}");
-    assert!(!msg.contains("os error"), "raw OS error leaked into UI: {msg}");
-    assert!(!msg.contains("IO error"), "raw IO error leaked into UI: {msg}");
+    assert!(
+        !msg.contains("os error"),
+        "raw OS error leaked into UI: {msg}"
+    );
+    assert!(
+        !msg.contains("IO error"),
+        "raw IO error leaked into UI: {msg}"
+    );
 }

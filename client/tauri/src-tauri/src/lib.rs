@@ -15,5 +15,7 @@ pub mod orchestrator;
 pub mod protocol;
 pub mod quickentry;
 pub mod recognition;
+pub mod server_diagnostics;
 pub mod state;
+pub mod supervisor;
 pub mod transport;

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from main import _main
-from src.StartupController import TauriBinaryNotFoundError, MissingModelsError, DownloadCancelledError
+from src.StartupController import MissingModelsError, DownloadCancelledError
 from src.asr.ModelLoader import ModelLoadError
 
 
@@ -107,10 +107,6 @@ class TestMainExceptionMapping:
     def test_download_cancelled_exits_0(self) -> None:
         exc_info = self._run_with_exception(DownloadCancelledError("cancelled"))
         assert exc_info.value.code == 0
-
-    def test_tauri_binary_not_found_exits_1(self) -> None:
-        exc_info = self._run_with_exception(TauriBinaryNotFoundError("no binary"))
-        assert exc_info.value.code == 1
 
     def test_model_load_error_exits_1(self) -> None:
         exc_info = self._run_with_exception(ModelLoadError("oops"))

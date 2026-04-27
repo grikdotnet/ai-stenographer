@@ -670,6 +670,14 @@ button {
   animation: error-fade-in 280ms ease both;
 }
 
+.transcript-panel__error--long {
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 10px;
+  overflow: auto;
+  text-align: left;
+}
+
 @keyframes error-fade-in {
   from { opacity: 0; transform: translateY(6px); }
   to   { opacity: 1; transform: translateY(0); }
@@ -689,6 +697,16 @@ button {
   line-height: 1.55;
   color: #d07060;
   max-width: 42ch;
+}
+
+.transcript-panel__error--long .transcript-error__message {
+  max-width: none;
+  white-space: pre-wrap;
+}
+
+.transcript-panel__error--long .transcript-error__icon {
+  width: 20px;
+  height: 20px;
 }
 
 .transcript-panel__surface::before {

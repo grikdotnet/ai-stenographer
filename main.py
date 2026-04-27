@@ -6,7 +6,6 @@ from src.PathResolver import PathResolver
 from src.StartupArgs import StartupArgs
 from src.StartupController import (
     StartupController,
-    TauriBinaryNotFoundError,
     MissingModelsError,
     DownloadCancelledError,
 )
@@ -39,7 +38,7 @@ def _main(argv: list[str]) -> None:
             ModelManager(model_registry),
         )
         controller.run()
-    except (TauriBinaryNotFoundError, MissingModelsError, ModelLoadError) as e:
+    except (MissingModelsError, ModelLoadError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
     except DownloadCancelledError:

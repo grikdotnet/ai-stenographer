@@ -10,10 +10,14 @@ use stt_tauri_client::cli::CliArgs;
 use stt_tauri_client::commands;
 use stt_tauri_client::insertion::InsertionController;
 use stt_tauri_client::orchestrator::{
-    emit_event, ClientOrchestrator, EventEmitter, StateChanged, TranscriptUpdate,
+    emit_event, ClientOrchestrator, ConnectionStatus, EventEmitter, StateChanged, TranscriptUpdate,
 };
 use stt_tauri_client::recognition::{RecognitionResult, RecognitionSubscriber};
+use stt_tauri_client::server_diagnostics::format_terminal_runtime_crash_message;
 use stt_tauri_client::state::{AppState, AppStateManager};
+use stt_tauri_client::supervisor::{
+    CrashDecision, ServerProcessEvent, ServerSupervisor, ServerSupervisorConfig,
+};
 
 /// Bridges the `EventEmitter` trait to a Tauri `AppHandle`.
 struct TauriEmitter {
@@ -22,9 +26,10 @@ struct TauriEmitter {
 
 impl EventEmitter for TauriEmitter {
     fn emit_serialized(&self, event: &str, payload: &str) {
-        let _ = self
-            .handle
-            .emit(event, serde_json::value::RawValue::from_string(payload.to_owned()).ok());
+        let _ = self.handle.emit(
+            event,
+            serde_json::value::RawValue::from_string(payload.to_owned()).ok(),
+        );
     }
 }
 
@@ -43,16 +48,20 @@ impl stt_tauri_client::quickentry::PopupWindow for TauriPopupWindow {
         use tauri::{WebviewUrl, WebviewWindowBuilder};
         let existing = self.handle.get_webview_window("quickentry");
         let window = existing.unwrap_or_else(|| {
-            WebviewWindowBuilder::new(&self.handle, "quickentry", WebviewUrl::App("/quickentry.html".into()))
-                .title("QuickEntry")
-                .inner_size(720.0, 120.0)
-                .center()
-                .always_on_top(true)
-                .decorations(false)
-                .transparent(true)
-                .skip_taskbar(true)
-                .build()
-                .expect("quickentry window")
+            WebviewWindowBuilder::new(
+                &self.handle,
+                "quickentry",
+                WebviewUrl::App("/quickentry.html".into()),
+            )
+            .title("QuickEntry")
+            .inner_size(720.0, 120.0)
+            .center()
+            .always_on_top(true)
+            .decorations(false)
+            .transparent(true)
+            .skip_taskbar(true)
+            .build()
+            .expect("quickentry window")
         });
         let _ = window.show();
         let _ = window.set_focus();
@@ -103,7 +112,9 @@ fn setup_quickentry(
     let hotkey = Arc::new(GlobalHotkeyListener::new());
     let hotkey_for_start = Arc::clone(&hotkey);
     let popup_window: Arc<dyn stt_tauri_client::quickentry::PopupWindow> =
-        Arc::new(TauriPopupWindow { handle: app.handle().clone() });
+        Arc::new(TauriPopupWindow {
+            handle: app.handle().clone(),
+        });
 
     let controller = Arc::new(QuickEntryController::new(
         focus_tracker,
@@ -147,18 +158,170 @@ fn setup_quickentry(
     None
 }
 
+fn create_owned_supervisor() -> Result<Arc<ServerSupervisor>, String> {
+    let exe = std::env::current_exe()
+        .map_err(|err| format!("failed to resolve current executable: {err}"))?;
+    let exe_dir = exe
+        .parent()
+        .ok_or_else(|| "current executable has no parent directory".to_string())?
+        .to_path_buf();
+    let cwd = std::env::current_dir()
+        .map_err(|err| format!("failed to resolve current directory: {err}"))?;
+    let supervisor = ServerSupervisor::new(ServerSupervisorConfig::new(exe_dir, cwd));
+    // Probe resolution eagerly so misconfiguration surfaces before Tauri starts.
+    supervisor
+        .command_spec()
+        .map_err(|err| format!("Python server runtime resolution failed: {err}"))?;
+    Ok(Arc::new(supervisor))
+}
+
+async fn emit_terminal_error(
+    orchestrator: &Arc<tokio::sync::Mutex<ClientOrchestrator>>,
+    message: String,
+) {
+    let mut guard = orchestrator.lock().await;
+    guard.emit_connection_error(message);
+    guard.stop(true).await;
+}
+
+async fn connect_and_start_audio(
+    orchestrator: &Arc<tokio::sync::Mutex<ClientOrchestrator>>,
+    supervisor: Option<Arc<ServerSupervisor>>,
+) -> Result<(), String> {
+    if let Some(supervisor) = supervisor {
+        let server_url = supervisor
+            .start()
+            .await
+            .map_err(|err| format!("Python server startup failed: {err}"))?;
+        orchestrator.lock().await.replace_server_url(server_url);
+    }
+
+    let mut guard = orchestrator.lock().await;
+    guard.connect().await.map_err(|err| err.to_string())?;
+    guard.start_audio().map_err(|err| err.to_string())
+}
+
+async fn reconnect_owned_server_once(
+    supervisor: Arc<ServerSupervisor>,
+    orchestrator: Arc<tokio::sync::Mutex<ClientOrchestrator>>,
+) -> Result<(), String> {
+    {
+        let mut guard = orchestrator.lock().await;
+        guard.stop(true).await;
+    }
+    let server_url = supervisor
+        .start()
+        .await
+        .map_err(|err| format!("Python server restart failed: {err}"))?;
+    {
+        let mut guard = orchestrator.lock().await;
+        guard.replace_server_url(server_url);
+        guard.connect().await.map_err(|err| err.to_string())?;
+        guard.start_audio().map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+async fn monitor_owned_server(
+    supervisor: Arc<ServerSupervisor>,
+    orchestrator: Arc<tokio::sync::Mutex<ClientOrchestrator>>,
+) {
+    while let Some(event) = supervisor.next_event().await {
+        match event {
+            ServerProcessEvent::Exited { expected: true, .. } => break,
+            ServerProcessEvent::Exited {
+                expected: false,
+                status,
+                diagnostics,
+            } => {
+                tracing::error!("Owned Python server exited unexpectedly: {status:?}");
+                match supervisor.record_unstable_failure().await {
+                    CrashDecision::Restart => {
+                        if let Err(err) = reconnect_owned_server_once(
+                            Arc::clone(&supervisor),
+                            Arc::clone(&orchestrator),
+                        )
+                        .await
+                        {
+                            let _ = supervisor.record_unstable_failure().await;
+                            let failure_count = supervisor.unstable_failure_count().await;
+                            let message = format!(
+                                "{}\nRestart failed: {err}",
+                                format_terminal_runtime_crash_message(
+                                    failure_count,
+                                    status,
+                                    &diagnostics
+                                )
+                            );
+                            emit_terminal_error(&orchestrator, message).await;
+                            break;
+                        }
+                    }
+                    CrashDecision::Terminal => {
+                        let failure_count = supervisor.unstable_failure_count().await;
+                        emit_terminal_error(
+                            &orchestrator,
+                            format_terminal_runtime_crash_message(
+                                failure_count,
+                                status,
+                                &diagnostics,
+                            ),
+                        )
+                        .await;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn install_supervisor_connected_marker(
+    orchestrator: &mut ClientOrchestrator,
+    supervisor: Arc<ServerSupervisor>,
+) {
+    orchestrator.set_connected_callback(Arc::new(move || {
+        let supervisor = Arc::clone(&supervisor);
+        tokio::spawn(async move {
+            supervisor.mark_connected().await;
+        });
+    }));
+}
+
 /// Runs the STT pipeline without any GUI.
 ///
 /// Connects to the server, starts audio capture, and blocks until
 /// Ctrl+C is received, then shuts down gracefully.
-fn run_headless(server_url: String, input_file: Option<String>, state_manager: Arc<AppStateManager>) {
+fn run_headless(
+    server_url: Option<String>,
+    input_file: Option<String>,
+    state_manager: Arc<AppStateManager>,
+) -> bool {
     use std::io::Write;
     use stt_tauri_client::orchestrator::NoopEmitter;
 
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
     rt.block_on(async move {
-        let mut orchestrator = ClientOrchestrator::new(server_url, input_file, state_manager);
+        let owned_supervisor = if server_url.is_none() {
+            match create_owned_supervisor() {
+                Ok(supervisor) => Some(supervisor),
+                Err(err) => {
+                    tracing::error!("{err}");
+                    return false;
+                }
+            }
+        } else {
+            None
+        };
+        let mut orchestrator = ClientOrchestrator::new(
+            server_url.unwrap_or_default(),
+            input_file,
+            state_manager,
+        );
         orchestrator.set_emitter(Arc::new(NoopEmitter));
+        if let Some(supervisor) = owned_supervisor.as_ref() {
+            install_supervisor_connected_marker(&mut orchestrator, Arc::clone(supervisor));
+        }
 
         // set_text_change_observer creates a new formatter and returns it.
         // We clone the Arc first, then install the real callback via set_on_change,
@@ -176,23 +339,82 @@ fn run_headless(server_url: String, input_file: Option<String>, state_manager: A
             }
         }));
 
-        if let Err(e) = orchestrator.connect().await {
-            tracing::error!("Connection failed: {e}");
-            return;
+        let orchestrator = Arc::new(tokio::sync::Mutex::new(orchestrator));
+        if let Err(e) = connect_and_start_audio(&orchestrator, owned_supervisor.clone()).await {
+            tracing::error!("{e}");
+            return false;
         }
-        info!("Connected to server");
+        info!("Connected to server and audio capture started");
 
-        if let Err(e) = orchestrator.start_audio() {
-            tracing::error!("Audio start failed: {e}");
-            return;
+        info!("Headless mode running - press Ctrl+C to stop");
+        if let Some(supervisor) = owned_supervisor {
+            loop {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        info!("Shutting down");
+                        orchestrator.lock().await.stop(false).await;
+                        supervisor.shutdown().await;
+                        return true;
+                    }
+                    event = supervisor.next_event() => {
+                        match event {
+                            Some(ServerProcessEvent::Exited { expected: true, .. }) => return true,
+                            Some(ServerProcessEvent::Exited {
+                                expected: false,
+                                status,
+                                diagnostics,
+                            }) => {
+                                tracing::error!("Owned Python server exited unexpectedly: {status:?}");
+                                match supervisor.record_unstable_failure().await {
+                                    CrashDecision::Restart => {
+                                        if let Err(err) = reconnect_owned_server_once(
+                                            Arc::clone(&supervisor),
+                                            Arc::clone(&orchestrator),
+                                        ).await {
+                                            let _ = supervisor.record_unstable_failure().await;
+                                            let failure_count =
+                                                supervisor.unstable_failure_count().await;
+                                            tracing::error!(
+                                                "{}\nRestart failed: {err}",
+                                                format_terminal_runtime_crash_message(
+                                                    failure_count,
+                                                    status,
+                                                    &diagnostics
+                                                )
+                                            );
+                                            return false;
+                                        }
+                                    }
+                                    CrashDecision::Terminal => {
+                                        let failure_count =
+                                            supervisor.unstable_failure_count().await;
+                                        tracing::error!(
+                                            "{}",
+                                            format_terminal_runtime_crash_message(
+                                                failure_count,
+                                                status,
+                                                &diagnostics
+                                            )
+                                        );
+                                        return false;
+                                    }
+                                }
+                            }
+                            None => {
+                                tracing::error!("supervisor event channel closed unexpectedly");
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
         }
-        info!("Audio capture started");
 
-        info!("Headless mode running — press Ctrl+C to stop");
         tokio::signal::ctrl_c().await.ok();
         info!("Shutting down");
-        orchestrator.stop(false).await;
-    });
+        orchestrator.lock().await.stop(false).await;
+        true
+    })
 }
 
 /// Starts the Tauri shell for the STT desktop client.
@@ -210,7 +432,9 @@ fn main() {
 
     let cli = CliArgs::try_parse();
     match &cli {
-        Ok(args) => info!(server_url = ?args.server_url, input_file = ?args.input_file, "CLI args parsed"),
+        Ok(args) => {
+            info!(server_url = ?args.server_url, input_file = ?args.input_file, "CLI args parsed")
+        }
         Err(e) => info!("CLI parse skipped (Tauri dev mode?): {e}"),
     }
 
@@ -218,17 +442,27 @@ fn main() {
     let insertion_controller = Arc::new(InsertionController::new());
 
     let headless = cli.as_ref().map(|a| a.headless).unwrap_or(false);
-    let server_url = cli
-        .as_ref()
-        .ok()
-        .and_then(|a| a.server_url.clone())
-        .unwrap_or_default();
+    let server_url = cli.as_ref().ok().and_then(|a| a.server_url.clone());
     let input_file = cli.as_ref().ok().and_then(|a| a.input_file.clone());
 
     if headless {
-        run_headless(server_url, input_file, state_manager);
+        if !run_headless(server_url, input_file, state_manager) {
+            std::process::exit(1);
+        }
         return;
     }
+
+    let (owned_supervisor, supervisor_bootstrap_error) = if server_url.is_none() {
+        match create_owned_supervisor() {
+            Ok(supervisor) => (Some(supervisor), None),
+            Err(err) => {
+                tracing::error!("{err}");
+                (None, Some(err))
+            }
+        }
+    } else {
+        (None, None)
+    };
 
     tauri::Builder::default()
         .manage(state_manager.clone())
@@ -237,14 +471,21 @@ fn main() {
             let handle = app.handle().clone();
             let emitter: Arc<dyn EventEmitter> = Arc::new(TauriEmitter { handle });
 
-            let qe_subscriber = setup_quickentry(app, Arc::clone(&emitter), Arc::clone(&state_manager));
+            let qe_subscriber =
+                setup_quickentry(app, Arc::clone(&emitter), Arc::clone(&state_manager));
 
             let mut orchestrator_inner = ClientOrchestrator::new(
-                server_url,
+                server_url.unwrap_or_default(),
                 input_file,
                 Arc::clone(&state_manager),
             );
             orchestrator_inner.set_emitter(Arc::clone(&emitter));
+            if let Some(supervisor) = owned_supervisor.as_ref() {
+                install_supervisor_connected_marker(
+                    &mut orchestrator_inner,
+                    Arc::clone(supervisor),
+                );
+            }
 
             let formatter_ref = orchestrator_inner.set_text_change_observer(Box::new(|| {}));
             let formatter_for_cb = Arc::clone(&formatter_ref);
@@ -274,20 +515,50 @@ fn main() {
             }));
 
             if let Some(sub) = qe_subscriber {
-                orchestrator_inner.add_recognition_subscriber(
-                    Box::new(QuickEntrySubscriberBridge(sub)),
-                );
+                orchestrator_inner
+                    .add_recognition_subscriber(Box::new(QuickEntrySubscriberBridge(sub)));
             }
 
             let orchestrator = Arc::new(tokio::sync::Mutex::new(orchestrator_inner));
             app.manage(orchestrator.clone());
 
+            if let Some(supervisor) = owned_supervisor.as_ref() {
+                app.manage(Arc::clone(supervisor));
+            }
+
+            let startup_supervisor = owned_supervisor.clone();
+            let monitor_supervisor = owned_supervisor.clone();
+            let startup_emitter = Arc::clone(&emitter);
             tauri::async_runtime::spawn(async move {
-                let connect_result = orchestrator.lock().await.connect().await;
-                if let Err(e) = connect_result {
-                    tracing::error!("Connection failed: {e}");
-                } else if let Err(e) = orchestrator.lock().await.start_audio() {
-                    tracing::error!("Audio start failed: {e}");
+                if let Some(err) = supervisor_bootstrap_error {
+                    emit_event(
+                        startup_emitter.as_ref(),
+                        "stt://connection-status",
+                        &ConnectionStatus {
+                            connected: false,
+                            error: Some(err),
+                        },
+                    );
+                    return;
+                }
+
+                if let Err(e) =
+                    connect_and_start_audio(&orchestrator, startup_supervisor.clone()).await
+                {
+                    tracing::error!("{e}");
+                    emit_event(
+                        startup_emitter.as_ref(),
+                        "stt://connection-status",
+                        &ConnectionStatus {
+                            connected: false,
+                            error: Some(e),
+                        },
+                    );
+                    return;
+                }
+
+                if let Some(supervisor) = monitor_supervisor {
+                    monitor_owned_server(supervisor, Arc::clone(&orchestrator)).await;
                 }
             });
 
@@ -310,23 +581,24 @@ fn main() {
                 api.prevent_close();
                 let handle = window.app_handle().clone();
                 tauri::async_runtime::spawn(async move {
-                    let maybe_orch = handle
-                        .try_state::<Arc<tokio::sync::Mutex<ClientOrchestrator>>>();
+                    let maybe_orch =
+                        handle.try_state::<Arc<tokio::sync::Mutex<ClientOrchestrator>>>();
                     if let Some(state) = maybe_orch {
                         let orch: &Arc<tokio::sync::Mutex<ClientOrchestrator>> = &state;
                         let stop_fut = async { orch.lock().await.stop(false).await };
-                        let _ = tokio::time::timeout(
-                            std::time::Duration::from_secs(3),
-                            stop_fut,
-                        )
-                        .await;
+                        let _ =
+                            tokio::time::timeout(std::time::Duration::from_secs(3), stop_fut).await;
+                    }
+
+                    if let Some(supervisor) = handle.try_state::<Arc<ServerSupervisor>>() {
+                        supervisor.shutdown().await;
                     }
 
                     #[cfg(windows)]
                     {
                         use stt_tauri_client::quickentry::ProductionQuickEntryController;
-                        if let Some(ctrl) = handle
-                            .try_state::<Arc<ProductionQuickEntryController>>()
+                        if let Some(ctrl) =
+                            handle.try_state::<Arc<ProductionQuickEntryController>>()
                         {
                             ctrl.stop_hotkey();
                         }

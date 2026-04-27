@@ -14,11 +14,11 @@ class TestDefaults:
     def test_defaults_are_applied(self, argv: list[str]) -> None:
         args = StartupArgs.from_argv(argv)
         assert args.verbose is False
-        assert args.server_only is False
         assert args.download_model is False
         assert args.host is None
-        assert args.input_file is None
         assert args.port == 0
+        assert not hasattr(args, "server_only")
+        assert not hasattr(args, "input_file")
 
 
 class TestVerboseFlag:
@@ -34,44 +34,40 @@ class TestVerboseFlag:
 
 
 class TestServerOnlyFlag:
-    def test_server_only_flag_sets_server_only(self) -> None:
-        assert StartupArgs.from_argv(["main.py", "--server-only"]).server_only is True
-
-    def test_server_only_not_set_by_default(self) -> None:
-        assert StartupArgs.from_argv(["main.py"]).server_only is False
+    def test_server_only_flag_is_accepted_and_ignored(self) -> None:
+        args = StartupArgs.from_argv(["main.py", "--server-only"])
+        assert not hasattr(args, "server_only")
 
     def test_server_only_combined_with_verbose(self) -> None:
         args = StartupArgs.from_argv(["main.py", "-v", "--server-only"])
         assert args.verbose is True
-        assert args.server_only is True
+        assert not hasattr(args, "server_only")
 
 
 class TestDownloadModelFlag:
     def test_download_model_flag_sets_download_model(self) -> None:
-        args = StartupArgs.from_argv(["main.py", "--server-only", "--download-model"])
+        args = StartupArgs.from_argv(["main.py", "--download-model"])
         assert args.download_model is True
 
     def test_download_model_not_set_by_default(self) -> None:
-        assert StartupArgs.from_argv(["main.py", "--server-only"]).download_model is False
+        assert StartupArgs.from_argv(["main.py"]).download_model is False
 
-    def test_download_model_requires_server_only(self, capsys) -> None:
-        with pytest.raises(SystemExit) as exc_info:
-            StartupArgs.from_argv(["main.py", "--download-model"])
-        assert exc_info.value.code == 1
-        assert "--server-only" in capsys.readouterr().err
+    def test_download_model_still_works_with_ignored_server_only_flag(self) -> None:
+        args = StartupArgs.from_argv(["main.py", "--server-only", "--download-model"])
+        assert args.download_model is True
 
 
 class TestInputFileArg:
-    def test_input_file_parsed_correctly(self) -> None:
+    def test_input_file_is_not_part_of_python_startup_args(self) -> None:
         args = StartupArgs.from_argv(["main.py", "--input-file=/path/to/file.wav"])
-        assert args.input_file == "/path/to/file.wav"
+        assert not hasattr(args, "input_file")
 
-    def test_input_file_with_equals_in_path(self) -> None:
+    def test_input_file_with_equals_in_path_is_ignored(self) -> None:
         args = StartupArgs.from_argv(["main.py", "--input-file=/path/a=b.wav"])
-        assert args.input_file == "/path/a=b.wav"
+        assert not hasattr(args, "input_file")
 
-    def test_input_file_absent_gives_none(self) -> None:
-        assert StartupArgs.from_argv(["main.py"]).input_file is None
+    def test_input_file_absent_still_has_no_field(self) -> None:
+        assert not hasattr(StartupArgs.from_argv(["main.py"]), "input_file")
 
 
 class TestHostArg:

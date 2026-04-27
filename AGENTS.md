@@ -27,7 +27,7 @@ Client-specific architecture is documented in `client/tauri/ARCHITECTURE.md`.
   - "Refactor X" -> "Ensure relevant tests pass before and after."
 - For multi-step tasks, write each step with its verification check:
   - `[Step] -> verify: [check]`
-- For plans that use sub-agents, structure the plan with task ownership, dependencies, and implementation order.
+- Structure plans for implementation by sub-agents with task ownership, dependencies, and implementation order.
 - Include verification instructions for an agent to check the implementation against the success criteria and the approved plan.
 
 ## Engineering Rules
