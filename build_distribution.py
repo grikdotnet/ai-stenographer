@@ -1750,15 +1750,27 @@ def build_tauri_release(src_tauri_dir: Path) -> bool:
         return False
 
 
-def copy_tauri_executable(src_tauri_dir: Path, build_dir: Path) -> bool:
+def copy_tauri_executable(
+    src_tauri_dir: Path,
+    build_dir: Path,
+    dst_filename: str = "AI-Stenographer.exe",
+) -> bool:
     """
-    Copies the Tauri release executable to the portable root as AI-Stenographer.exe.
+    Copies the Tauri release executable to a distribution root.
 
     Source is the pinned path `<src_tauri_dir>/target/release/stt-tauri-client.exe`.
+
+    Args:
+        src_tauri_dir: Tauri Rust project directory containing target/release.
+        build_dir: Distribution root receiving the executable.
+        dst_filename: Destination executable filename.
+
+    Returns:
+        True if the release executable was copied, False otherwise.
     """
-    print("Copying Tauri executable to portable root...")
+    print(f"Copying Tauri executable to distribution root as {dst_filename}...")
     src = src_tauri_dir / "target" / "release" / "stt-tauri-client.exe"
-    dst = build_dir / "AI-Stenographer.exe"
+    dst = build_dir / dst_filename
     if not src.exists():
         print(f"  [ERROR] Tauri release binary not found: {src}")
         return False

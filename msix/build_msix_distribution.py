@@ -5,12 +5,12 @@ Creates MSIX package using:
 - Python embeddable package (with signed executables)
 - Pre-compiled bytecode (.pyc files)
 - Pre-installed dependencies
-- Native launcher executable (AIStenographer.exe)
+- Tauri client executable staged as AIStenographer.exe
 - AppxManifest.xml with Store metadata
 - Store assets (PNG icons)
 
 Key Differences from Portable Distribution:
-- Uses native .exe launcher instead of .lnk shortcut
+- Uses the Tauri client executable as the package entry point
 - Includes AppxManifest.xml for Store compliance
 - Includes Store assets (icons)
 - Models stored in AppData (not _internal)
@@ -19,13 +19,13 @@ Key Differences from Portable Distribution:
 MSIX Package Structure:
 AI.Stenographer_1.0.0.0_x64/
 ├── AppxManifest.xml           # Store package manifest
-├── AIStenographer.exe          # Native launcher
+├── AIStenographer.exe          # Tauri client; spawns the packaged Python server
 ├── Assets/                     # Store icons
 │   ├── Square44x44Logo.png
 │   ├── Square150x150Logo.png
 │   └── StoreLogo.png
 ├── _internal/
-│   ├── runtime/               # Python 3.13.5 embeddable
+│   ├── runtime/               # Python embeddable runtime
 │   ├── Lib/site-packages/     # Dependencies
 │   ├── app/                   # Application bytecode
 │   └── models/                # Empty (download on first run)
@@ -65,6 +65,10 @@ from build_distribution import (
     cleanup_package_metadata,
     copy_bundled_silero_vad,
     copy_assets_and_config,
+    check_build_prerequisites,
+    build_tauri_frontend,
+    build_tauri_release,
+    copy_tauri_executable,
 )
 
 
@@ -156,8 +160,7 @@ def copy_msix_specific_files(staging_dir: Path, msix_dir: Path, project_root: Pa
 
     Files copied:
     - AppxManifest.xml (package manifest)
-    - AIStenographer.exe (native launcher)
-    - Assets/*.png (Store icons, 5 files)
+    - Assets/*.png (Store icons, 3 files)
     - PRIVACY_POLICY.txt (Store requirement)
 
     Args:
@@ -182,19 +185,7 @@ def copy_msix_specific_files(staging_dir: Path, msix_dir: Path, project_root: Pa
         shutil.copy2(manifest_src, manifest_dest)
         print(f"  Copied AppxManifest.xml")
 
-        # 2. Copy native launcher
-        launcher_src = msix_dir / "launcher" / "AIStenographer.exe"
-        launcher_dest = staging_dir / "AIStenographer.exe"
-
-        if not launcher_src.exists():
-            print(f"  [ERROR] AIStenographer.exe not found: {launcher_src}")
-            print(f"  Please build the launcher first using msix/launcher/build_launcher.py")
-            return False
-
-        shutil.copy2(launcher_src, launcher_dest)
-        print(f"  Copied AIStenographer.exe ({launcher_src.stat().st_size} bytes)")
-
-        # 3. Copy Store assets
+        # 2. Copy Store assets
         assets_src = msix_dir / "Assets"
         assets_dest = staging_dir / "Assets"
 
@@ -226,7 +217,7 @@ def copy_msix_specific_files(staging_dir: Path, msix_dir: Path, project_root: Pa
 
         print(f"  Copied Assets/ ({len(required_assets)} PNG files)")
 
-        # 4. Copy PRIVACY_POLICY.txt (Store requirement)
+        # 3. Copy PRIVACY_POLICY.txt (Store requirement)
         privacy_src = project_root / "PRIVACY_POLICY.txt"
         privacy_dest = staging_dir / "PRIVACY_POLICY.txt"
 
@@ -393,8 +384,8 @@ def validate_package_structure(staging_dir: Path) -> bool:
     Checks for:
     - AppxManifest.xml
     - AIStenographer.exe
-    - Assets/*.png (5 files)
-    - _internal/runtime/pythonw.exe
+    - Assets/*.png (3 files)
+    - _internal/runtime/python.exe
     - _internal/app/main.pyc
 
     Args:
@@ -408,7 +399,7 @@ def validate_package_structure(staging_dir: Path) -> bool:
     required_files = {
         "AppxManifest.xml": staging_dir / "AppxManifest.xml",
         "AIStenographer.exe": staging_dir / "AIStenographer.exe",
-        "pythonw.exe": staging_dir / "_internal" / "runtime" / "pythonw.exe",
+        "python.exe": staging_dir / "_internal" / "runtime" / "python.exe",
         "main.pyc": staging_dir / "_internal" / "app" / "main.pyc",
     }
 
@@ -652,13 +643,13 @@ def copy_and_sign_msix(msix_path: Path, cert_path: Path, msix_dir: Path) -> tupl
     print(f"Creating signed copy for local testing: {msix_path.name}")
 
     try:
-        # Step 1: Create signed copy filename
+        # Create signed copy filename.
         # From: GrigoriKochanov.AIStenographer_1.6.0.0_x64.msix
         # To:   GrigoriKochanov.AIStenographer_1.6.0.0_x64_signed.msix
         stem = msix_path.stem  # "GrigoriKochanov.AIStenographer_1.6.0.0_x64"
         signed_path = msix_path.parent / f"{stem}_signed.msix"
 
-        # Step 2: Copy unsigned MSIX to signed filename
+        # Copy unsigned MSIX to signed filename.
         print(f"  Copying {msix_path.name} -> {signed_path.name}")
         shutil.copy2(msix_path, signed_path)
 
@@ -669,7 +660,7 @@ def copy_and_sign_msix(msix_path: Path, cert_path: Path, msix_dir: Path) -> tupl
         size_mb = signed_path.stat().st_size / (1024 * 1024)
         print(f"  Copy created: {signed_path.name} ({size_mb:.1f}MB)")
 
-        # Step 3: Sign using PowerShell script
+        # Sign using PowerShell script.
         sign_script = msix_dir / "sign_package.ps1"
 
         if not sign_script.exists():
@@ -802,8 +793,14 @@ def main():
     cache_dir = project_root / ".cache"
     dist_dir = project_root / "dist"
     staging_dir = dist_dir / f"{PACKAGE_NAME}_{APP_VERSION}_x64"
+    tauri_dir = project_root / "client" / "tauri"
+    src_tauri_dir = tauri_dir / "src-tauri"
 
-    # Find Windows SDK tools
+    # Check build prerequisites before any packaging work.
+    if not check_build_prerequisites():
+        return 1
+
+    # Locate Windows SDK tools before expensive build work.
     try:
         sdk_dir = find_windows_sdk()
     except RuntimeError as e:
@@ -833,9 +830,25 @@ def main():
             print(f"  Warning: Cleanup had errors: {e}")
             print(f"  Continuing anyway...")
 
-    # Step 1: Download Python embeddable package
+    # Build Tauri frontend (npm ci + npm run build).
     print("\n" + "=" * 80)
-    print("STEP 1: Download Python Embeddable Package")
+    print("Build Tauri Frontend")
+    print("=" * 80)
+    if not build_tauri_frontend(tauri_dir):
+        print("\nError: Failed to build Tauri frontend")
+        return 1
+
+    # Build Tauri Rust release binary.
+    print("\n" + "=" * 80)
+    print("Build Tauri Release Binary")
+    print("=" * 80)
+    if not build_tauri_release(src_tauri_dir):
+        print("\nError: Failed to build Tauri release binary")
+        return 1
+
+    # Download Python embeddable package.
+    print("\n" + "=" * 80)
+    print("Download Python Embeddable Package")
     print("=" * 80)
     try:
         zip_path = download_embedded_python(PYTHON_VERSION, cache_dir)
@@ -843,9 +856,9 @@ def main():
         print(f"\nError downloading Python: {e}")
         return 1
 
-    # Step 2: Create directory structure
+    # Create directory structure.
     print("\n" + "=" * 80)
-    print("STEP 2: Create Directory Structure")
+    print("Create Directory Structure")
     print("=" * 80)
     try:
         paths = create_directory_structure(staging_dir)
@@ -853,9 +866,9 @@ def main():
         print(f"\nError creating directories: {e}")
         return 1
 
-    # Step 3: Extract Python to runtime directory
+    # Extract Python to runtime directory.
     print("\n" + "=" * 80)
-    print("STEP 3: Extract Python Runtime")
+    print("Extract Python Runtime")
     print("=" * 80)
     try:
         extract_embedded_python(zip_path, paths["runtime"])
@@ -863,23 +876,23 @@ def main():
         print(f"\nError extracting Python: {e}")
         return 1
 
-    # Step 4: Replace unsigned executables with signed versions
+    # Replace unsigned executables with signed versions.
     print("\n" + "=" * 80)
-    print("STEP 4: Replace with Signed Python Executables")
+    print("Replace with Signed Python Executables")
     print("=" * 80)
     if not copy_signed_executables_from_system(paths["runtime"]):
         print("\nWarning: Could not copy signed executables from system Python")
 
-    # Step 5: Verify signatures
+    # Verify signatures.
     print("\n" + "=" * 80)
-    print("STEP 5: Verify Python Executable Signatures")
+    print("Verify Python Executable Signatures")
     print("=" * 80)
     if not verify_signatures(paths["runtime"]):
         print("\nWarning: Python executables are not properly signed")
 
-    # Step 7: Create python312._pth configuration
+    # Create python312._pth configuration.
     print("\n" + "=" * 80)
-    print("STEP 7: Configure Module Search Paths")
+    print("Configure Module Search Paths")
     print("=" * 80)
     try:
         pth_paths = [
@@ -893,9 +906,9 @@ def main():
         print(f"\nError creating _pth file: {e}")
         return 1
 
-    # Step 8: Enable pip
+    # Enable pip.
     print("\n" + "=" * 80)
-    print("STEP 8: Enable Pip in Embedded Python")
+    print("Enable Pip in Embedded Python")
     print("=" * 80)
     try:
         enable_pip(paths["runtime"])
@@ -903,47 +916,47 @@ def main():
         print(f"\nError enabling pip: {e}")
         return 1
 
-    # Step 9: Verify pip
+    # Verify pip.
     python_exe = paths["runtime"] / "python.exe"
     if not verify_pip(python_exe):
         print("\nWarning: Pip verification failed")
 
-    # Step 11: Collect third-party licenses
+    # Collect third-party licenses.
     print("\n" + "=" * 80)
-    print("STEP 11: Collect Third-Party Licenses")
+    print("Collect Third-Party Licenses")
     print("=" * 80)
     if not collect_third_party_licenses(project_root):
         print("\nError: License collection failed")
         return 1
 
-    # Step 12: Install dependencies
+    # Install dependencies.
     print("\n" + "=" * 80)
-    print("STEP 12: Install Dependencies")
+    print("Install Dependencies")
     print("=" * 80)
     requirements_file = project_root / "msix" / "requirements.txt"
     if not install_dependencies(python_exe, paths["lib"], requirements_file):
         print("\nError: Dependency installation failed")
         return 1
 
-    # Step 13: Remove pip from distribution
+    # Remove pip from distribution.
     if not remove_pip_from_distribution(paths["runtime"], paths["lib"]):
         print("\nWarning: Failed to remove pip from distribution")
 
-    # Step 14: Remove test directories
+    # Remove test directories.
     if not remove_tests_from_distribution(paths["lib"]):
         print("\nWarning: Failed to remove test directories")
 
-    # Step 15: Verify native libraries
+    # Verify native libraries.
     print("\n" + "=" * 80)
-    print("STEP 15: Verify Native Libraries")
+    print("Verify Native Libraries")
     print("=" * 80)
     lib_results = verify_native_libraries(paths["lib"])
     if not all(lib_results.values()):
         print("\nWarning: Some native libraries missing")
 
-    # Step 16: Test critical imports
+    # Test critical imports.
     print("\n" + "=" * 80)
-    print("STEP 16: Test Critical Imports")
+    print("Test Critical Imports")
     print("=" * 80)
     critical_modules = ["numpy", "onnxruntime", "sounddevice", "onnx_asr", "pynput", "winrt.windows.storage"]
     import_results = test_imports(python_exe, critical_modules)
@@ -952,9 +965,9 @@ def main():
     if failed_imports:
         print(f"\nWarning: Failed to import: {', '.join(failed_imports)}")
 
-    # Step 17: Copy application code
+    # Copy application code.
     print("\n" + "=" * 80)
-    print("STEP 17: Copy Application Code")
+    print("Copy Application Code")
     print("=" * 80)
     src_dir = project_root / "src"
     main_py = project_root / "main.py"
@@ -962,41 +975,41 @@ def main():
         print("\nError: Failed to copy application code")
         return 1
 
-    # Step 18: Compile application to bytecode
+    # Compile application to bytecode.
     print("\n" + "=" * 80)
-    print("STEP 18: Compile Application to Bytecode")
+    print("Compile Application to Bytecode")
     print("=" * 80)
     if not compile_to_pyc(python_exe, paths["app"]):
         print("\nError: Failed to compile code to bytecode")
         return 1
 
-    # Step 19: Compile third-party packages
+    # Compile third-party packages.
     print("\n" + "=" * 80)
-    print("STEP 19: Compile Third-Party Packages")
+    print("Compile Third-Party Packages")
     print("=" * 80)
     if not compile_site_packages(python_exe, paths["lib"]):
         print("\nError: Failed to compile third-party packages")
         return 1
 
-    # Step 20: Package .pyc files into .zip archives
+    # Package .pyc files into .zip archives.
     print("\n" + "=" * 80)
-    print("STEP 20: Package .pyc Files into .zip Archives")
+    print("Package .pyc Files into .zip Archives")
     print("=" * 80)
     if not zip_site_packages(paths["lib"]):
         print("\nError: Failed to package .pyc files")
         return 1
 
-    # Step 21: Clean up redundant package metadata
+    # Clean up redundant package metadata.
     print("\n" + "=" * 80)
-    print("STEP 21: Clean Up Package Metadata")
+    print("Clean Up Package Metadata")
     print("=" * 80)
     if not cleanup_package_metadata(paths["lib"]):
         print("\nError: Failed to clean package metadata")
         return 1
 
-    # Step 21.5: Bundle Silero VAD model
+    # Bundle Silero VAD model.
     print("\n" + "=" * 80)
-    print("STEP 21.5: Bundle Silero VAD Model")
+    print("Bundle Silero VAD Model")
     print("=" * 80)
     bundled_models_dir = staging_dir / "_internal" / "models"
     bundled_models_dir.mkdir(parents=True, exist_ok=True)
@@ -1006,25 +1019,33 @@ def main():
     else:
         print(f"[OK] Bundled Silero VAD model to _internal/models/")
 
-    # Step 22: Copy assets and configuration
+    # Copy assets and configuration.
     print("\n" + "=" * 80)
-    print("STEP 22: Copy Assets and Configuration")
+    print("Copy Assets and Configuration")
     print("=" * 80)
     if not copy_assets_and_config(project_root, staging_dir, paths["app"]):
         print("\nError: Failed to copy assets and configuration")
         return 1
 
-    # Step 23: Copy MSIX-specific files
+    # Copy MSIX-specific files.
     print("\n" + "=" * 80)
-    print("STEP 23: Copy MSIX-Specific Files")
+    print("Copy MSIX-Specific Files")
     print("=" * 80)
     if not copy_msix_specific_files(staging_dir, msix_dir, project_root):
         print("\nError: Failed to copy MSIX-specific files")
         return 1
 
-    # Step 24: Copy legal documents
+    # Copy Tauri executable into MSIX staging root.
     print("\n" + "=" * 80)
-    print("STEP 24: Copy Legal Documents")
+    print("Copy Tauri Client Executable")
+    print("=" * 80)
+    if not copy_tauri_executable(src_tauri_dir, staging_dir, dst_filename="AIStenographer.exe"):
+        print("\nError: Failed to copy Tauri executable")
+        return 1
+
+    # Copy legal documents.
+    print("\n" + "=" * 80)
+    print("Copy Legal Documents")
     print("=" * 80)
     try:
         copy_legal_documents_msix(project_root, staging_dir)
@@ -1032,26 +1053,26 @@ def main():
         print(f"\nError copying legal documents: {e}")
         return 1
 
-    # Step 25: Create Store-specific README
+    # Create Store-specific README.
     print("\n" + "=" * 80)
-    print("STEP 25: Create Store-Specific README")
+    print("Create Store-Specific README")
     print("=" * 80)
     if not create_store_readme(staging_dir):
         print("\nError: Failed to create README")
         return 1
 
-    # Step 26: Create MSIX package
+    # Create MSIX package.
     print("\n" + "=" * 80)
-    print("STEP 26: Create MSIX Package")
+    print("Create MSIX Package")
     print("=" * 80)
     msix_output = dist_dir / f"{PACKAGE_NAME}_{APP_VERSION}_x64.msix"
     if not create_msix_package(staging_dir, msix_output, sdk_dir):
         print("\nError: Failed to create MSIX package")
         return 1
 
-    # Step 27: Sign MSIX package (optional - skipped for Store submission)
+    # Sign MSIX package when enabled.
     print("\n" + "=" * 80)
-    print("STEP 27: Sign MSIX Package")
+    print("Sign MSIX Package")
     print("=" * 80)
     if SKIP_SIGNING:
         print("  [SKIPPED] Signing disabled for Store submission")
@@ -1062,9 +1083,9 @@ def main():
             print("\nError: Failed to sign MSIX package")
             return 1
 
-    # Step 28: Create signed copy for local testing (independent of Store submission)
+    # Create signed copy for local testing, independent of Store submission.
     print("\n" + "=" * 80)
-    print("STEP 28: Create Signed Copy for Local Testing")
+    print("Create Signed Copy for Local Testing")
     print("=" * 80)
 
     signed_path = None  # Track for final summary

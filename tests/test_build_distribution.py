@@ -1193,6 +1193,29 @@ class TestCopyTauriExecutable:
         assert dst.exists()
         assert dst.read_bytes() == b"fake tauri exe"
 
+    def test_copies_pinned_release_exe_to_custom_filename(self, tmp_path):
+        from build_distribution import copy_tauri_executable
+
+        src_tauri_dir = tmp_path / "client" / "tauri" / "src-tauri"
+        release_dir = src_tauri_dir / "target" / "release"
+        release_dir.mkdir(parents=True)
+        src_exe = release_dir / "stt-tauri-client.exe"
+        src_exe.write_bytes(b"fake msix tauri exe")
+
+        build_dir = tmp_path / "dist" / "msix-staging"
+        build_dir.mkdir(parents=True)
+
+        result = copy_tauri_executable(
+            src_tauri_dir,
+            build_dir,
+            dst_filename="AIStenographer.exe",
+        )
+
+        assert result is True
+        dst = build_dir / "AIStenographer.exe"
+        assert dst.exists()
+        assert dst.read_bytes() == b"fake msix tauri exe"
+
     def test_returns_false_when_release_exe_missing(self, tmp_path):
         from build_distribution import copy_tauri_executable
 
