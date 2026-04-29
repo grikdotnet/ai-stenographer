@@ -1,18 +1,18 @@
 ### Python Environment
 
-Run Python commands from the repository root.
+Run Python commands from the repository root through the checked-in virtual environment:
 
 PowerShell:
 
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests/ -q
+.\venv\Scripts\python.exe main.py
 ```
 
 Bash:
 
 ```bash
 source venv/Scripts/activate
-python -m pytest tests/ -q
+python main.py
 ```
 
 ---
@@ -165,6 +165,10 @@ Bash:
 source venv/Scripts/activate
 python -m pytest tests/ -q
 ```
+
+Python static checks for changed Python code:
+  - `.\venv\Scripts\python.exe -m ruff check .`
+  - `.\venv\Scripts\python.exe -m pyright`
 
 Tauri frontend tests (Vitest):
 

@@ -90,16 +90,14 @@ Don't refactor code that wasn't requested.
 
 ## Runtime and Commands (PowerShell)
 
-- Run Python commands from the repository root through the checked-in virtual environment:
-```powershell
-.\venv\Scripts\python.exe -m pytest tests/ -q
-```
+Run Python commands from the repository root through the checked-in virtual environment.
 
-- Default Python validation: `.\venv\Scripts\python.exe -m pytest tests/ -q`
+Commands to run server and client applications are listed in the [./commands.md](commands.md) file.
+
+- Use Ruff and Pyright during Python code creation and review when they are available. Treat them as supplemental validation; pytest remains required for behavioral coverage.
 - Default Tauri frontend validation: from `client/tauri`, run `npm test`
 - Default Tauri Rust validation: from `client/tauri/src-tauri`, run `cargo test`
 
-Commands to run server and client applications are listed in the [./commands.md](commands.md) file.
 
 ## End-of-Task Verification
 
