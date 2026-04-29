@@ -5,7 +5,6 @@ interface ModelDownloadDialogProps {
   isOpen: boolean;
   models: ModelInfo[];
   downloadProgress?: DownloadProgress;
-  onRefreshModels: () => void;
   onDownloadModel: (modelName: string) => void;
   onClose: () => void;
 }
@@ -66,7 +65,6 @@ export function ModelDownloadDialog({
   isOpen,
   models,
   downloadProgress,
-  onRefreshModels,
   onDownloadModel,
   onClose,
 }: ModelDownloadDialogProps): ReactElement | null {
@@ -128,7 +126,7 @@ export function ModelDownloadDialog({
           ) : (
             <div className="model-dialog__model">
               <span className="model-dialog__model-name">Loading available models</span>
-              <p className="model-dialog__status">Refresh the model list to choose a download.</p>
+              <p className="model-dialog__status">Loading model list before recognition can start.</p>
             </div>
           )}
 
@@ -155,16 +153,8 @@ export function ModelDownloadDialog({
           ) : null}
         </div>
 
-        <div className="model-dialog__actions">
-          <button
-            type="button"
-            className="button button--secondary"
-            onClick={onRefreshModels}
-            disabled={isDownloading}
-          >
-            Refresh
-          </button>
-          {primaryModelName ? (
+        {primaryModelName ? (
+          <div className="model-dialog__actions">
             <button
               type="button"
               className="button"
@@ -173,8 +163,8 @@ export function ModelDownloadDialog({
             >
               {isError ? "Retry" : "Download"}
             </button>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
       </section>
     </div>
   );

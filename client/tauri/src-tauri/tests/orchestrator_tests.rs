@@ -427,6 +427,24 @@ fn handle_server_state_waiting_for_model_is_noop_when_already_waiting() {
 }
 
 #[test]
+fn current_connection_status_includes_latest_server_state() {
+    let sm = Arc::new(AppStateManager::new());
+    sm.set_state(AppState::WaitingForServer).unwrap();
+    let orch = ClientOrchestrator::new("ws://localhost:0".into(), None, sm);
+
+    let json = r#"{"type":"server_state","state":"waiting_for_model"}"#;
+    let msg = ServerMessageDecoder::decode(json).unwrap();
+
+    let result = orch.handle_server_message(msg);
+
+    assert!(result.is_ok());
+    assert_eq!(
+        orch.current_connection_status().server_state.as_deref(),
+        Some("waiting_for_model")
+    );
+}
+
+#[test]
 fn handle_server_state_shutdown_transitions_to_shutdown() {
     let sm = Arc::new(AppStateManager::new());
     sm.set_state(AppState::WaitingForServer).unwrap();
@@ -568,18 +586,22 @@ fn connection_status_serializes_correctly() {
     let status = ConnectionStatus {
         connected: true,
         error: None,
+        server_state: Some("running".into()),
     };
     let json = serde_json::to_value(&status).unwrap();
     assert_eq!(json["connected"], true);
     assert!(json["error"].is_null());
+    assert_eq!(json["server_state"], "running");
 
     let status2 = ConnectionStatus {
         connected: false,
         error: Some("timeout".into()),
+        server_state: None,
     };
     let json2 = serde_json::to_value(&status2).unwrap();
     assert_eq!(json2["connected"], false);
     assert_eq!(json2["error"], "timeout");
+    assert!(json2["server_state"].is_null());
 }
 
 #[test]

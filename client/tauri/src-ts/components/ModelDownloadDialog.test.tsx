@@ -15,7 +15,6 @@ function renderDialog(options: {
   isOpen?: boolean;
   models?: ModelInfo[];
   downloadProgress?: DownloadProgress;
-  onRefreshModels?: () => void;
   onDownloadModel?: (modelName: string) => void;
   onClose?: () => void;
 } = {}) {
@@ -23,7 +22,6 @@ function renderDialog(options: {
     isOpen: options.isOpen ?? true,
     models: options.models ?? [missingModel],
     downloadProgress: options.downloadProgress,
-    onRefreshModels: options.onRefreshModels ?? vi.fn(),
     onDownloadModel: options.onDownloadModel ?? vi.fn(),
     onClose: options.onClose ?? vi.fn(),
   };
@@ -50,16 +48,6 @@ describe("ModelDownloadDialog", () => {
     ).toBeInTheDocument();
   });
 
-  it("calls onRefreshModels when Refresh is clicked", async () => {
-    const user = userEvent.setup();
-    const onRefreshModels = vi.fn();
-    renderDialog({ onRefreshModels });
-
-    await user.click(screen.getByRole("button", { name: "Refresh" }));
-
-    expect(onRefreshModels).toHaveBeenCalledTimes(1);
-  });
-
   it("calls onDownloadModel with the primary model name when Download is clicked", async () => {
     const user = userEvent.setup();
     const onDownloadModel = vi.fn();
@@ -74,8 +62,15 @@ describe("ModelDownloadDialog", () => {
     renderDialog({ models: [] });
 
     expect(screen.getByText("Loading available models")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Refresh" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Download" })).not.toBeInTheDocument();
+  });
+
+  it("does not render Refresh when a missing model is available", () => {
+    renderDialog();
+
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download" })).toBeInTheDocument();
   });
 
   it("disables Download while the selected model is downloading", () => {
@@ -83,6 +78,7 @@ describe("ModelDownloadDialog", () => {
       models: [{ ...missingModel, status: "downloading" }],
     });
 
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Download" })).toBeDisabled();
   });
 
@@ -139,6 +135,7 @@ describe("ModelDownloadDialog", () => {
     });
 
     expect(screen.getByText("network disconnected")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Retry" }));
 

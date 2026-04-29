@@ -537,6 +537,7 @@ fn main() {
                         &ConnectionStatus {
                             connected: false,
                             error: Some(err),
+                            server_state: None,
                         },
                     );
                     return;
@@ -552,6 +553,7 @@ fn main() {
                         &ConnectionStatus {
                             connected: false,
                             error: Some(e),
+                            server_state: None,
                         },
                     );
                     return;

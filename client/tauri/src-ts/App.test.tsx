@@ -78,6 +78,55 @@ describe("App", () => {
     });
   });
 
+  it("keeps generic WaitingForServer sync in connecting status until server state arrives", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    let resolveState: ((value: string) => void) | undefined;
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "get_state") {
+        return new Promise<string>((resolve) => {
+          resolveState = resolve;
+        });
+      }
+      if (command === "get_connection_status") {
+        return Promise.resolve({ connected: true });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(<App />);
+
+    await act(async () => {
+      resolveState?.("WaitingForServer");
+    });
+
+    expect(screen.getByLabelText("Status: connecting")).toBeInTheDocument();
+    expect(screen.getByText("Connecting to recognition service…")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Speech model required" })).not.toBeInTheDocument();
+  });
+
+  it("recovers waiting_for_model UI from the startup connection snapshot", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "get_state") {
+        return Promise.resolve("WaitingForServer");
+      }
+      if (command === "get_connection_status") {
+        return Promise.resolve({ connected: true, server_state: "waiting_for_model" });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Status: waiting")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Model download required before recognition can start.")).toBeInTheDocument();
+    expect(await screen.findByRole("dialog", { name: "Speech model required" })).toBeInTheDocument();
+    expect(screen.getByText("Loading available models")).toBeInTheDocument();
+    expect(invoke).toHaveBeenCalledWith("list_models");
+  });
+
   it("shows the connection error message when the backend emits a failed connection status", async () => {
     const { invoke } = await import("@tauri-apps/api/core");
     vi.mocked(invoke).mockImplementation((command: string) => {
@@ -197,6 +246,28 @@ describe("App", () => {
     expect(invoke).toHaveBeenCalledWith("list_models");
   });
 
+  it("keeps waiting UI when WaitingForServer state change follows waiting_for_model", async () => {
+    render(<App />);
+
+    await waitFor(() => {
+      expect(eventListeners.has("stt://server-state")).toBe(true);
+      expect(eventListeners.has("stt://state-changed")).toBe(true);
+    });
+
+    await act(async () => {
+      eventListeners.get("stt://server-state")?.({
+        payload: { state: "waiting_for_model" },
+      });
+      eventListeners.get("stt://state-changed")?.({
+        payload: { old: "Running", new: "WaitingForServer" },
+      });
+    });
+
+    expect(screen.getByLabelText("Status: waiting")).toBeInTheDocument();
+    expect(screen.getByText("Model download required before recognition can start.")).toBeInTheDocument();
+    expect(screen.queryByText("Connecting to recognition service…")).not.toBeInTheDocument();
+  });
+
   it("renders the model download dialog when a missing model list arrives", async () => {
     render(<App />);
 
@@ -225,6 +296,61 @@ describe("App", () => {
 
     expect(await screen.findByRole("dialog", { name: "Speech model required" })).toBeInTheDocument();
     expect(screen.getByText("Parakeet ASR")).toBeInTheDocument();
+  });
+
+  it("keeps waiting status after the missing-model dialog is closed", async () => {
+    const user = userEvent.setup();
+    const { invoke } = await import("@tauri-apps/api/core");
+    let resolveState: ((value: string) => void) | undefined;
+    vi.mocked(invoke).mockImplementation((command: string) => {
+      if (command === "get_state") {
+        return new Promise<string>((resolve) => {
+          resolveState = resolve;
+        });
+      }
+      if (command === "get_connection_status") {
+        return Promise.resolve({ connected: true });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(eventListeners.has("stt://server-state")).toBe(true);
+      expect(eventListeners.has("stt://model-list")).toBe(true);
+    });
+
+    await act(async () => {
+      eventListeners.get("stt://server-state")?.({
+        payload: { state: "waiting_for_model" },
+      });
+      eventListeners.get("stt://model-list")?.({
+        payload: {
+          models: [
+            {
+              name: "parakeet",
+              display_name: "Parakeet ASR",
+              size_description: "1.25 GB",
+              status: "missing",
+            },
+          ],
+        },
+      });
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Close" }));
+
+    await act(async () => {
+      resolveState?.("WaitingForServer");
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Speech model required" })).not.toBeInTheDocument();
+      expect(screen.getByLabelText("Status: waiting")).toBeInTheDocument();
+    });
+    expect(screen.getByText("Model download required before recognition can start.")).toBeInTheDocument();
+    expect(screen.queryByText("Start speaking — transcript will appear here.")).not.toBeInTheDocument();
   });
 
   it("invokes download_model with the selected model when Download is clicked", async () => {

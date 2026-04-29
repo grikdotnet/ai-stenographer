@@ -31,6 +31,7 @@ const EXPECTED_PROTOCOL_VERSION: &str = "v1";
 pub struct ConnectionStatus {
     pub connected: bool,
     pub error: Option<String>,
+    pub server_state: Option<String>,
 }
 
 #[derive(Clone, Serialize, Debug)]
@@ -145,17 +146,32 @@ fn emit_connection_status(
     connected: bool,
     error: Option<String>,
 ) {
+    let server_state = connection_status
+        .lock()
+        .ok()
+        .and_then(|status| status.server_state.clone());
     if let Ok(mut status) = connection_status.lock() {
         *status = ConnectionStatus {
             connected,
             error: error.clone(),
+            server_state: server_state.clone(),
         };
     }
     emit_event(
         emitter.as_ref(),
         "stt://connection-status",
-        &ConnectionStatus { connected, error },
+        &ConnectionStatus {
+            connected,
+            error,
+            server_state,
+        },
     );
+}
+
+fn record_server_state(connection_status: &Arc<Mutex<ConnectionStatus>>, state: &str) {
+    if let Ok(mut status) = connection_status.lock() {
+        status.server_state = Some(state.to_string());
+    }
 }
 
 fn target_state_for_server_state(state_manager: &Arc<AppStateManager>, state: &str) -> AppState {
@@ -281,6 +297,7 @@ impl ClientOrchestrator {
             connection_status: Arc::new(Mutex::new(ConnectionStatus {
                 connected: false,
                 error: None,
+                server_state: None,
             })),
         }
     }
@@ -359,6 +376,7 @@ impl ClientOrchestrator {
             .unwrap_or(ConnectionStatus {
                 connected: false,
                 error: Some("connection status unavailable".into()),
+                server_state: None,
             })
     }
 
@@ -381,6 +399,11 @@ impl ClientOrchestrator {
             &ConnectionStatus {
                 connected: false,
                 error: None,
+                server_state: self
+                    .connection_status
+                    .lock()
+                    .ok()
+                    .and_then(|status| status.server_state.clone()),
             },
         );
 
@@ -392,9 +415,11 @@ impl ClientOrchestrator {
         let connected_callback = self.connected_callback.clone();
 
         if let Ok(mut status) = self.connection_status.lock() {
+            let server_state = status.server_state.clone();
             *status = ConnectionStatus {
                 connected: false,
                 error: None,
+                server_state,
             };
         }
 
@@ -500,6 +525,7 @@ impl ClientOrchestrator {
                             tracing::trace!("Received ping from server");
                         }
                         ServerMessage::ServerState { state } => {
+                            record_server_state(&connection_status, &state);
                             emit_event(
                                 emitter.as_ref(),
                                 "stt://server-state",
@@ -821,6 +847,7 @@ impl ClientOrchestrator {
             }
             ServerMessage::Ping {} => Ok(()),
             ServerMessage::ServerState { state } => {
+                record_server_state(&self.connection_status, &state);
                 emit_event(
                     self.emitter.as_ref(),
                     "stt://server-state",

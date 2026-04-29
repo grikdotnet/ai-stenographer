@@ -14,6 +14,7 @@ import { AppShell } from "./components/AppShell";
 interface ConnectionStatusPayload {
   connected: boolean;
   error?: string;
+  server_state?: string;
 }
 
 const INITIAL_VIEW_STATE: AppViewState = {
@@ -59,27 +60,36 @@ function App(): ReactElement {
           (event) => {
             const statusMap: Record<string, HeaderStatus> = {
               Starting: "connecting",
+              WaitingForServer: "connecting",
               Running: "listening",
               Paused: "paused",
               Shutdown: "error",
             };
-            setViewState((prev) => ({
-              ...prev,
-              status: statusMap[event.payload.new] ?? "connecting",
-              isPaused: event.payload.new === "Paused",
-            }));
+            setViewState((prev) => {
+              const status =
+                event.payload.new === "WaitingForServer" &&
+                prev.serverState === "waiting_for_model"
+                  ? "waiting"
+                  : statusMap[event.payload.new] ?? "connecting";
+              return {
+                ...prev,
+                status,
+                isPaused: event.payload.new === "Paused",
+              };
+            });
           }
         )
       );
 
       unlisteners.push(
-        await listen<{ connected: boolean; error?: string }>(
+        await listen<ConnectionStatusPayload>(
           "stt://connection-status",
           (event) => {
             setViewState((prev) => ({
               ...prev,
+              serverState: event.payload.server_state ?? prev.serverState,
               status: event.payload.connected
-                ? prev.serverState === "waiting_for_model"
+                ? (event.payload.server_state ?? prev.serverState) === "waiting_for_model"
                   ? "waiting"
                   : prev.status
                 : event.payload.error
@@ -176,10 +186,16 @@ function App(): ReactElement {
         invoke<string>("get_state"),
         invoke<ConnectionStatusPayload>("get_connection_status"),
       ]).then(([currentState, connectionStatus]) => {
+        if (connectionStatus.server_state === "waiting_for_model") {
+          void invoke("list_models");
+        }
         setViewState((prev) => {
           const connectionError = connectionStatus.error ?? prev.connectionError;
+          const serverState = connectionStatus.server_state ?? prev.serverState;
           const status: HeaderStatus = connectionStatus.connected
-            ? "listening"
+            ? serverState === "waiting_for_model"
+              ? "waiting"
+              : statusMap[currentState] ?? "connecting"
             : connectionStatus.error
               ? "error"
               : connectionError && currentState === "Starting"
@@ -190,6 +206,9 @@ function App(): ReactElement {
             status,
             isPaused: currentState === "Paused",
             connectionError,
+            serverState,
+            downloadDialogDismissed:
+              serverState === "running" ? false : prev.downloadDialogDismissed,
           };
         });
         if (currentState === "Starting" && !connectionStatus.error) {
@@ -215,10 +234,6 @@ function App(): ReactElement {
     await invoke("clear");
   }
 
-  async function handleRefreshModels(): Promise<void> {
-    await invoke("list_models");
-  }
-
   async function handleDownloadModel(modelName: string): Promise<void> {
     await invoke("download_model", { modelName });
   }
@@ -235,7 +250,6 @@ function App(): ReactElement {
       viewState={viewState}
       onPauseToggle={() => void handlePauseToggle()}
       onClear={() => void handleClear()}
-      onRefreshModels={() => void handleRefreshModels()}
       onDownloadModel={(modelName) => void handleDownloadModel(modelName)}
       onCloseModelDialog={handleCloseModelDialog}
     />
