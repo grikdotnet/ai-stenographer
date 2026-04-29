@@ -62,6 +62,19 @@ fn download_model_command_json_has_correct_structure() {
     assert_eq!(parsed["request_id"], "req-2");
 }
 
+#[test]
+fn cancel_download_command_json_has_correct_structure() {
+    let json =
+        WsClientTransport::build_cancel_download_json("sess-42", 1700000000.0, Some("req-3"));
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(parsed["type"], "control_command");
+    assert_eq!(parsed["command"], "cancel_download");
+    assert_eq!(parsed["session_id"], "sess-42");
+    assert_eq!(parsed["request_id"], "req-3");
+    assert!(parsed.get("model_name").is_none());
+}
+
 // ---------------------------------------------------------------------------
 // Transport construction
 // ---------------------------------------------------------------------------
@@ -82,5 +95,8 @@ async fn stop_without_connection_returns_promptly() {
     )
     .await;
 
-    assert!(result.is_ok(), "stop() should not block when never connected");
+    assert!(
+        result.is_ok(),
+        "stop() should not block when never connected"
+    );
 }

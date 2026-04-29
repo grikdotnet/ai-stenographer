@@ -427,6 +427,80 @@ describe("App", () => {
     expect(screen.getByText("65%")).toBeInTheDocument();
   });
 
+  it("invokes cancel_model_download and waits for cancelled progress before clearing progress", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => {
+      expect(eventListeners.has("stt://server-state")).toBe(true);
+      expect(eventListeners.has("stt://model-list")).toBe(true);
+      expect(eventListeners.has("stt://download-progress")).toBe(true);
+    });
+
+    await act(async () => {
+      eventListeners.get("stt://server-state")?.({
+        payload: { state: "waiting_for_model" },
+      });
+      eventListeners.get("stt://model-list")?.({
+        payload: {
+          models: [
+            {
+              name: "parakeet",
+              display_name: "Parakeet ASR",
+              size_description: "1.25 GB",
+              status: "missing",
+            },
+          ],
+        },
+      });
+      eventListeners.get("stt://download-progress")?.({
+        payload: {
+          model_name: "parakeet",
+          status: "downloading",
+          progress: 0.65,
+        },
+      });
+    });
+
+    vi.mocked(invoke).mockClear();
+    await user.click(await screen.findByRole("button", { name: "Cancel" }));
+
+    expect(invoke).toHaveBeenCalledWith("cancel_model_download");
+    expect(screen.getByText("65%")).toBeInTheDocument();
+
+    await act(async () => {
+      eventListeners.get("stt://model-list")?.({
+        payload: {
+          models: [
+            {
+              name: "parakeet",
+              display_name: "Parakeet ASR",
+              size_description: "1.25 GB",
+              status: "downloading",
+            },
+          ],
+        },
+      });
+    });
+
+    expect(screen.getByText("65%")).toBeInTheDocument();
+
+    await act(async () => {
+      eventListeners.get("stt://download-progress")?.({
+        payload: {
+          model_name: "parakeet",
+          status: "cancelled",
+        },
+      });
+    });
+
+    await waitFor(() => {
+      expect(screen.queryByRole("progressbar", { name: "Model download progress" })).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("Model must be downloaded before recognition can start.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download" })).toBeEnabled();
+  });
+
   it("removes the blocking dialog and returns to listening when the server starts running", async () => {
     render(<App />);
 

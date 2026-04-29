@@ -6,6 +6,7 @@ sub-paths by hand.
 """
 
 from pathlib import Path
+import threading
 from typing import Callable, Protocol
 
 from src.downloader.ModelDownloader import ModelDownloader, validate_parakeet
@@ -38,6 +39,7 @@ class IModelDefinition(Protocol):
     def download(
         self,
         progress_callback: Callable[[float, int, int], None] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         """Download or provision the model."""
 
@@ -80,12 +82,14 @@ class BaseModelDefinition:
     def download(
         self,
         progress_callback: Callable[[float, int, int], None] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         """Download or provision the model.
 
         Raises:
             ValueError: If the model does not support the shared download flow.
         """
+        del cancel_event
         raise ValueError(f"Model {self.name!r} is not downloadable")
 
     def cleanup_partial_files(self) -> None:
@@ -122,9 +126,10 @@ class ParakeetAsrModel(BaseModelDefinition):
     def download(
         self,
         progress_callback: Callable[[float, int, int], None] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         """Download the Parakeet model package into the models root."""
-        ModelDownloader(self._models_dir).download_parakeet(progress_callback)
+        ModelDownloader(self._models_dir).download_parakeet(progress_callback, cancel_event)
 
     def cleanup_partial_files(self) -> None:
         """Remove partial artifacts from a failed Parakeet download."""

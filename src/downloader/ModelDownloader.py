@@ -7,6 +7,7 @@ No Tkinter dependencies — safe for server-side and client-side use.
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Callable, List
 from urllib.request import getproxies
@@ -28,6 +29,10 @@ _MANIFEST_FILENAME = "manifest.json"
 _MANIFEST_TMP_FILENAME = "manifest.json.tmp"
 
 
+class DownloadCancelledError(Exception):
+    """Raised when a model download is cancelled cooperatively."""
+
+
 class ModelDownloader:
     """Download and validate shared STT model assets.
 
@@ -41,14 +46,16 @@ class ModelDownloader:
     def download_parakeet(
         self,
         progress_callback: Callable[[float, int, int], None] | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> None:
         """Download the Parakeet model into this downloader's models directory.
 
         Args:
             progress_callback: Optional progress callback.
+            cancel_event: Optional event that requests cooperative cancellation.
         """
         callback = progress_callback or (lambda _progress, _downloaded, _total: None)
-        download_parakeet(self._models_dir, callback)
+        download_parakeet(self._models_dir, callback, cancel_event=cancel_event)
 
     def validate_parakeet(self) -> bool:
         """Return True when the Parakeet installation passes manifest validation.
@@ -206,9 +213,18 @@ def _partial_download_path(target_path: Path) -> Path:
     return target_path.with_name(f"{target_path.name}.partial")
 
 
+def _raise_if_cancelled(cancel_event: threading.Event | None, models_dir: Path) -> None:
+    """Stop a cooperative download cancellation and clean partial artifacts."""
+    if cancel_event is None or not cancel_event.is_set():
+        return
+    cleanup_partial_files(models_dir)
+    raise DownloadCancelledError("Model download cancelled")
+
+
 def download_parakeet(
     models_dir: Path,
     progress_callback: Callable[[float, int, int], None],
+    cancel_event: threading.Event | None = None,
 ) -> None:
     """
     Download all Parakeet FP16 model files from the CDN and write manifest.json.
@@ -222,8 +238,10 @@ def download_parakeet(
     Args:
         models_dir: Root models directory. The parakeet/ sub-directory is created inside it.
         progress_callback: Called with ``(progress, downloaded_bytes, total_bytes)``.
+        cancel_event: Optional event that requests cooperative cancellation.
 
     Raises:
+        DownloadCancelledError: If cancellation is requested.
         RuntimeError: If any file cannot be downloaded.
     """
     _configure_network_environment()
@@ -241,6 +259,7 @@ def download_parakeet(
     cumulative_downloaded = 0
 
     for filename in PARAKEET_FILES:
+        _raise_if_cancelled(cancel_event, models_dir)
         url = PARAKEET_CDN_URL + filename
         target_path = parakeet_dir / filename
         partial_path = _partial_download_path(target_path)
@@ -259,6 +278,7 @@ def download_parakeet(
 
             with open(partial_path, "wb") as fh:
                 for chunk in response.iter_content(chunk_size=8192):
+                    _raise_if_cancelled(cancel_event, models_dir)
                     if chunk:
                         fh.write(chunk)
                         bytes_downloaded += len(chunk)
@@ -279,6 +299,9 @@ def download_parakeet(
             cumulative_downloaded += bytes_downloaded
             logging.info(f"Downloaded {filename} ({bytes_downloaded} bytes)")
 
+        except DownloadCancelledError:
+            cleanup_partial_files(models_dir)
+            raise
         except requests.exceptions.HTTPError as exc:
             if partial_path.exists():
                 partial_path.unlink()

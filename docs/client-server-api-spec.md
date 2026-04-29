@@ -81,7 +81,7 @@ Schema:
 {
   "type": "control_command",
   "session_id": "uuid-string",
-  "command": "close_session | list_models | download_model",
+  "command": "close_session | list_models | download_model | cancel_download",
   "model_name": "parakeet",
   "request_id": "optional-correlation-id",
   "timestamp": 1735689601.001
@@ -91,8 +91,8 @@ Schema:
 Field constraints:
 
 - `command` enum
-- `model_name` required when `command=download_model`; omitted otherwise
-- `request_id` optional; meaningful for `list_models` and `download_model`; ignored for `close_session`
+- `model_name` required when `command=download_model`; omitted for `cancel_download` and all other commands
+- `request_id` optional; meaningful for `list_models`, `download_model`, and `cancel_download`; ignored for `close_session`
 
 Per-command server response:
 
@@ -123,6 +123,20 @@ Wrong model name:
 ```json
 { "type": "error", "session_id": "uuid-string", "error_code": "INVALID_MODEL_NAME", "message": "...", "fatal": false, "request_id": "correlation-id" }
 ```
+
+`cancel_download`: Requests cancellation of the single currently running model download. The command has no `model_name`; the server supports only one running download at a time.
+
+Cancellation requested while a download is running:
+```json
+{ "type": "model_list", "request_id": "correlation-id", "models": [] }
+```
+
+Cancellation requested while no download is running:
+```json
+{ "type": "model_list", "request_id": "correlation-id", "models": [] }
+```
+
+The `model_list` response always contains the current model list; the empty `models` arrays above are abbreviated examples. The cancelled download completion signal is a later broadcast `download_progress` message with `status="cancelled"`.
 
 
 ## 3) Server -> Client: `session_created` (JSON text frame)
@@ -303,11 +317,11 @@ Schema:
 
 Field constraints:
 
-- `status` enum: `downloading | complete | error`
+- `status` enum: `downloading | complete | error | cancelled`
 - `progress` float in `[0.0, 1.0]`
 - `error_message` present only when `status="error"`; this is the sole signal for async download failure — there is no separate error code for download failures
 
-Delivery: broadcast to all active connections during a download; no `request_id`. The `error` message type is not used for async download failures; only `download_progress` with `status="error"` signals that a download job failed.
+Delivery: broadcast to all active connections during a download; no `request_id`. The `error` message type is not used for async download failures; only `download_progress` with `status="error"` signals that a download job failed. A cancelled download is reported only by `download_progress` with `status="cancelled"`; there is no intermediate protocol status for cancelling.
 
 ---
 
@@ -334,4 +348,4 @@ Pong echoes the original ping `timestamp` unchanged; client can compute RTT as `
 
 ## Versioning and Compatibility
 
-This is protocol version `v1`. Message types added in this revision: `server_state`, `model_list`, `download_progress`, and the new `list_models`/`download_model` command values.
+This is protocol version `v1`. Message types added in this revision: `server_state`, `model_list`, `download_progress`, and the new `list_models`/`download_model`/`cancel_download` command values.

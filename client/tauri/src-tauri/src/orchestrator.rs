@@ -771,6 +771,29 @@ impl ClientOrchestrator {
         ))
     }
 
+    /// Requests cancellation of the current server model download.
+    pub fn request_model_cancel(&self) -> Result<(), AppError> {
+        let transport = self
+            .transport
+            .try_lock()
+            .map_err(|_| AppError::ConnectionFailed("transport busy".into()))?;
+        let session_id = transport
+            .session_id
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .ok_or_else(|| AppError::ConnectionFailed("session not established".into()))?;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        transport.send_text(WsClientTransport::build_cancel_download_json(
+            &session_id,
+            timestamp,
+            None,
+        ))
+    }
+
     /// Stops the orchestrator gracefully.
     ///
     /// Stops audio capture, transport, and transitions to Shutdown.

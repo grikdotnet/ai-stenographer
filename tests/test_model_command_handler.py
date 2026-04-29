@@ -26,6 +26,7 @@ class _DownloadEvents:
     def __init__(self) -> None:
         self.progress_calls: list[tuple[str, float, int, int]] = []
         self.error_calls: list[tuple[str, Exception]] = []
+        self.cancelled_calls: list[str] = []
 
     def on_progress(
         self,
@@ -41,6 +42,9 @@ class _DownloadEvents:
 
     def on_error(self, model_name: str, exc: Exception) -> None:
         self.error_calls.append((model_name, exc))
+
+    def on_cancelled(self, model_name: str) -> None:
+        self.cancelled_calls.append(model_name)
 
 
 def _make_handler(registry) -> tuple[ModelCommandHandler, _Readiness, _DownloadEvents]:
@@ -130,7 +134,21 @@ class TestModelCommandHandler:
         kwargs["on_success"]("parakeet")
         error = RuntimeError("network")
         kwargs["on_error"]("parakeet", error)
+        kwargs["on_cancelled"]("parakeet")
 
         assert download_events.progress_calls == [("parakeet", 0.5, 100, 200)]
         assert readiness.download_success_calls == ["parakeet"]
         assert download_events.error_calls == [("parakeet", error)]
+        assert download_events.cancelled_calls == ["parakeet"]
+
+    def test_cancel_download_delegates_to_worker(self) -> None:
+        registry = MagicMock()
+
+        with patch("src.server.ModelCommandHandler.DownloadWorker") as worker_cls:
+            worker = worker_cls.return_value
+            worker.cancel.return_value = True
+            handler, _, _ = _make_handler(registry)
+
+            assert handler.cancel_download() is True
+
+        worker.cancel.assert_called_once_with()

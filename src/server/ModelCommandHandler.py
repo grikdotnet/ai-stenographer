@@ -58,4 +58,9 @@ class ModelCommandHandler:
             ),
             on_success=self._model_readiness.on_download_success,
             on_error=self._download_events.on_error,
+            on_cancelled=self._download_events.on_cancelled,
         )
+
+    def cancel_download(self) -> bool:
+        """Request cancellation of the current background download."""
+        return self._worker.cancel()

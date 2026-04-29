@@ -10,6 +10,7 @@ interface AppShellProps {
   onPauseToggle: () => void;
   onClear: () => void;
   onDownloadModel: (modelName: string) => void;
+  onCancelDownload: () => void;
   onCloseModelDialog: () => void;
 }
 
@@ -21,6 +22,7 @@ export function AppShell({
   onPauseToggle,
   onClear,
   onDownloadModel,
+  onCancelDownload,
   onCloseModelDialog,
 }: AppShellProps): ReactElement {
   const downloadStatus = viewState.downloadProgress?.status;
@@ -61,6 +63,7 @@ export function AppShell({
           models={viewState.models}
           downloadProgress={viewState.downloadProgress}
           onDownloadModel={onDownloadModel}
+          onCancelDownload={onCancelDownload}
           onClose={onCloseModelDialog}
         />
       </section>

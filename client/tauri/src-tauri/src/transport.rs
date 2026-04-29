@@ -206,6 +206,24 @@ impl WsClientTransport {
         payload.to_string()
     }
 
+    /// Builds the JSON string for a cancel_download control command.
+    pub fn build_cancel_download_json(
+        session_id: &str,
+        timestamp: f64,
+        request_id: Option<&str>,
+    ) -> String {
+        let mut payload = json!({
+            "type": "control_command",
+            "command": "cancel_download",
+            "session_id": session_id,
+            "timestamp": timestamp,
+        });
+        if let Some(request_id) = request_id {
+            payload["request_id"] = request_id.into();
+        }
+        payload.to_string()
+    }
+
     /// Spawns the drain loop that reads audio frames from the mpsc channel
     /// and forwards them to the WebSocket as binary messages.
     fn spawn_drain_loop<S>(ws_sink: Arc<Mutex<S>>, mut rx: mpsc::Receiver<Vec<u8>>)

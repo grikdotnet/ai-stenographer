@@ -219,11 +219,14 @@ def decode_client_message(text: str) -> ClientTextMessage:
 
     if msg_type == "control_command":
         command = obj.get("command")
-        valid_commands = {"close_session", "list_models", "download_model"}
+        valid_commands = {"close_session", "list_models", "download_model", "cancel_download"}
         if command not in valid_commands:
             raise ValueError(
                 f"Invalid command value: {command!r} "
-                "(must be 'close_session', 'list_models', or 'download_model')"
+                "("
+                "must be 'close_session', 'list_models', 'download_model', "
+                "or 'cancel_download'"
+                ")"
             )
         session_id = obj.get("session_id")
         if session_id is None:

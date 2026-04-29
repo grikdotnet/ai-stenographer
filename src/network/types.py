@@ -35,7 +35,7 @@ class WsControlCommand:
     """
 
     session_id: str
-    command: Literal["close_session", "list_models", "download_model"]
+    command: Literal["close_session", "list_models", "download_model", "cancel_download"]
     timestamp: float
     model_name: str | None = None
     request_id: str | None = None
@@ -137,7 +137,7 @@ class WsDownloadProgress:
     """JSON download_progress frame broadcast during model downloads."""
 
     model_name: str
-    status: Literal["downloading", "complete", "error"]
+    status: Literal["downloading", "complete", "error", "cancelled"]
     progress: float | None = None
     downloaded_bytes: int | None = None
     total_bytes: int | None = None

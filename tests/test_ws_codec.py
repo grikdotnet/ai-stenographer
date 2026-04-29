@@ -239,6 +239,17 @@ class TestEncodeServerMessage:
         assert obj["status"] == "error"
         assert obj["error_message"] == "disk full"
 
+    def test_encodes_download_progress_cancelled(self) -> None:
+        msg = WsDownloadProgress(
+            model_name="parakeet",
+            status="cancelled",
+        )
+        raw = encode_server_message(msg)
+        obj = json.loads(raw)
+        assert obj["type"] == "download_progress"
+        assert obj["model_name"] == "parakeet"
+        assert obj["status"] == "cancelled"
+
     def test_result_includes_token_confidences(self) -> None:
         """token_confidences should always be present in encoded recognition_result."""
         msg = WsRecognitionResult(
@@ -299,6 +310,20 @@ class TestDecodeClientMessage:
         assert msg.command == "download_model"
         assert msg.model_name == "parakeet"
 
+    def test_decodes_cancel_download_command_without_model_name(self) -> None:
+        payload = json.dumps({
+            "type": "control_command",
+            "session_id": "s4",
+            "command": "cancel_download",
+            "request_id": "req-44",
+            "timestamp": 4_000.0,
+        })
+        msg = decode_client_message(payload)
+        assert isinstance(msg, WsControlCommand)
+        assert msg.command == "cancel_download"
+        assert msg.model_name is None
+        assert msg.request_id == "req-44"
+
     def test_unknown_type_raises_value_error(self) -> None:
         payload = json.dumps({"type": "ping", "session_id": "s1"})
         with pytest.raises(ValueError, match="unknown.*type"):
@@ -342,3 +367,13 @@ class TestDecodeClientMessage:
         })
         with pytest.raises(ValueError, match="model_name"):
             decode_client_message(payload)
+
+    def test_cancel_download_ignores_model_name_requirement(self) -> None:
+        payload = json.dumps({
+            "type": "control_command",
+            "session_id": "s1",
+            "command": "cancel_download",
+            "timestamp": 1.0,
+        })
+        msg = decode_client_message(payload)
+        assert msg.command == "cancel_download"

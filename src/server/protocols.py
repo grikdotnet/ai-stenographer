@@ -33,6 +33,13 @@ class IModelCommandHandler(Protocol):
             ValueError: If the model name is invalid.
         """
 
+    def cancel_download(self) -> bool:
+        """Request cancellation of the current model download.
+
+        Returns:
+            True if a running download was signalled, False if no download was running.
+        """
+
 
 class IDownloadProgressEvents(Protocol):
     """Protocol for publishing model download status events."""
@@ -51,6 +58,9 @@ class IDownloadProgressEvents(Protocol):
 
     def on_error(self, model_name: str, exc: Exception) -> None:
         """Publish a failed model download update."""
+
+    def on_cancelled(self, model_name: str) -> None:
+        """Publish a cancelled model download update."""
 
 
 class IModelReadinessCoordinator(Protocol):

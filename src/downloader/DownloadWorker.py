@@ -6,6 +6,7 @@ import time
 from typing import Callable
 
 from src.asr.ModelDefinitions import IModelDefinition
+from src.downloader.ModelDownloader import DownloadCancelledError
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,7 @@ class DownloadWorker:
     def __init__(self) -> None:
         self._downloading = False
         self._current_model_name: str | None = None
+        self._cancel_event: threading.Event | None = None
         self._lock = threading.Lock()
 
     def is_downloading(self) -> bool:
@@ -41,6 +43,7 @@ class DownloadWorker:
         progress_callback: Callable[[float, int, int], None],
         on_success: Callable[[str], None],
         on_error: Callable[[str, Exception], None],
+        on_cancelled: Callable[[str], None],
     ) -> bool:
         """Spawn a daemon download thread for the requested model.
 
@@ -49,6 +52,7 @@ class DownloadWorker:
             progress_callback: Called with ``(progress, downloaded_bytes, total_bytes)``.
             on_success: Called with the model name after a successful download.
             on_error: Called with ``(model_name, exception)`` after a failed download.
+            on_cancelled: Called with the model name after cancellation is confirmed.
 
         Returns:
             True if a thread was started, False if another download is in progress.
@@ -58,16 +62,30 @@ class DownloadWorker:
                 return False
             self._downloading = True
             self._current_model_name = model.name
+            self._cancel_event = threading.Event()
+            cancel_event = self._cancel_event
 
         throttled = self._make_throttled_callback(progress_callback)
         thread = threading.Thread(
             target=self._thread_body,
-            args=(model, throttled, on_success, on_error),
+            args=(model, throttled, on_success, on_error, on_cancelled, cancel_event),
             daemon=True,
             name=f"ModelDownload-{model.name}",
         )
         thread.start()
         return True
+
+    def cancel(self) -> bool:
+        """Signal cancellation for the current download.
+
+        Returns:
+            True if a running download was signalled, False otherwise.
+        """
+        with self._lock:
+            if not self._downloading or self._cancel_event is None:
+                return False
+            self._cancel_event.set()
+            return True
 
     def _make_throttled_callback(
         self,
@@ -105,11 +123,16 @@ class DownloadWorker:
         progress_callback: Callable[[float, int, int], None],
         on_success: Callable[[str], None],
         on_error: Callable[[str, Exception], None],
+        on_cancelled: Callable[[str], None],
+        cancel_event: threading.Event,
     ) -> None:
         """Download thread entry point."""
         try:
-            model.download(progress_callback)
+            model.download(progress_callback, cancel_event)
             on_success(model.name)
+        except DownloadCancelledError:
+            logger.info("DownloadWorker: download cancelled for %s", model.name)
+            on_cancelled(model.name)
         except Exception as exc:
             logger.exception("DownloadWorker: download failed for %s: %s", model.name, exc)
             on_error(model.name, exc)
@@ -117,3 +140,4 @@ class DownloadWorker:
             with self._lock:
                 self._downloading = False
                 self._current_model_name = None
+                self._cancel_event = None

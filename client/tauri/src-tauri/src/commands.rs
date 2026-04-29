@@ -75,6 +75,18 @@ pub async fn download_model(
         .map_err(|e| e.to_string())
 }
 
+/// Requests cancellation of the current server model download.
+#[tauri::command]
+pub async fn cancel_model_download(
+    orchestrator: State<'_, Arc<Mutex<ClientOrchestrator>>>,
+) -> Result<(), String> {
+    orchestrator
+        .lock()
+        .await
+        .request_model_cancel()
+        .map_err(|e| e.to_string())
+}
+
 /// Toggles keyboard insertion on/off and returns the new state.
 #[tauri::command]
 pub fn toggle_insertion(

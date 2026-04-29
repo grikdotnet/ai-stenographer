@@ -574,6 +574,7 @@ fn main() {
             commands::clear,
             commands::list_models,
             commands::download_model,
+            commands::cancel_model_download,
             commands::toggle_insertion,
             commands::quickentry_submit,
             commands::quickentry_cancel,

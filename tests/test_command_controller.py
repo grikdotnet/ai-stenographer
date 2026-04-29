@@ -24,6 +24,8 @@ class _StubModelCommandHandler:
         self.start_download_result = True
         self.start_download_calls: list[str] = []
         self.start_download_error: Exception | None = None
+        self.cancel_download_result = False
+        self.cancel_download_calls = 0
 
     def get_model_list(self) -> list[WsModelInfo]:
         return self.models
@@ -41,6 +43,10 @@ class _StubModelCommandHandler:
         self.ensure_model_ready_calls.append(model_name)
         if self.ensure_model_ready_error is not None:
             raise self.ensure_model_ready_error
+
+    def cancel_download(self) -> bool:
+        self.cancel_download_calls += 1
+        return self.cancel_download_result
 
 
 def _command_payload(
@@ -176,6 +182,38 @@ class TestCommandController:
         assert isinstance(response, WsError)
         assert response.error_code == "DOWNLOAD_IN_PROGRESS"
         assert response.request_id == "req-5"
+
+    def test_cancel_download_when_running_returns_model_list(self) -> None:
+        handler = _StubModelCommandHandler()
+        handler.cancel_download_result = True
+        controller = CommandController(handler)
+
+        should_close, response = controller.handle(
+            _command_payload("cancel_download", request_id="req-cancel"),
+            session_id="session-1",
+        )
+
+        assert should_close is False
+        assert isinstance(response, WsModelList)
+        assert response.request_id == "req-cancel"
+        assert response.models == handler.models
+        assert handler.cancel_download_calls == 1
+
+    def test_cancel_download_when_idle_returns_model_list_noop(self) -> None:
+        handler = _StubModelCommandHandler()
+        handler.cancel_download_result = False
+        controller = CommandController(handler)
+
+        should_close, response = controller.handle(
+            _command_payload("cancel_download", request_id="req-idle"),
+            session_id="session-1",
+        )
+
+        assert should_close is False
+        assert isinstance(response, WsModelList)
+        assert response.request_id == "req-idle"
+        assert response.models == handler.models
+        assert handler.cancel_download_calls == 1
 
     def test_session_mismatch_returns_session_id_mismatch(self) -> None:
         handler = _StubModelCommandHandler()

@@ -118,3 +118,37 @@ class TestDownloadProgressNotifier:
                 total_bytes=100,
             ),
         ]
+
+    def test_cancelled_emits_cancelled_and_resets_throttle_state(self, monkeypatch) -> None:
+        broadcaster = FakeBroadcaster()
+        notifier = DownloadProgressNotifier(broadcaster)
+        times = iter([400.0, 400.1, 400.2])
+        monkeypatch.setattr(
+            "src.server.DownloadProgressNotifier.time.monotonic",
+            lambda: next(times),
+        )
+
+        notifier.on_progress("parakeet", 0.10, 10, 100)
+        notifier.on_cancelled("parakeet")
+        notifier.on_progress("parakeet", 0.1005, 11, 100)
+
+        assert broadcaster.messages == [
+            WsDownloadProgress(
+                model_name="parakeet",
+                status="downloading",
+                progress=0.10,
+                downloaded_bytes=10,
+                total_bytes=100,
+            ),
+            WsDownloadProgress(
+                model_name="parakeet",
+                status="cancelled",
+            ),
+            WsDownloadProgress(
+                model_name="parakeet",
+                status="downloading",
+                progress=0.1005,
+                downloaded_bytes=11,
+                total_bytes=100,
+            ),
+        ]

@@ -70,6 +70,13 @@ class CommandController:
         if msg.command == "download_model":
             return False, self._handle_download_model(msg, session_id)
 
+        if msg.command == "cancel_download":
+            self._model_commands.cancel_download()
+            return False, WsModelList(
+                models=self._model_commands.get_model_list(),
+                request_id=msg.request_id,
+            )
+
         return False, WsError(
             session_id=session_id,
             error_code="UNKNOWN_MESSAGE_TYPE",

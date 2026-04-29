@@ -155,6 +155,19 @@ function App(): ReactElement {
         await listen<DownloadProgress>(
           "stt://download-progress",
           (event) => {
+            if (event.payload.status === "cancelled") {
+              setViewState((prev) => ({
+                ...prev,
+                models: prev.models.map((model) =>
+                  model.name === event.payload.model_name && model.status === "downloading"
+                    ? { ...model, status: "missing" }
+                    : model
+                ),
+                downloadProgress: undefined,
+                downloadDialogDismissed: false,
+              }));
+              return;
+            }
             setViewState((prev) => ({
               ...prev,
               downloadProgress: event.payload,
@@ -238,6 +251,10 @@ function App(): ReactElement {
     await invoke("download_model", { modelName });
   }
 
+  async function handleCancelDownload(): Promise<void> {
+    await invoke("cancel_model_download");
+  }
+
   function handleCloseModelDialog(): void {
     setViewState((prev) => ({
       ...prev,
@@ -251,6 +268,7 @@ function App(): ReactElement {
       onPauseToggle={() => void handlePauseToggle()}
       onClear={() => void handleClear()}
       onDownloadModel={(modelName) => void handleDownloadModel(modelName)}
+      onCancelDownload={() => void handleCancelDownload()}
       onCloseModelDialog={handleCloseModelDialog}
     />
   );

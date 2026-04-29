@@ -94,6 +94,20 @@ class DownloadProgressNotifier:
             )
         )
 
+    def on_cancelled(self, model_name: str) -> None:
+        """Publish a final cancelled download update.
+
+        Args:
+            model_name: Cancelled model name.
+        """
+        self._clear_model_state(model_name)
+        self._broadcaster.broadcast(
+            WsDownloadProgress(
+                model_name=model_name,
+                status="cancelled",
+            )
+        )
+
     def _should_emit(self, model_name: str, progress: float) -> bool:
         """Return whether a throttled progress update should be emitted."""
         now = time.monotonic()

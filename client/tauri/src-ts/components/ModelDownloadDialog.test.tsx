@@ -16,6 +16,7 @@ function renderDialog(options: {
   models?: ModelInfo[];
   downloadProgress?: DownloadProgress;
   onDownloadModel?: (modelName: string) => void;
+  onCancelDownload?: () => void;
   onClose?: () => void;
 } = {}) {
   const props = {
@@ -23,6 +24,7 @@ function renderDialog(options: {
     models: options.models ?? [missingModel],
     downloadProgress: options.downloadProgress,
     onDownloadModel: options.onDownloadModel ?? vi.fn(),
+    onCancelDownload: options.onCancelDownload ?? vi.fn(),
     onClose: options.onClose ?? vi.fn(),
   };
 
@@ -91,6 +93,30 @@ describe("ModelDownloadDialog", () => {
     });
 
     expect(screen.getByRole("button", { name: "Download" })).toBeDisabled();
+  });
+
+  it("turns header Close into Cancel during download and waits for confirmation", async () => {
+    const user = userEvent.setup();
+    const onCancelDownload = vi.fn();
+    renderDialog({
+      onCancelDownload,
+      downloadProgress: {
+        model_name: "parakeet",
+        status: "downloading",
+        progress: 0.42,
+      },
+    });
+
+    expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(onCancelDownload).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Cancelling..." })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Download" })).toBeDisabled();
+    expect(screen.getByText("42%")).toBeInTheDocument();
   });
 
   it("shows percentage progress when reported", () => {

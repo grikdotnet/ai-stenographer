@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import { useEffect, useState, type ReactElement } from "react";
 import type { DownloadProgress, ModelInfo } from "../types/viewState";
 
 interface ModelDownloadDialogProps {
@@ -6,6 +6,7 @@ interface ModelDownloadDialogProps {
   models: ModelInfo[];
   downloadProgress?: DownloadProgress;
   onDownloadModel: (modelName: string) => void;
+  onCancelDownload: () => void;
   onClose: () => void;
 }
 
@@ -66,8 +67,17 @@ export function ModelDownloadDialog({
   models,
   downloadProgress,
   onDownloadModel,
+  onCancelDownload,
   onClose,
 }: ModelDownloadDialogProps): ReactElement | null {
+  const [cancelRequested, setCancelRequested] = useState(false);
+
+  useEffect(() => {
+    if (downloadProgress?.status !== "downloading") {
+      setCancelRequested(false);
+    }
+  }, [downloadProgress?.status]);
+
   if (!isOpen) return null;
 
   const primaryModel = selectPrimaryModel(models, downloadProgress);
@@ -78,6 +88,18 @@ export function ModelDownloadDialog({
   const canDownload = Boolean(primaryModelName) && !isDownloading && !isReady;
   const isError = downloadProgress?.status === "error";
   const canClose = !isDownloading && !isError;
+  const headerActionLabel = isDownloading
+    ? cancelRequested
+      ? "Cancelling..."
+      : "Cancel"
+    : "Close";
+  const headerActionDisabled = isDownloading ? cancelRequested : !canClose;
+  const handleHeaderAction = isDownloading
+    ? () => {
+        setCancelRequested(true);
+        onCancelDownload();
+      }
+    : onClose;
   const progressPercent =
     downloadProgress?.progress === undefined
       ? undefined
@@ -103,10 +125,10 @@ export function ModelDownloadDialog({
           <button
             type="button"
             className="button button--secondary model-dialog__close"
-            onClick={onClose}
-            disabled={!canClose}
+            onClick={handleHeaderAction}
+            disabled={headerActionDisabled}
           >
-            Close
+            {headerActionLabel}
           </button>
         </header>
 
