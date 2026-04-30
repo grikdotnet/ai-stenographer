@@ -93,11 +93,9 @@ Don't refactor code that wasn't requested.
 Run Python commands from the repository root through the checked-in virtual environment.
 
 Commands to run server and client applications are listed in the [./commands.md](commands.md) file.
+When running `.\venv\Scripts\python.exe -m pytest` on Windows, request escalation immediately. Do not run it inside workspace-write because pytest creates unaccessible directories.
 
 - Use Ruff and Pyright during Python code creation and review when they are available. Treat them as supplemental validation; pytest remains required for behavioral coverage.
-- Default Tauri frontend validation: from `client/tauri`, run `npm test`
-- Default Tauri Rust validation: from `client/tauri/src-tauri`, run `cargo test`
-
 
 ## End-of-Task Verification
 

@@ -57,14 +57,14 @@ PowerShell:
 
 ```powershell
 cd client/tauri
-npm run tauri:dev
+npm.cmd run tauri:dev
 ```
 
 Bash:
 
 ```bash
 cd client/tauri
-npm run tauri:dev
+npm.cmd run tauri:dev
 ```
 
 Development with an external Python server:
@@ -75,7 +75,7 @@ PowerShell:
 python main.py --port=62062
 cd client/tauri
 $env:STT_SERVER_URL="ws://127.0.0.1:62062"
-npm run tauri:dev
+npm.cmd run tauri:dev
 ```
 
 Bash:
@@ -83,7 +83,7 @@ Bash:
 ```bash
 python main.py --port=62062
 cd client/tauri
-STT_SERVER_URL=ws://127.0.0.1:62062 npm run tauri:dev
+STT_SERVER_URL=ws://127.0.0.1:62062 npm.cmd run tauri:dev
 ```
 
 With file input instead of microphone:
@@ -92,19 +92,19 @@ PowerShell:
 
 ```powershell
 $env:STT_INPUT_FILE="..\..\tests\fixtures\en.wav"
-npm run tauri:dev
+npm.cmd run tauri:dev
 ```
 
 Bash:
 
 ```bash
-STT_INPUT_FILE=../../tests/fixtures/en.wav npm run tauri:dev
+STT_INPUT_FILE=../../tests/fixtures/en.wav npm.cmd run tauri:dev
 ```
 
 Production build:
 
 ```
-npm run tauri:build
+npm.cmd run tauri:build
 ```
 
 Headless Rust binary with a Tauri-owned Python server:
@@ -172,9 +172,9 @@ Python static checks for changed Python code:
 
 Tauri frontend tests (Vitest):
 
-```
+```powershell
 cd client/tauri
-npm test
+npm.cmd test
 ```
 
 Tauri Rust tests:
