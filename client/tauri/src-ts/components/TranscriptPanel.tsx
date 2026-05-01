@@ -6,6 +6,7 @@ interface TranscriptPanelProps {
   preliminaryText: string;
   status: HeaderStatus;
   connectionError?: string;
+  onOpenModelDialog?: () => void;
 }
 
 // 2.0 s silence threshold that separates spoken paragraphs
@@ -53,9 +54,11 @@ export function TranscriptPanel({
   preliminaryText,
   status,
   connectionError,
+  onOpenModelDialog,
 }: TranscriptPanelProps): ReactElement {
   const hasText = utterances.length > 0 || preliminaryText.trim().length > 0;
   const nodes = buildFormattedNodes(utterances);
+  const isWaitingForModel = status === "waiting";
   const errorClassName =
     connectionError && isLongConnectionError(connectionError)
       ? "transcript-panel__error transcript-panel__error--long"
@@ -76,8 +79,17 @@ export function TranscriptPanel({
             <span className="transcript-error__message">{connectionError}</span>
           </div>
         ) : !hasText ? (
-          <div className="transcript-panel__empty" aria-hidden="true">
-            <div className="empty-glyph" />
+          <div className="transcript-panel__empty">
+            {isWaitingForModel ? (
+              <button
+                type="button"
+                className="empty-glyph empty-glyph--download"
+                aria-label="Open model download dialog"
+                onClick={onOpenModelDialog}
+              />
+            ) : (
+              <div className="empty-glyph empty-glyph--microphone" aria-hidden="true" />
+            )}
             <p>{EMPTY_STATE_MESSAGES[status]}</p>
           </div>
         ) : null}

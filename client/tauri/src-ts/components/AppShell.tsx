@@ -12,6 +12,7 @@ interface AppShellProps {
   onDownloadModel: (modelName: string) => void;
   onCancelDownload: () => void;
   onCloseModelDialog: () => void;
+  onOpenModelDialog: () => void;
 }
 
 /**
@@ -24,6 +25,7 @@ export function AppShell({
   onDownloadModel,
   onCancelDownload,
   onCloseModelDialog,
+  onOpenModelDialog,
 }: AppShellProps): ReactElement {
   const downloadStatus = viewState.downloadProgress?.status;
   const hasReadyModel =
@@ -57,6 +59,7 @@ export function AppShell({
           preliminaryText={viewState.preliminaryText}
           status={viewState.status}
           connectionError={viewState.connectionError}
+          onOpenModelDialog={onOpenModelDialog}
         />
         <ModelDownloadDialog
           isOpen={shouldShowModelDialog}

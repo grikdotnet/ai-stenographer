@@ -262,6 +262,13 @@ function App(): ReactElement {
     }));
   }
 
+  function handleOpenModelDialog(): void {
+    setViewState((prev) => ({
+      ...prev,
+      downloadDialogDismissed: false,
+    }));
+  }
+
   return (
     <AppShell
       viewState={viewState}
@@ -270,6 +277,7 @@ function App(): ReactElement {
       onDownloadModel={(modelName) => void handleDownloadModel(modelName)}
       onCancelDownload={() => void handleCancelDownload()}
       onCloseModelDialog={handleCloseModelDialog}
+      onOpenModelDialog={handleOpenModelDialog}
     />
   );
 }

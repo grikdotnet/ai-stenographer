@@ -1,4 +1,6 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { vi } from "vitest";
 import { TranscriptPanel } from "./TranscriptPanel";
 
 describe("TranscriptPanel", () => {
@@ -39,6 +41,35 @@ describe("TranscriptPanel", () => {
   it("shows waiting message when model download is required", () => {
     render(<TranscriptPanel utterances={[]} preliminaryText="" status="waiting" />);
     expect(screen.getByText("Model download required before recognition can start.")).toBeInTheDocument();
+  });
+
+  it("shows a download button instead of the microphone glyph while waiting for a model", async () => {
+    const user = userEvent.setup();
+    const onOpenModelDialog = vi.fn();
+    render(
+      <TranscriptPanel
+        utterances={[]}
+        preliminaryText=""
+        status="waiting"
+        onOpenModelDialog={onOpenModelDialog}
+      />
+    );
+
+    const button = screen.getByRole("button", { name: "Open model download dialog" });
+
+    expect(button).toHaveClass("empty-glyph--download");
+    expect(document.querySelector(".empty-glyph--microphone")).not.toBeInTheDocument();
+
+    await user.click(button);
+
+    expect(onOpenModelDialog).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the microphone glyph when listening with no transcript text", () => {
+    render(<TranscriptPanel utterances={[]} preliminaryText="" status="listening" />);
+
+    expect(document.querySelector(".empty-glyph--microphone")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Open model download dialog" })).not.toBeInTheDocument();
   });
 
   it("renders preliminary text in gray italic style", () => {

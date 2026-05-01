@@ -353,6 +353,44 @@ describe("App", () => {
     expect(screen.queryByText("Start speaking — transcript will appear here.")).not.toBeInTheDocument();
   });
 
+  it("reopens the missing-model dialog from the waiting-state download icon", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await waitFor(() => {
+      expect(eventListeners.has("stt://server-state")).toBe(true);
+      expect(eventListeners.has("stt://model-list")).toBe(true);
+    });
+
+    await act(async () => {
+      eventListeners.get("stt://server-state")?.({
+        payload: { state: "waiting_for_model" },
+      });
+      eventListeners.get("stt://model-list")?.({
+        payload: {
+          models: [
+            {
+              name: "parakeet",
+              display_name: "Parakeet ASR",
+              size_description: "1.25 GB",
+              status: "missing",
+            },
+          ],
+        },
+      });
+    });
+
+    await user.click(await screen.findByRole("button", { name: "Close" }));
+
+    await waitFor(() => {
+      expect(screen.queryByRole("dialog", { name: "Speech model required" })).not.toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "Open model download dialog" }));
+
+    expect(await screen.findByRole("dialog", { name: "Speech model required" })).toBeInTheDocument();
+  });
+
   it("invokes download_model with the selected model when Download is clicked", async () => {
     const user = userEvent.setup();
     render(<App />);
