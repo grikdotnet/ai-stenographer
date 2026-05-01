@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactElement } from "react";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { useEffect, useState, type MouseEvent, type ReactElement } from "react";
 import type { DownloadProgress, ModelInfo } from "../types/viewState";
 
 interface ModelDownloadDialogProps {
@@ -72,6 +73,14 @@ export function ModelDownloadDialog({
 }: ModelDownloadDialogProps): ReactElement | null {
   const [cancelRequested, setCancelRequested] = useState(false);
 
+  async function handleBackdropMouseDown(event: MouseEvent<HTMLDivElement>): Promise<void> {
+    if (event.button !== 0 || event.target !== event.currentTarget) {
+      return;
+    }
+
+    await getCurrentWebviewWindow().startDragging();
+  }
+
   useEffect(() => {
     if (downloadProgress?.status !== "downloading") {
       setCancelRequested(false);
@@ -110,7 +119,10 @@ export function ModelDownloadDialog({
       : undefined;
 
   return (
-    <div className="model-dialog__backdrop">
+    <div
+      className="model-dialog__backdrop"
+      onMouseDown={(event) => void handleBackdropMouseDown(event)}
+    >
       <section
         className="model-dialog"
         role="dialog"

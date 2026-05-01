@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { vi } from "vitest";
 import { ModelDownloadDialog } from "./ModelDownloadDialog";
 import type { DownloadProgress, ModelInfo } from "../types/viewState";
@@ -28,11 +29,15 @@ function renderDialog(options: {
     onClose: options.onClose ?? vi.fn(),
   };
 
-  render(<ModelDownloadDialog {...props} />);
-  return props;
+  const renderResult = render(<ModelDownloadDialog {...props} />);
+  return { ...props, ...renderResult };
 }
 
 describe("ModelDownloadDialog", () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("does not render when closed", () => {
     renderDialog({ isOpen: false });
 
@@ -58,6 +63,38 @@ describe("ModelDownloadDialog", () => {
     await user.click(screen.getByRole("button", { name: "Download" }));
 
     expect(onDownloadModel).toHaveBeenCalledWith("parakeet");
+  });
+
+  it("starts window dragging when the empty backdrop is pressed with the left mouse button", () => {
+    const currentWindow = getCurrentWebviewWindow();
+    const { container } = renderDialog();
+    const backdrop = container.querySelector(".model-dialog__backdrop");
+
+    backdrop?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+
+    expect(currentWindow.startDragging).toHaveBeenCalledOnce();
+  });
+
+  it("does not start window dragging when the dialog card is pressed", () => {
+    const currentWindow = getCurrentWebviewWindow();
+    renderDialog();
+
+    screen
+      .getByRole("dialog", { name: "Speech model required" })
+      .dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 0 }));
+
+    expect(currentWindow.startDragging).not.toHaveBeenCalled();
+  });
+
+  it("does not start window dragging for non-left mouse buttons on the backdrop", () => {
+    const currentWindow = getCurrentWebviewWindow();
+    const { container } = renderDialog();
+    const backdrop = container.querySelector(".model-dialog__backdrop");
+
+    backdrop?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 1 }));
+    backdrop?.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, button: 2 }));
+
+    expect(currentWindow.startDragging).not.toHaveBeenCalled();
   });
 
   it("shows loading state without Download when no model is available yet", () => {
