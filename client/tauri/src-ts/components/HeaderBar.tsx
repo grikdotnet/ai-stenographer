@@ -1,6 +1,7 @@
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import type { MouseEvent } from "react";
 import type { ReactElement } from "react";
+import appIconUrl from "../assets/app-icon.png";
 import type { HeaderStatus } from "../types/viewState";
 
 interface HeaderBarProps {
@@ -52,28 +53,7 @@ export function HeaderBar({ title, subtitle, status }: HeaderBarProps): ReactEle
         onMouseDown={(event) => void handleDragRegionMouseDown(event)}
       >
         <div className="header-bar__brand" aria-hidden="true">
-          <svg className="brand-mic" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect x="8" y="2" width="8" height="13" rx="4" fill="url(#mic-body)" />
-            <path
-              d="M5 11a7 7 0 0 0 14 0"
-              stroke="url(#mic-arc)"
-              strokeWidth="1.75"
-              strokeLinecap="round"
-              fill="none"
-            />
-            <line x1="12" y1="18" x2="12" y2="21" stroke="#c8944a" strokeWidth="1.75" strokeLinecap="round" />
-            <line x1="9" y1="21" x2="15" y2="21" stroke="#c8944a" strokeWidth="1.75" strokeLinecap="round" />
-            <defs>
-              <linearGradient id="mic-body" x1="12" y1="2" x2="12" y2="15" gradientUnits="userSpaceOnUse">
-                <stop offset="0%" stopColor="#e8b46a" />
-                <stop offset="100%" stopColor="#a06830" />
-              </linearGradient>
-              <linearGradient id="mic-arc" x1="5" y1="11" x2="19" y2="11" gradientUnits="userSpaceOnUse">
-                <stop offset="0%" stopColor="#d4984a" />
-                <stop offset="100%" stopColor="#a06830" />
-              </linearGradient>
-            </defs>
-          </svg>
+          <img className="brand-icon" src={appIconUrl} alt="" />
         </div>
         <div className="header-bar__titles">
           <h1>{title}</h1>

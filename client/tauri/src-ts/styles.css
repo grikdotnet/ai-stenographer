@@ -123,24 +123,24 @@ button {
   min-width: 0;
   min-height: 46px;
   flex: 1;
-  padding: 6px 8px 4px 2px;
+  padding: 8px 8px 0px 0px;
+  margin-left: -1px;
 }
 
 .header-bar__brand {
   display: grid;
   place-items: center;
-  flex: 0 0 38px;
-  width: 38px;
-  height: 38px;
-  border-radius: 11px;
-  background: linear-gradient(145deg, #2a2318, #1e1a12);
-  border: 1px solid var(--amber-border);
-  box-shadow: 0 0 0 1px rgba(232, 164, 74, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  flex: 0 0 45px;
+  width: 45px;
+  height: 45px;
+  border-radius: 9px;
+  overflow: hidden;
 }
 
-.brand-mic {
-  width: 21px;
-  height: 21px;
+.brand-icon {
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
 .header-bar__titles {
