@@ -1,14 +1,36 @@
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { useEffect, useState, type MouseEvent, type ReactElement } from "react";
+import { BACKDROP_TYPEWRITER_TEXTS } from "../content/backdropTypewriterTexts";
 import type { DownloadProgress, ModelInfo } from "../types/viewState";
 
 interface ModelDownloadDialogProps {
   isOpen: boolean;
   models: ModelInfo[];
   downloadProgress?: DownloadProgress;
+  typewriterText?: string;
   onDownloadModel: (modelName: string) => void;
   onCancelDownload: () => void;
   onClose: () => void;
+}
+const TYPEWRITER_START_DELAY_MS = 250;
+const TYPEWRITER_CADENCE_MS = [80, 58, 112, 52, 120, 74, 104, 58, 88, 76, 125, 50];
+const TYPEWRITER_JITTER_MS = 50;
+const TYPEWRITER_HESITATION_CHANCE = 0.14;
+const TYPEWRITER_HESITATION_MS = 100;
+
+function getTypewriterDelayMs(text: string, nextCharacterIndex: number): number {
+  const previousCharacter = text[nextCharacterIndex - 1];
+  const nextCharacter = text[nextCharacterIndex];
+
+  if (previousCharacter === ",") return 250;
+  if (previousCharacter === "/") return 200;
+  if (nextCharacter === " ") return 60;
+  if (previousCharacter === " ") return 120;
+
+  const baseDelay = TYPEWRITER_CADENCE_MS[nextCharacterIndex % TYPEWRITER_CADENCE_MS.length];
+  const jitter = Math.round(Math.random() * TYPEWRITER_JITTER_MS);
+  const hesitation = Math.random() < TYPEWRITER_HESITATION_CHANCE ? TYPEWRITER_HESITATION_MS : 0;
+  return baseDelay + jitter + hesitation;
 }
 
 function selectPrimaryModel(
@@ -67,11 +89,13 @@ export function ModelDownloadDialog({
   isOpen,
   models,
   downloadProgress,
+  typewriterText = BACKDROP_TYPEWRITER_TEXTS.waitingForModel,
   onDownloadModel,
   onCancelDownload,
   onClose,
 }: ModelDownloadDialogProps): ReactElement | null {
   const [cancelRequested, setCancelRequested] = useState(false);
+  const [backdropTypewriterText, setBackdropTypewriterText] = useState("");
 
   async function handleBackdropMouseDown(event: MouseEvent<HTMLDivElement>): Promise<void> {
     if (event.button !== 0 || event.target !== event.currentTarget) {
@@ -86,6 +110,41 @@ export function ModelDownloadDialog({
       setCancelRequested(false);
     }
   }, [downloadProgress?.status]);
+
+  useEffect(() => {
+    let nextCharacterTimer: number | undefined;
+    let characterCount = 0;
+
+    function clearTimers(): void {
+      if (nextCharacterTimer !== undefined) {
+        window.clearTimeout(nextCharacterTimer);
+      }
+    }
+
+    function scheduleTyping(delayMs: number): void {
+      nextCharacterTimer = window.setTimeout(typeNextCharacter, delayMs);
+    }
+
+    function typeNextCharacter(): void {
+      characterCount += 1;
+      setBackdropTypewriterText(typewriterText.slice(0, characterCount));
+
+      if (characterCount < typewriterText.length) {
+        scheduleTyping(getTypewriterDelayMs(typewriterText, characterCount));
+        return;
+      }
+    }
+
+    if (!isOpen) {
+      setBackdropTypewriterText("");
+      return clearTimers;
+    }
+
+    setBackdropTypewriterText("");
+    nextCharacterTimer = window.setTimeout(typeNextCharacter, TYPEWRITER_START_DELAY_MS);
+
+    return clearTimers;
+  }, [isOpen, typewriterText]);
 
   if (!isOpen) return null;
 
@@ -123,6 +182,10 @@ export function ModelDownloadDialog({
       className="model-dialog__backdrop"
       onMouseDown={(event) => void handleBackdropMouseDown(event)}
     >
+      <p className="model-dialog__typewriter" aria-hidden="true">
+        <span>{backdropTypewriterText}</span>
+        <span className="model-dialog__typewriter-caret" />
+      </p>
       <section
         className="model-dialog"
         role="dialog"
@@ -191,7 +254,7 @@ export function ModelDownloadDialog({
           <div className="model-dialog__actions">
             <button
               type="button"
-              className="button"
+              className="button model-dialog__download"
               onClick={() => onDownloadModel(primaryModelName)}
               disabled={!canDownload}
             >

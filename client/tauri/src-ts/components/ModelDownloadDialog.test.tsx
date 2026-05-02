@@ -1,7 +1,8 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { vi } from "vitest";
+import { BACKDROP_TYPEWRITER_TEXTS } from "../content/backdropTypewriterTexts";
 import { ModelDownloadDialog } from "./ModelDownloadDialog";
 import type { DownloadProgress, ModelInfo } from "../types/viewState";
 
@@ -11,11 +12,13 @@ const missingModel: ModelInfo = {
   size_description: "1.25 GB",
   status: "missing",
 };
+const backdropTypewriterText = BACKDROP_TYPEWRITER_TEXTS.waitingForModel;
 
 function renderDialog(options: {
   isOpen?: boolean;
   models?: ModelInfo[];
   downloadProgress?: DownloadProgress;
+  typewriterText?: string;
   onDownloadModel?: (modelName: string) => void;
   onCancelDownload?: () => void;
   onClose?: () => void;
@@ -24,6 +27,7 @@ function renderDialog(options: {
     isOpen: options.isOpen ?? true,
     models: options.models ?? [missingModel],
     downloadProgress: options.downloadProgress,
+    typewriterText: options.typewriterText,
     onDownloadModel: options.onDownloadModel ?? vi.fn(),
     onCancelDownload: options.onCancelDownload ?? vi.fn(),
     onClose: options.onClose ?? vi.fn(),
@@ -35,6 +39,7 @@ function renderDialog(options: {
 
 describe("ModelDownloadDialog", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
   });
 
@@ -45,14 +50,47 @@ describe("ModelDownloadDialog", () => {
   });
 
   it("renders missing model name and size when open", () => {
-    renderDialog();
+    const { container } = renderDialog();
 
     expect(screen.getByRole("dialog", { name: "Speech model required" })).toBeInTheDocument();
+    const backdropText = container.querySelector(".model-dialog__typewriter");
+    expect(backdropText).toHaveAttribute("aria-hidden", "true");
+    expect(container.querySelector(".model-dialog__typewriter-caret")).toBeInTheDocument();
     expect(screen.getByText("Parakeet ASR")).toBeInTheDocument();
     expect(screen.getByText("1.25 GB")).toBeInTheDocument();
     expect(
       screen.getByText("Model must be downloaded before recognition can start.")
     ).toBeInTheDocument();
+  });
+
+  it("types the decorative backdrop sentence over time", () => {
+    vi.useFakeTimers();
+    const { container } = renderDialog({ typewriterText: "Dear Sir." });
+    const backdropText = container.querySelector(".model-dialog__typewriter");
+
+    expect(backdropText).toHaveTextContent("");
+
+    act(() => {
+      vi.advanceTimersByTime(250);
+    });
+    expect(backdropText).toHaveTextContent("D");
+
+    act(() => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(backdropText?.textContent?.length).toBeGreaterThan(1);
+
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(backdropText).toHaveTextContent("Dear Sir.");
+
+    act(() => {
+      vi.advanceTimersByTime(5000);
+    });
+    expect(backdropText).toHaveTextContent("Dear Sir.");
+
+    vi.useRealTimers();
   });
 
   it("calls onDownloadModel with the primary model name when Download is clicked", async () => {
@@ -109,7 +147,7 @@ describe("ModelDownloadDialog", () => {
     renderDialog();
 
     expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Download" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download" })).toHaveClass("model-dialog__download");
   });
 
   it("disables Download while the selected model is downloading", () => {
