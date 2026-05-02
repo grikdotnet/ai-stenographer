@@ -28,8 +28,9 @@ In normal desktop mode without `--server-url` or `STT_SERVER_URL`:
 2. `ServerSupervisor` starts `venv/Scripts/python.exe main.py --host=127.0.0.1`
 3. the supervisor reads stdout until `Server listening on ws://...`
 4. `ClientOrchestrator` connects to the parsed URL
-5. audio starts only after the client connects
-6. normal app shutdown terminates the owned Python child
+5. audio capture is armed after connect but does not bind the microphone or replay file yet
+6. capture starts only after the server sends `server_state=running`
+7. normal app shutdown terminates the owned Python child
 
 If the owned child exits unexpectedly, the supervisor allows one unstable
 restart. The crash counter resets only after the orchestrator marks the
@@ -57,7 +58,7 @@ In direct Tauri execution:
 - constructs `ClientOrchestrator`
 - wires Tauri event emission, frontend state updates, and optional quick-entry support
 - calls `connect()`
-- on successful connect, calls `start_audio()`
+- on successful connect, calls `start_audio()` to arm capture until `server_state=running`
 
 Headless mode is also supported by the Tauri binary through `--headless`.
 
@@ -217,7 +218,9 @@ The client can use:
 - live microphone capture through `CpalAudioSource`
 - file-driven capture through `FileAudioSource`
 
-`ClientOrchestrator.start_audio()` installs a callback that:
+`ClientOrchestrator.start_audio()` arms capture for the current connection. It installs the callback and starts the selected audio source only when the latest server state is `running`.
+
+The installed callback:
 
 1. reads the current `session_id`
 2. checks that the client is in `Running`
@@ -233,11 +236,13 @@ The client can use:
 
 This keeps capture from blocking on network I/O.
 
-### Running-state gating
+### Readiness and running-state gating
 
-Audio transmission is explicitly gated by client state.
+Audio capture startup is explicitly gated by server readiness and client state.
 
-Even if audio capture has started, the callback returns early unless the client is in `Running`.
+The client does not bind the microphone or start file replay while the latest server state is `starting`, `waiting_for_model`, or `shutdown`. If the server moves away from `running`, the orchestrator stops active capture and keeps capture armed unless the user manually paused.
+
+Even after capture has started, the callback returns early unless the client is in `Running`.
 
 That means the client stops sending audio whenever state moves away from `Running`, including:
 

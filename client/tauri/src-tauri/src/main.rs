@@ -184,7 +184,7 @@ async fn emit_terminal_error(
     guard.stop(true).await;
 }
 
-async fn connect_and_start_audio(
+async fn connect_and_arm_audio(
     orchestrator: &Arc<tokio::sync::Mutex<ClientOrchestrator>>,
     supervisor: Option<Arc<ServerSupervisor>>,
 ) -> Result<(), String> {
@@ -340,11 +340,11 @@ fn run_headless(
         }));
 
         let orchestrator = Arc::new(tokio::sync::Mutex::new(orchestrator));
-        if let Err(e) = connect_and_start_audio(&orchestrator, owned_supervisor.clone()).await {
+        if let Err(e) = connect_and_arm_audio(&orchestrator, owned_supervisor.clone()).await {
             tracing::error!("{e}");
             return false;
         }
-        info!("Connected to server and audio capture started");
+        info!("Connected to server and audio capture armed; waiting for server readiness");
 
         info!("Headless mode running - press Ctrl+C to stop");
         if let Some(supervisor) = owned_supervisor {
@@ -544,7 +544,7 @@ fn main() {
                 }
 
                 if let Err(e) =
-                    connect_and_start_audio(&orchestrator, startup_supervisor.clone()).await
+                    connect_and_arm_audio(&orchestrator, startup_supervisor.clone()).await
                 {
                     tracing::error!("{e}");
                     emit_event(

@@ -1,7 +1,7 @@
 /// Central coordinator that wires audio capture, WebSocket transport,
 /// recognition fan-out, and text formatting into a running STT session.
 ///
-/// Owns the lifecycle: connect -> start_audio -> pause/resume -> stop.
+/// Owns the lifecycle: connect -> arm audio -> readiness-driven capture -> pause/resume -> stop.
 /// Emits events through an `EventEmitter` trait so the core logic is
 /// testable without the Tauri runtime.
 use std::sync::atomic::{AtomicI64, Ordering};
@@ -239,6 +239,187 @@ fn run_connected_callback_if_session_ready(
     }
 }
 
+struct AudioLifecycleState {
+    source: Option<Box<dyn AudioSource>>,
+    started: bool,
+    armed: bool,
+}
+
+/// Owns readiness-driven audio capture start/stop decisions for the orchestrator.
+///
+/// Responsibilities:
+/// - Keep an injected or default audio source armed until the server is ready.
+/// - Start capture only when the client is `Running` and the latest server state is `running`.
+/// - Stop active capture when the server or user lifecycle moves away from streaming.
+struct AudioLifecycle {
+    input_file: Option<String>,
+    state_manager: Arc<AppStateManager>,
+    chunk_counter: Arc<AtomicI64>,
+    connection_status: Arc<Mutex<ConnectionStatus>>,
+    state: Mutex<AudioLifecycleState>,
+}
+
+impl AudioLifecycle {
+    fn new(
+        input_file: Option<String>,
+        state_manager: Arc<AppStateManager>,
+        chunk_counter: Arc<AtomicI64>,
+        connection_status: Arc<Mutex<ConnectionStatus>>,
+    ) -> Self {
+        Self {
+            input_file,
+            state_manager,
+            chunk_counter,
+            connection_status,
+            state: Mutex::new(AudioLifecycleState {
+                source: None,
+                started: false,
+                armed: false,
+            }),
+        }
+    }
+
+    fn set_audio_source(&self, source: Box<dyn AudioSource>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.source = Some(source);
+            state.started = false;
+        }
+    }
+
+    fn start_or_arm(
+        &self,
+        transport: &Arc<tokio::sync::Mutex<WsClientTransport>>,
+    ) -> Result<(), AppError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AppError::AudioError("audio lifecycle lock poisoned".into()))?;
+        state.armed = true;
+        self.start_if_ready_locked(&mut state, transport)
+    }
+
+    fn reconcile_server_state(
+        &self,
+        transport: &Arc<tokio::sync::Mutex<WsClientTransport>>,
+    ) -> Result<(), AppError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AppError::AudioError("audio lifecycle lock poisoned".into()))?;
+        if self.can_start_capture() {
+            self.start_if_ready_locked(&mut state, transport)
+        } else {
+            self.stop_active_locked(&mut state)
+        }
+    }
+
+    fn pause(&self) -> Result<(), AppError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AppError::AudioError("audio lifecycle lock poisoned".into()))?;
+        state.armed = false;
+        self.stop_active_locked(&mut state)
+    }
+
+    fn stop(&self) -> Result<(), AppError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| AppError::AudioError("audio lifecycle lock poisoned".into()))?;
+        state.armed = false;
+        self.stop_active_locked(&mut state)
+    }
+
+    fn can_start_capture(&self) -> bool {
+        self.state_manager.current_state() == AppState::Running
+            && self
+                .connection_status
+                .lock()
+                .ok()
+                .and_then(|status| status.server_state.clone())
+                .as_deref()
+                == Some("running")
+    }
+
+    fn start_if_ready_locked(
+        &self,
+        state: &mut AudioLifecycleState,
+        transport: &Arc<tokio::sync::Mutex<WsClientTransport>>,
+    ) -> Result<(), AppError> {
+        if state.started || !state.armed || !self.can_start_capture() {
+            return Ok(());
+        }
+
+        if state.source.is_none() {
+            state.source = Some(self.create_audio_source());
+        }
+
+        let transport_guard = transport
+            .try_lock()
+            .map_err(|_| AppError::AudioError("transport locked during start_audio".into()))?;
+        let audio_tx = transport_guard
+            .audio_sender()
+            .ok_or_else(|| AppError::AudioError("not connected - call connect() first".into()))?;
+        let session_id = Arc::clone(&transport_guard.session_id);
+        drop(transport_guard);
+
+        let chunk_counter = Arc::clone(&self.chunk_counter);
+        let state_manager = Arc::clone(&self.state_manager);
+
+        let callback: Box<dyn Fn(Vec<f32>) + Send + 'static> = Box::new(move |samples| {
+            let sid = session_id
+                .lock()
+                .ok()
+                .and_then(|g| g.clone())
+                .unwrap_or_default();
+            if sid.is_empty() {
+                return;
+            }
+
+            if state_manager.current_state() != AppState::Running {
+                return;
+            }
+
+            let chunk_id = chunk_counter.fetch_add(1, Ordering::Relaxed);
+            let timestamp = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+
+            let frame = AudioFrameEncoder::encode(&sid, chunk_id, timestamp, &samples);
+            let _ = audio_tx.try_send(frame);
+        });
+
+        let source = state
+            .source
+            .as_mut()
+            .ok_or_else(|| AppError::AudioError("audio source unavailable".into()))?;
+        source.start(callback)?;
+        state.started = true;
+        Ok(())
+    }
+
+    fn stop_active_locked(&self, state: &mut AudioLifecycleState) -> Result<(), AppError> {
+        if !state.started {
+            return Ok(());
+        }
+        if let Some(source) = state.source.as_mut() {
+            source.stop()?;
+        }
+        state.started = false;
+        Ok(())
+    }
+
+    fn create_audio_source(&self) -> Box<dyn AudioSource> {
+        if let Some(ref path) = self.input_file {
+            Box::new(FileAudioSource::new(path.into(), true))
+        } else {
+            Box::new(CpalAudioSource::new())
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // ClientOrchestrator
 // ---------------------------------------------------------------------------
@@ -247,7 +428,7 @@ fn run_connected_callback_if_session_ready(
 ///
 /// Responsibilities:
 /// - Creates and owns `WsClientTransport`, `TextFormatter`, `RecognitionFanOut`.
-/// - Manages connect / start_audio / pause / resume / stop lifecycle.
+/// - Manages connect / arm audio / readiness-driven capture / pause / resume / stop lifecycle.
 /// - Dispatches server messages to the recognition pipeline.
 /// - Emits frontend events via an `EventEmitter`.
 pub struct ClientOrchestrator {
@@ -260,8 +441,8 @@ pub struct ClientOrchestrator {
     emitter: Arc<dyn EventEmitter>,
     connected_callback: Option<Arc<dyn Fn() + Send + Sync>>,
     chunk_counter: Arc<AtomicI64>,
-    audio_source: Option<Box<dyn AudioSource>>,
     connection_status: Arc<Mutex<ConnectionStatus>>,
+    audio_lifecycle: Arc<AudioLifecycle>,
 }
 
 impl ClientOrchestrator {
@@ -282,6 +463,18 @@ impl ClientOrchestrator {
         let formatter = Arc::new(TextFormatter::new(None));
         let mut fan_out = RecognitionFanOut::new();
         fan_out.add_subscriber(Box::new(FormatterBridge(Arc::clone(&formatter))));
+        let chunk_counter = Arc::new(AtomicI64::new(0));
+        let connection_status = Arc::new(Mutex::new(ConnectionStatus {
+            connected: false,
+            error: None,
+            server_state: None,
+        }));
+        let audio_lifecycle = Arc::new(AudioLifecycle::new(
+            input_file.clone(),
+            Arc::clone(&state_manager),
+            Arc::clone(&chunk_counter),
+            Arc::clone(&connection_status),
+        ));
 
         Self {
             server_url,
@@ -292,13 +485,9 @@ impl ClientOrchestrator {
             fan_out: Arc::new(Mutex::new(fan_out)),
             emitter: Arc::new(NoopEmitter),
             connected_callback: None,
-            chunk_counter: Arc::new(AtomicI64::new(0)),
-            audio_source: None,
-            connection_status: Arc::new(Mutex::new(ConnectionStatus {
-                connected: false,
-                error: None,
-                server_state: None,
-            })),
+            chunk_counter,
+            connection_status,
+            audio_lifecycle,
         }
     }
 
@@ -360,7 +549,7 @@ impl ClientOrchestrator {
     ///
     /// Must be called before `start_audio()`. Intended for testing only.
     pub fn set_audio_source(&mut self, source: Box<dyn AudioSource>) {
-        self.audio_source = Some(source);
+        self.audio_lifecycle.set_audio_source(source);
     }
 
     /// Atomically returns the next chunk ID and increments the counter.
@@ -410,9 +599,15 @@ impl ClientOrchestrator {
         let fan_out = Arc::clone(&self.fan_out);
         let state_manager = Arc::clone(&self.state_manager);
         let transport_for_handler = Arc::clone(&self.transport);
+        let transport_for_audio = Arc::clone(&self.transport);
+        let session_id_for_handler = {
+            let transport = self.transport.lock().await;
+            Arc::clone(&transport.session_id)
+        };
         let emitter = Arc::clone(&self.emitter);
         let connection_status = Arc::clone(&self.connection_status);
         let connected_callback = self.connected_callback.clone();
+        let audio_lifecycle = Arc::clone(&self.audio_lifecycle);
 
         if let Ok(mut status) = self.connection_status.lock() {
             let server_state = status.server_state.clone();
@@ -465,12 +660,12 @@ impl ClientOrchestrator {
                                 });
                                 return;
                             }
-                            let session_id_set = if let Ok(transport) = transport_for_handler.try_lock() {
-                                transport.set_session_id(session_id.clone());
+                            let session_id_set = if let Ok(mut guard) = session_id_for_handler.lock() {
+                                *guard = Some(session_id.clone());
                                 tracing::info!("session_id set on transport");
                                 true
                             } else {
-                                tracing::error!("transport try_lock failed — session_id NOT set");
+                                tracing::error!("session_id lock failed; session_id NOT set");
                                 false
                             };
                             set_state_if_needed_or_log(
@@ -539,6 +734,13 @@ impl ClientOrchestrator {
                                 target_state,
                                 "server_state update",
                             );
+                            if let Err(err) =
+                                audio_lifecycle.reconcile_server_state(&transport_for_audio)
+                            {
+                                tracing::warn!(
+                                    "Failed to reconcile audio lifecycle after server_state={state}: {err}"
+                                );
+                            }
                         }
                         ServerMessage::SessionClosed { reason, .. } => {
                             tracing::info!("Session closed by server: {reason}");
@@ -547,6 +749,11 @@ impl ClientOrchestrator {
                                 AppState::Shutdown,
                                 "session_closed",
                             );
+                            if let Err(err) = audio_lifecycle.stop() {
+                                tracing::warn!(
+                                    "Failed to stop audio lifecycle after session_closed: {err}"
+                                );
+                            }
                         }
                         ServerMessage::Error {
                             error_code,
@@ -640,74 +847,22 @@ impl ClientOrchestrator {
     /// Starts capturing audio from the appropriate source.
     ///
     /// Algorithm:
-    /// 1. Acquire the transport sender and session_id reference.
-    /// 2. Build a callback that skips frames when state is not `Running`.
-    /// 3. Use an injected source (from `set_audio_source`) if present; otherwise
-    ///    select `FileAudioSource` (if `input_file` is set) or `CpalAudioSource`.
-    /// 4. Start the source and store it.
+    /// 1. Mark audio capture as armed for this session.
+    /// 2. Return without binding the source until the latest server state is `running`.
+    /// 3. When ready, acquire the transport sender and start the selected source.
     ///
     /// Must be called after `connect()` so the audio channel exists.
     pub fn start_audio(&mut self) -> Result<(), AppError> {
-        let transport_guard = self
-            .transport
-            .try_lock()
-            .map_err(|_| AppError::AudioError("transport locked during start_audio".into()))?;
-        let audio_tx = transport_guard
-            .audio_sender()
-            .ok_or_else(|| AppError::AudioError("not connected — call connect() first".into()))?;
-        let session_id = Arc::clone(&transport_guard.session_id);
-        drop(transport_guard);
-
-        let chunk_counter = Arc::clone(&self.chunk_counter);
-        let state_manager = Arc::clone(&self.state_manager);
-
-        let callback: Box<dyn Fn(Vec<f32>) + Send + 'static> = Box::new(move |samples| {
-            let sid = session_id
-                .lock()
-                .ok()
-                .and_then(|g| g.clone())
-                .unwrap_or_default();
-            if sid.is_empty() {
-                return;
-            }
-
-            if state_manager.current_state() != AppState::Running {
-                return;
-            }
-
-            let chunk_id = chunk_counter.fetch_add(1, Ordering::Relaxed);
-            let timestamp = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs_f64();
-
-            let frame = AudioFrameEncoder::encode(&sid, chunk_id, timestamp, &samples);
-            let _ = audio_tx.try_send(frame);
-        });
-
-        let mut source: Box<dyn AudioSource> = if let Some(s) = self.audio_source.take() {
-            s
-        } else if let Some(ref path) = self.input_file {
-            Box::new(FileAudioSource::new(path.into(), true))
-        } else {
-            Box::new(CpalAudioSource::new())
-        };
-
-        source.start(callback)?;
-        self.audio_source = Some(source);
-        Ok(())
+        self.audio_lifecycle.start_or_arm(&self.transport)
     }
 
     /// Stops audio capture and transitions to the Paused state.
     ///
-    /// Releases the microphone by stopping the audio source, then marks
-    /// the application as Paused so it can be resumed later.
+    /// Marks the application as Paused, then releases the microphone by stopping
+    /// the audio source so a failed transition does not disarm capture.
     pub fn pause_audio(&mut self) -> Result<(), AppError> {
-        if let Some(ref mut source) = self.audio_source {
-            source.stop()?;
-        }
-        self.audio_source = None;
-        self.state_manager.set_state(AppState::Paused)
+        self.state_manager.set_state(AppState::Paused)?;
+        self.audio_lifecycle.pause()
     }
 
     /// Transitions to Running and restarts audio capture.
@@ -715,7 +870,13 @@ impl ClientOrchestrator {
     /// Must be called after `pause_audio()`. Requires an active transport
     /// (i.e. `connect()` was called previously).
     pub fn resume_audio(&mut self) -> Result<(), AppError> {
-        self.state_manager.set_state(AppState::Running)?;
+        let target = if self.current_connection_status().server_state.as_deref() == Some("running")
+        {
+            AppState::Running
+        } else {
+            AppState::WaitingForServer
+        };
+        set_state_if_needed(&self.state_manager, target)?;
         self.start_audio()
     }
 
@@ -798,10 +959,7 @@ impl ClientOrchestrator {
     ///
     /// Stops audio capture, transport, and transitions to Shutdown.
     pub async fn stop(&mut self, server_initiated: bool) {
-        if let Some(ref mut source) = self.audio_source {
-            let _ = source.stop();
-        }
-        self.audio_source = None;
+        let _ = self.audio_lifecycle.stop();
 
         self.transport.lock().await.stop(server_initiated).await;
 
@@ -880,11 +1038,14 @@ impl ClientOrchestrator {
                 );
                 let target_state = target_state_for_server_state(&self.state_manager, &state);
                 set_state_if_needed(&self.state_manager, target_state)?;
+                self.audio_lifecycle
+                    .reconcile_server_state(&self.transport)?;
                 Ok(())
             }
             ServerMessage::SessionClosed { reason, .. } => {
                 tracing::info!("Session closed: {reason}");
                 set_state_if_needed(&self.state_manager, AppState::Shutdown)?;
+                self.audio_lifecycle.stop()?;
                 Ok(())
             }
             ServerMessage::Error {
