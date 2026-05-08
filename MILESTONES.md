@@ -1,20 +1,4 @@
-## **Milestone 6: Client-Server Architecture for voice agents
-
-**Goal:**
-
-Transform the monolithic STT application into a distributed client-server architecture
-
-### Tasks
-
-**6.1 Separate GUI client and STT server**
-
-- Design the client-server architecture with web socket communication
-- Make GUI run in a separate process
-- Implement a simple voice agent acting on commands
-
----
-
-## **Milestone 7: MacOS Port (High Priority - Q3)**
+## **Milestone 7: MacOS Port and other models**
 
 **Goal:** Full MacOS support for both Intel and Apple Silicon architectures
 
@@ -22,9 +6,13 @@ Transform the monolithic STT application into a distributed client-server archit
 
 **7.1 Platform compatibility research**
 
-- Add CoreML execution provider
-- Test all Python dependencies on macOS (sounddevice)
-- Research universal binary vs. architecture-specific builds (Intel/M)
+- Find the CoreML execution provider implementation
+
+**7.2 Evaluate other ASR models**
+
+Canary-1b-v2
+Qwen3-asr
+Vibevoice-ASR
 
 **7.2 Build system for macOS**
 
@@ -53,10 +41,6 @@ Transform the monolithic STT application into a distributed client-server archit
 
 ### Tasks
 
-
-**8.0 Evaluate canary-1b-v2**
-
-https://huggingface.co/nvidia/canary-1b-v2
 
 **8.1 LLM integration architecture**
 
