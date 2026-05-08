@@ -188,3 +188,23 @@ class TestServerAppWiring:
 
         kwargs = mock_session_manager_cls.call_args.kwargs
         assert kwargs["vad_model"] is _REGISTRY.get_vad_model()
+
+    def test_session_manager_receives_verbose_flag(self) -> None:
+        mock_ws_server = MagicMock()
+        mock_ws_server.port = 9876
+
+        with (
+            patch("src.server.ServerApp.WsServer", return_value=mock_ws_server),
+            patch("src.server.ServerApp.RecognizerService", return_value=MagicMock()),
+            patch("src.server.ServerApp.SessionManager") as mock_session_manager_cls,
+            patch("src.server.ServerApp.DownloadProgressNotifier"),
+        ):
+            ServerApp(
+                config=_CONFIG,
+                model_registry=_REGISTRY,
+                app_state=ApplicationState(),
+                verbose=True,
+            )
+
+        kwargs = mock_session_manager_cls.call_args.kwargs
+        assert kwargs["verbose"] is True

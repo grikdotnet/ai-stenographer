@@ -59,6 +59,7 @@ def _make_recognizer_service(app_state: ApplicationState) -> RecognizerService:
 def _make_manager(
     app_state: ApplicationState | None = None,
     recognizer_service: RecognizerService | None = None,
+    verbose: bool = False,
 ) -> tuple[SessionManager, ApplicationState, RecognizerService]:
     if app_state is None:
         app_state = _make_app_state()
@@ -69,6 +70,7 @@ def _make_manager(
         app_state=app_state,
         config=_CONFIG,
         vad_model=_VAD_MODEL,
+        verbose=verbose,
     )
     return manager, app_state, recognizer_service
 
@@ -220,6 +222,22 @@ class TestCreateSession:
             loop.run_until_complete(manager.create_session(ws, loop))
 
         assert mock_client_session.call_args.kwargs["vad_model"] is _VAD_MODEL
+
+        loop.close()
+        recognizer_service.stop()
+        recognizer_service.join()
+
+    def test_create_session_passes_verbose_to_client_session(self) -> None:
+        manager, app_state, recognizer_service = _make_manager(verbose=True)
+
+        mock_session = _make_mock_session("some-id")
+        loop = asyncio.new_event_loop()
+        ws = _make_mock_websocket()
+
+        with patch("src.server.SessionManager.ClientSession", return_value=mock_session) as mock_client_session:
+            loop.run_until_complete(manager.create_session(ws, loop))
+
+        assert mock_client_session.call_args.kwargs["verbose"] is True
 
         loop.close()
         recognizer_service.stop()

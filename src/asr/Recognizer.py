@@ -143,7 +143,6 @@ class Recognizer:
             logging.debug(f"  audio duration: {duration_with_context}")
             logging.debug(f"  text: '{result.text}'")
             logging.debug(f"  tokens: {_format_token_confidence_pairs(result.tokens, token_confidences)}")
-            logging.debug(f"  timestamps: {result.timestamps}")
 
         if not result.text or not result.text.strip():
             return None
@@ -161,6 +160,7 @@ class Recognizer:
 
         if self.verbose:
             logging.debug(f"  filtered text: '{filtered_text}'")
+            logging.debug(f"  filtered confidence: '{filtered_confidences}'")
             logging.debug(f"  audio_rms: {audio_rms:.3f}")
 
         recognition_result = RecognitionResult(

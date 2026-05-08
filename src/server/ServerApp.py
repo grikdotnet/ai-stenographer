@@ -27,6 +27,7 @@ class ServerApp:
     Creates and wires together ``ApplicationState``, ``RecognizerService``,
     ``SessionManager``, and ``WsServer``. A recognizer is attached after
     construction via ``attach_recognizer()`` once the ASR model is loaded.
+    The ``verbose`` flag is passed into per-session pipeline components.
     """
 
     def __init__(
@@ -37,6 +38,7 @@ class ServerApp:
         recognizer_factory: IRecognizerFactory | None = None,
         host: str = "127.0.0.1",
         port: int = 0,
+        verbose: bool = False,
     ) -> None:
         self._config = config
         self._model_registry = model_registry
@@ -54,6 +56,7 @@ class ServerApp:
             app_state=self._app_state,
             config=config,
             vad_model=vad_model,
+            verbose=verbose,
         )
 
         self._ws_server = WsServer(

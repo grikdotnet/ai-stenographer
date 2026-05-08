@@ -80,6 +80,7 @@ def _make_session(
     session_index: int = 1,
     app_state: ApplicationState | None = None,
     recognizer_service: RecognizerService | None = None,
+    verbose: bool = False,
 ) -> tuple[ClientSession, ApplicationState, RecognizerService, asyncio.AbstractEventLoop]:
     if app_state is None:
         app_state = ApplicationState()
@@ -103,6 +104,7 @@ def _make_session(
             recognizer_service=recognizer_service,
             config=_CONFIG,
             vad_model=_VAD_MODEL,
+            verbose=verbose,
         )
 
     return session, app_state, recognizer_service, loop
@@ -252,6 +254,41 @@ class TestVadModelWiring:
             )
 
         assert vad_cls.call_args.kwargs["model"] is _VAD_MODEL
+
+        loop.close()
+        recognizer_service.stop()
+        recognizer_service.join()
+
+    def test_client_session_passes_verbose_to_pipeline_components(self) -> None:
+        app_state = ApplicationState()
+        app_state.set_state("running")
+        recognizer_service = _make_recognizer_service(app_state)
+        loop = asyncio.new_event_loop()
+        ws = _make_mock_websocket()
+
+        with (
+            patch("src.server.ClientSession.VoiceActivityDetector", return_value=_make_mock_vad()) as vad_cls,
+            patch("src.server.ClientSession.GrowingWindowAssembler", return_value=_make_mock_windower()) as windower_cls,
+            patch("src.server.ClientSession.SoundPreProcessor") as preprocessor_cls,
+            patch("src.server.ClientSession.SpeechEndRouter") as router_cls,
+            patch("src.server.ClientSession.IncrementalTextMatcher") as matcher_cls,
+        ):
+            ClientSession(
+                session_id="test-session",
+                session_index=1,
+                websocket=ws,
+                loop=loop,
+                recognizer_service=recognizer_service,
+                config=_CONFIG,
+                vad_model=_VAD_MODEL,
+                verbose=True,
+            )
+
+        assert vad_cls.call_args.kwargs["verbose"] is True
+        assert windower_cls.call_args.kwargs["verbose"] is True
+        assert preprocessor_cls.call_args.kwargs["verbose"] is True
+        assert router_cls.call_args.kwargs["verbose"] is True
+        assert matcher_cls.call_args.kwargs["verbose"] is True
 
         loop.close()
         recognizer_service.stop()

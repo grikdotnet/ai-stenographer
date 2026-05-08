@@ -46,6 +46,7 @@ class ClientSession:
         recognizer_service: Shared inference service; this session registers/unregisters.
         config: Application configuration dict (audio/vad/windowing sections required).
         vad_model: Shared Silero VAD model definition.
+        verbose: Enables detailed logging in per-session pipeline components.
     """
 
     def __init__(
@@ -57,6 +58,7 @@ class ClientSession:
         recognizer_service: "RecognizerService",
         config: dict,
         vad_model: SileroVadModel,
+        verbose: bool = False,
     ) -> None:
         self._session_id = session_id
         self._session_index = session_index
@@ -69,8 +71,12 @@ class ClientSession:
         self._matcher_queue: queue.Queue = queue.Queue(maxsize=_QUEUE_MAXSIZE)
         self._control_queue: queue.Queue = queue.Queue(maxsize=_QUEUE_MAXSIZE)
 
-        vad = VoiceActivityDetector(config=config, model=vad_model)
-        windower = GrowingWindowAssembler(speech_queue=self._speech_queue, config=config)
+        vad = VoiceActivityDetector(config=config, model=vad_model, verbose=verbose)
+        windower = GrowingWindowAssembler(
+            speech_queue=self._speech_queue,
+            config=config,
+            verbose=verbose,
+        )
 
         self._sound_preprocessor = SoundPreProcessor(
             chunk_queue=self._chunk_queue,
@@ -79,6 +85,7 @@ class ClientSession:
             windower=windower,
             config=config,
             control_queue=self._control_queue,
+            verbose=verbose,
         )
 
         first_message_id = session_index * _SESSION_PREFIX + 1
@@ -89,6 +96,7 @@ class ClientSession:
             matcher_queue=self._matcher_queue,
             control_queue=self._control_queue,
             first_message_id=first_message_id,
+            verbose=verbose,
         )
 
         self._result_sender = WsResultSender(
@@ -100,6 +108,7 @@ class ClientSession:
         self._matcher = IncrementalTextMatcher(
             text_queue=self._matcher_queue,
             publisher=self._result_sender,
+            verbose=verbose,
         )
 
     @property

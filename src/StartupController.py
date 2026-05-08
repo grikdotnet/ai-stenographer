@@ -211,6 +211,7 @@ class StartupController:
             port=self._args.port,
             app_state=self._app_state,
             recognizer_factory=recognizer_factory,
+            verbose=self._args.verbose,
         )
         server_app.start()
         return server_app

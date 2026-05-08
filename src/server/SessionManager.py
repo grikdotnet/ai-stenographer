@@ -31,6 +31,7 @@ class SessionManager(IServerMessageBroadcaster):
         app_state: Server lifecycle state observed for server_state broadcasts.
         config: Application configuration dict (audio/vad/windowing sections).
         vad_model: Shared Silero VAD model definition.
+        verbose: Enables detailed logging in per-session pipeline components.
     """
 
     def __init__(
@@ -39,11 +40,13 @@ class SessionManager(IServerMessageBroadcaster):
         app_state: "ApplicationState",
         config: dict,
         vad_model: SileroVadModel,
+        verbose: bool = False,
     ) -> None:
         self._recognizer_service = recognizer_service
         self._app_state = app_state
         self._config = config
         self._vad_model = vad_model
+        self._verbose = verbose
 
         self._session_index_counter = 0
         self._counter_lock = threading.Lock()
@@ -83,6 +86,7 @@ class SessionManager(IServerMessageBroadcaster):
             recognizer_service=self._recognizer_service,
             config=self._config,
             vad_model=self._vad_model,
+            verbose=self._verbose,
         )
 
         await session.start()

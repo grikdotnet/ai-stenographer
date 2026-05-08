@@ -12,7 +12,7 @@ class PostRecognitionFilter:
     - Preserve token-confidence alignment for kept tokens.
     """
 
-    _ALWAYS_DROP: frozenset[str] = frozenset({"um", "uh", "ah", "oh", "hmm", "mm", "mm-hmm"})
+    _ALWAYS_DROP: frozenset[str] = frozenset({"um", "uh", "ah", "oh", "hmm", "mm", "mm-mm", "mm-hmm"})
     _CONFIDENCE_DROP: frozenset[str] = frozenset({"yeah", "okay"})
 
     def filter(

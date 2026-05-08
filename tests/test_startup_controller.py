@@ -437,6 +437,18 @@ class TestCreateAndStartServer:
         assert recognizer_factory is controller._recognizer_factory
         assert recognizer_factory is not None
 
+    def test_verbose_flag_passed_to_server_app(self) -> None:
+        server_app_mock = _make_server_app_mock()
+        controller = _make_controller(args=_make_args(verbose=True))
+        with ExitStack() as stack:
+            _patch_stack(stack, server_app_mock)
+            server_app_cls = stack.enter_context(
+                patch("src.StartupController.ServerApp", return_value=server_app_mock)
+            )
+            controller.run()
+        _, kwargs = server_app_cls.call_args
+        assert kwargs["verbose"] is True
+
     def test_config_loaded_from_paths_config_dir(self) -> None:
         server_app_mock = _make_server_app_mock()
         paths = _make_paths(config_dir=Path("/custom/config"))
