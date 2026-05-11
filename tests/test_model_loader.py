@@ -13,13 +13,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.asr.ModelLoader import ModelLoadError, load_model
+from src.asr.ModelLoader import ModelLoadError, ProviderOption, load_model
 from src.asr.ModelDefinitions import ParakeetAsrModel
 
 
 _MODELS_DIR = Path("/fake/models")
 _ASR_MODEL = ParakeetAsrModel(_MODELS_DIR)
-_PROVIDERS = ["CPUExecutionProvider"]
+_PROVIDERS: list[ProviderOption] = ["CPUExecutionProvider"]
 
 
 def _make_sess_options() -> MagicMock:
@@ -51,7 +51,7 @@ class TestLoadModelNotSupportedError:
     """ModelNotSupportedError maps to ModelLoadError."""
 
     def _make_exc(self):
-        from onnx_asr.loader import ModelNotSupportedError
+        from onnx_asr.utils import ModelNotSupportedError
         return ModelNotSupportedError("nemo-parakeet-tdt-0.6b-v3")
 
     def test_raises_model_load_error(self) -> None:
@@ -69,7 +69,7 @@ class TestLoadModelPathNotDirectoryError:
     """ModelPathNotDirectoryError maps to ModelLoadError."""
 
     def _make_exc(self):
-        from onnx_asr.loader import ModelPathNotDirectoryError
+        from onnx_asr.utils import ModelPathNotDirectoryError
         return ModelPathNotDirectoryError("/fake/models/parakeet")
 
     def test_raises_model_load_error(self) -> None:
@@ -87,7 +87,7 @@ class TestLoadModelFileNotFoundError:
     """ModelFileNotFoundError maps to ModelLoadError."""
 
     def _make_exc(self):
-        from onnx_asr.loader import ModelFileNotFoundError
+        from onnx_asr.utils import ModelFileNotFoundError
         return ModelFileNotFoundError("model_fp16.onnx", "/fake/models/parakeet")
 
     def test_raises_model_load_error(self) -> None:
@@ -105,7 +105,7 @@ class TestLoadModelMoreThanOneFileError:
     """MoreThanOneModelFileFoundError maps to ModelLoadError."""
 
     def _make_exc(self):
-        from onnx_asr.loader import MoreThanOneModelFileFoundError
+        from onnx_asr.utils import MoreThanOneModelFileFoundError
         return MoreThanOneModelFileFoundError("*.onnx", "/fake/models/parakeet")
 
     def test_raises_model_load_error(self) -> None:
@@ -123,7 +123,7 @@ class TestLoadModelInvalidModelTypeError:
     """InvalidModelTypeInConfigError maps to ModelLoadError."""
 
     def _make_exc(self):
-        from onnx_asr.loader import InvalidModelTypeInConfigError
+        from onnx_asr.utils import InvalidModelTypeInConfigError
         return InvalidModelTypeInConfigError("unknown-type")
 
     def test_raises_model_load_error(self) -> None:

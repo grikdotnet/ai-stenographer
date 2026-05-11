@@ -6,7 +6,7 @@ from typing import Any
 
 import onnx_asr
 import onnxruntime as rt
-from onnx_asr.loader import (
+from onnx_asr.utils import (
     InvalidModelTypeInConfigError,
     ModelFileNotFoundError,
     ModelNotSupportedError,

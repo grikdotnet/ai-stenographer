@@ -1,7 +1,7 @@
 sounddevice
 numpy
 onnxruntime-directml
-onnx-asr==0.10.0
+onnx-asr==0.11.0
 requests
 pynput>=1.7.6
 tqdm
